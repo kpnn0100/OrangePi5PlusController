@@ -5,6 +5,7 @@ import 'package:arstro_remote/src/proto/frames.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  // covers: ARC-02
   test('encodes JSON frames with a big-endian length header', () {
     final f = encodeJson({'op': 'ping', 'id': 1});
     expect(f[0], kFrameJson);
@@ -13,12 +14,14 @@ void main() {
     expect(jsonDecode(utf8.decode(f.sublist(5))), {'op': 'ping', 'id': 1});
   });
 
+  // covers: ARC-02
   test('encodes TERM frames with the terminal id first', () {
     final f = encodeTerm(3, utf8.encode('ls\n'));
     expect(f[0], kFrameTerm);
     expect(f.sublist(5), [3, ...utf8.encode('ls\n')]);
   });
 
+  // covers: ARC-02
   test('decoder reassembles frames split at every byte', () {
     final data = Uint8List.fromList([
       ...encodeJson({'a': 'ệ'}),
@@ -37,6 +40,7 @@ void main() {
     expect(jsonDecode(utf8.decode(frames[2].payload)), {'b': 2});
   });
 
+  // covers: ARC-02
   test('decoder handles many frames in one chunk', () {
     final chunk = BytesBuilder();
     for (var i = 0; i < 500; i++) {
@@ -47,6 +51,7 @@ void main() {
     expect(jsonDecode(utf8.decode(frames.last.payload)), {'i': 499});
   });
 
+  // covers: ARC-02
   test('decoder skips unknown types and rejects oversized frames', () {
     // A newer server may send frame types this app does not know (e.g. 0x04 VIDEO): skip them.
     final frames = FrameDecoder().feed(Uint8List.fromList([4, 0, 0, 0, 1, 0, ...encodeJson({'a': 1})]));
@@ -55,6 +60,7 @@ void main() {
     expect(() => FrameDecoder().feed(Uint8List.fromList([1, 0x7f, 0, 0, 0])), throwsA(isA<ProtocolException>()));
   });
 
+  // covers: ARC-02
   test('matches the Python encoder byte for byte', () {
     // python3 -c 'from arstro_remote.protocol import *; print(list(encode_json({"op":"ping","id":1})))'
     expect(encodeJson({'op': 'ping', 'id': 1}), [

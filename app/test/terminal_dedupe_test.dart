@@ -25,6 +25,7 @@ void main() {
 
   String text() => s.terminal.buffer.getText().replaceAll(RegExp(r'\s+$'), '');
 
+  // covers: TERM-03, CON-01
   test('in-order chunks are shown once', () {
     s.onData(0, b('hello '));
     s.onData(6, b('world'));
@@ -32,6 +33,7 @@ void main() {
     expect(s.received, 11);
   });
 
+  // covers: TERM-03, CON-01
   test('replayed bytes that are already on screen are dropped', () {
     s.onData(0, b('abcdef'));
     s.onData(0, b('abcdef')); // exact duplicate
@@ -40,6 +42,7 @@ void main() {
     expect(s.received, 9);
   });
 
+  // covers: TERM-03, CON-01
   test('overlap that splits a UTF-8 character keeps the text intact', () {
     final bytes = b('việt');
     s.onData(0, Uint8List.sublistView(bytes, 0, 3)); // "vi" + first byte of "ệ"
@@ -47,6 +50,7 @@ void main() {
     expect(text(), 'việt');
   });
 
+  // covers: TERM-03, CON-01
   test('a gap jumps forward instead of stalling', () {
     s.onData(0, b('ab'));
     s.onData(5, b('XY'));
@@ -54,6 +58,7 @@ void main() {
     expect(text(), 'abXY');
   });
 
+  // covers: TERM-03, CON-01
   test('decodes a TERM_OUT frame produced by the Pi', () {
     // python3 -c 'from arstro_remote.protocol import *; print(list(encode_term_out(2, 300, b"ok")))'
     final frame = Uint8List.fromList([3, 0, 0, 0, 11, 2, 0, 0, 0, 0, 0, 0, 1, 44, 111, 107]);

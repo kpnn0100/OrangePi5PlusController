@@ -20,7 +20,7 @@ import urllib.request
 from harness import check, run, test, wait_until
 
 from arstro_remote.client import Client
-from arstro_remote.paths import control_socket_path, load_config
+from arstro_remote.paths import control_socket_path, load_config, state_dir
 from arstro_remote.web import auth
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -112,7 +112,7 @@ def cross_site_requests_are_refused(c):
     check(refused, "cross-origin WebSocket accepted")
 
 
-@test("SEC-03", "ADM-03", "CON-03", "ARC-04")
+@test("SEC-03", "SEC-05", "ADM-03", "CON-03", "ARC-04")
 def password_change_signs_others_out_and_is_restored(c):
     original = c.token
     temp = "arstro-test-%d" % int(time.time())
@@ -131,6 +131,9 @@ def password_change_signs_others_out_and_is_restored(c):
         check(st == 200, "new password rejected")
         r = c.local.request("web.set_password", password="short")
         check(r["ok"] is False and "8" in r["error"], r)
+        log = os.path.join(state_dir(), "arstro-remote.log")          # SEC-05
+        if os.path.exists(log):
+            check(temp not in open(log, encoding="utf-8", errors="replace").read(), "the password is in the log")
     finally:
         c.local.call("web.set_password", password=original)
     check(auth.load() == original, "password not restored")
@@ -154,8 +157,8 @@ def open_mode_needs_no_password_but_blocks_rebinding(c):
         w.close()
         st, _, _ = http(c, "POST", "/api/op/ping", body={}, headers={"Host": "evil.example:%d" % c.port})
         check(st == 403, "DNS-rebinding Host accepted: %s" % st)
-        code, out, err = cli("--url", c.base, "rec", "status")
-        check(code == 0 and "Signal" in out, err)
+        code, out, err = cli("--url", c.base, "status")
+        check(code == 0 and "Arstro Remote" in out, err)
     finally:
         c.local.call("web.set_auth", required=not was_open)
     if not was_open:
@@ -174,7 +177,7 @@ def rest_runs_the_same_ops(c):
     check(st == 400 and "unknown op" in json.loads(body)["error"], body)
 
 
-@test("ARC-02", "CON-04", "TERM-01")
+@test("ARC-01", "ARC-02", "CON-04", "TERM-01")
 def websocket_session_has_every_op(c):
     w = Client.ws(c.base, c.token)
     try:

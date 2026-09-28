@@ -32,6 +32,10 @@ if [ ${#missing[@]} -gt 0 ]; then
     echo "Install with: sudo apt install ${missing[*]}"
     exit 1
 fi
+# the recorder (HDMI RX) is optional: the service runs without it and says why
+python3 -c 'import gi; gi.require_version("Gst", "1.0")' 2>/dev/null ||
+    echo "WARNING: no GStreamer for Python - the recorder is off (sudo apt install python3-gst-1.0 gir1.2-gst-plugins-base-1.0)"
+command -v ffprobe >/dev/null || echo "WARNING: no ffprobe/ffmpeg - the gallery cannot read recordings (sudo apt install ffmpeg)"
 id -nG | grep -qw bluetooth || echo "WARNING: $(id -un) is not in group 'bluetooth'"
 id -nG | grep -qw netdev || echo "WARNING: $(id -un) is not in group 'netdev' (needed for rfkill)"
 

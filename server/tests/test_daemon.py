@@ -429,6 +429,28 @@ def admin_status(c):
     check(any(s["local"] for s in st["sessions"]), st["sessions"])
 
 
+@test("SEC-04")
+def control_socket_is_private():
+    import stat
+    mode = stat.S_IMODE(os.stat(control_socket_path()).st_mode)
+    check(mode == 0o600, "control socket mode %o, want 600" % mode)
+    parent = stat.S_IMODE(os.stat(os.path.dirname(control_socket_path())).st_mode)
+    check(parent & 0o077 == 0 or mode == 0o600, "runtime dir %o" % parent)
+
+
+@test("WIFI-05", "WIFI-06")
+def wifi_forget_unknown_and_radio_on(c):
+    """Forget / radio without touching the Pi's own connection: forgetting an unknown
+    network is refused with a reason; switching the radio on while it is on is a no-op."""
+    r = c.request("wifi.forget", name="arstro-no-such-saved-network-xyz")
+    check(r["ok"] is False and "no saved network" in r["error"], r)
+    st = c.call("wifi.status")
+    if st.get("enabled"):
+        c.call("wifi.radio", enabled=True)
+        st2 = c.call("wifi.status")
+        check(st2["enabled"] and st2.get("connected") == st.get("connected"), "radio on changed the link: %s" % st2)
+
+
 def setup():
     c = Client.unix(control_socket_path())
     c.call("hello", app="test-daemon")

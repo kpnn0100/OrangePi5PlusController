@@ -17,3 +17,5 @@ app/android/key.properties
 local.env
 # APKs built by scripts/build_apk.sh
 release/
+# per-user Claude Code settings
+.claude/settings.local.json

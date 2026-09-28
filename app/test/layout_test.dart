@@ -111,6 +111,7 @@ void main() {
   setUp(mockChannels);
 
   for (final entry in sizes.entries) {
+    // covers: UX-03, UX-01
     testWidgets('connect page fits on ${entry.key}', (tester) async {
       await setSize(tester, entry.value);
       final log = ErrorLog();
@@ -130,6 +131,7 @@ void main() {
       log.done();
     });
 
+    // covers: UX-03, UX-01, STAT-01, INP-04, WIFI-01, TERM-01
     testWidgets('all tabs fit on ${entry.key}', (tester) async {
       await setSize(tester, entry.value);
       final log = ErrorLog();
@@ -158,6 +160,7 @@ void main() {
   }
 
   for (final entry in sizes.entries) {
+    // covers: UX-03, UX-02, REC-01, REC-03, REC-04, REC-07, GAL-01, GAL-02, GAL-05, CON-02
     testWidgets('recorder: live, settings, gallery and a take fit on ${entry.key}', (tester) async {
       await setSize(tester, entry.value);
       final log = ErrorLog();
@@ -215,6 +218,7 @@ void main() {
     });
   }
 
+  // covers: UX-03, ADM-01, ADM-02, ADM-03, CON-05
   testWidgets('settings page fits on a small phone', (tester) async {
     await setSize(tester, const Size(360, 640));
     final log = ErrorLog();

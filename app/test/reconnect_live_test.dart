@@ -80,6 +80,7 @@ void main() {
     m.setMockMethodCallHandler(const MethodChannel('arstro/bt'), (call) async => null);
   });
 
+  // covers: CON-01, TERM-03
   test('shell output survives repeated link cuts: nothing lost, nothing repeated', () async {
     final parts = target!.split(':');
     SharedPreferences.setMockInitialValues({});

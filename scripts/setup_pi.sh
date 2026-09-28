@@ -8,8 +8,9 @@
 #      (so later runs, and agents, need no password)
 #   2. checks the Pi: Bluetooth adapter, packages, groups, desktop auto-login
 #   3. installs missing packages / fixes groups with sudo (same password)
-#   4. copies pi/ to ~/arstro-remote-src and runs install.sh
-#   5. verifies the service (and can reboot, run the test suite, install the APK)
+#   4. copies server/ to ~/arstro-remote-src and runs install.sh (restarts the service)
+#   5. verifies the service (and can reboot, set the web password, run the tests,
+#      install the APK)
 #
 # Options
 #   -p, --password PASS  password (better: export ARSTRO_PASS=..., or type it when asked)
@@ -18,8 +19,10 @@
 #                        the desktop session, so without auto-login it waits for a login)
 #   --reboot             reboot the Pi at the end if the service is not running yet,
 #                        then wait until it is up
-#   --test               run the on-Pi test suites afterwards (opens a small test window
-#                        on the Pi screen for ~5 s)
+#   --web-password       set the web / remote-CLI password (asked, or ARSTRO_WEB_PASS=...)
+#   --test               run the on-Pi test suites afterwards (the input test opens a small
+#                        window on the Pi screen for ~5 s; the recorder tests use a test
+#                        pattern, not the HDMI input)
 #   --apk                also install release/*.apk on the Android device attached via adb
 #   --apk-serial SERIAL  same, on a specific adb device
 #   --no-deps            do not install packages / change groups (no sudo used)
@@ -30,9 +33,10 @@
 # OpenSSH's SSH_ASKPASS (OpenSSH >= 8.4), otherwise ssh asks you directly.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TARGET="" PASS="${ARSTRO_PASS:-}" PORT=22 AUTOLOGIN=0 REBOOT=0 RUN_TESTS=0 NO_DEPS=0 NO_KEY=0
-APK=0 APK_SERIAL=""
+APK=0 APK_SERIAL="" WEB_PASS_SET=0 WEB_PASS="${ARSTRO_WEB_PASS:-}"
+[ -n "$WEB_PASS" ] && WEB_PASS_SET=1
 
 usage() { sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p}' "$0"; exit "${1:-0}"; }
 
@@ -43,6 +47,7 @@ while [ $# -gt 0 ]; do
         --autologin) AUTOLOGIN=1; shift ;;
         --reboot) REBOOT=1; shift ;;
         --test) RUN_TESTS=1; shift ;;
+        --web-password) WEB_PASS_SET=1; shift ;;
         --apk) APK=1; shift ;;
         --apk-serial) APK=1; APK_SERIAL="$2"; shift 2 ;;
         --no-deps) NO_DEPS=1; shift ;;
@@ -180,12 +185,28 @@ command -v nmcli >/dev/null || m="$m network-manager"
 command -v bluetoothctl >/dev/null || m="$m bluez"
 python3 -c 'import ctypes.util,sys; sys.exit(not ctypes.util.find_library("Xtst"))' 2>/dev/null || m="$m libxtst6"
 command -v xev >/dev/null || m="$m x11-utils"
+# recorder (HDMI RX): GStreamer from Python, V4L2 tools, FFmpeg for the gallery
+python3 -c 'import gi; gi.require_version("Gst", "1.0"); gi.require_version("GstVideo", "1.0"); gi.require_version("GstPbutils", "1.0")' 2>/dev/null ||
+    m="$m python3-gst-1.0 gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0"
+command -v gst-inspect-1.0 >/dev/null || m="$m gstreamer1.0-tools"
+gst-inspect-1.0 capssetter >/dev/null 2>&1 || m="$m gstreamer1.0-plugins-good"
+gst-inspect-1.0 h264parse >/dev/null 2>&1 || m="$m gstreamer1.0-plugins-bad"
+gst-inspect-1.0 videoconvert >/dev/null 2>&1 || m="$m gstreamer1.0-plugins-base"
+command -v v4l2-ctl >/dev/null || m="$m v4l-utils"
+command -v ffprobe >/dev/null || m="$m ffmpeg"
 echo "MISSING=${m# }"
+echo "VPU=$(gst-inspect-1.0 mpph265enc >/dev/null 2>&1 && echo yes || echo no)"
+hdmirx=""
+for d in /sys/class/video4linux/video*; do
+    [ -e "$d/name" ] && grep -qi hdmirx "$d/name" && hdmirx="/dev/$(basename "$d")" && break
+done
+echo "HDMIRX=$hdmirx"
 EOF
 )
 get() { printf '%s\n' "$PROBE" | sed -n "s/^$1=//p" | head -1; }
 BT_ADAPTER=$(get BT_ADAPTER)
 MISSING=$(get MISSING)
+HDMIRX_DEV=$(get HDMIRX)
 printf '  %-10s %s\n' \
     "OS" "$(get OS) ($(get ARCH), kernel $(get KERNEL))" \
     "Python" "$(get PY)" \
@@ -193,8 +214,12 @@ printf '  %-10s %s\n' \
     "Bluetooth" "adapter: ${BT_ADAPTER:-NONE}, bluetoothd: $(get BLUETOOTHD)" \
     "Desktop" "$(get DM), auto-login: $(get AUTOLOGIN)" \
     "Packages" "${MISSING:-all present}" \
+    "HDMI RX" "${HDMIRX_DEV:-not found}" \
+    "VPU" "$(get VPU) (Rockchip MPP GStreamer encoders)" \
     "Service" "$(get LAUNCHER)"
 [ -n "$BT_ADAPTER" ] || c_warn "WARNING: no Bluetooth adapter found (/sys/class/bluetooth is empty) - check the Wi-Fi/BT card and driver"
+[ -n "$(get HDMIRX)" ] || c_warn "WARNING: no HDMI RX capture device - enable it with server/scripts/setup_hdmirx.sh on the Pi (needs sudo + reboot)"
+[ "$(get VPU)" = yes ] || c_warn "WARNING: no Rockchip MPP encoders (mpph265enc): H.265 recording and the H.264 share copy are unavailable; the preview falls back to x264"
 
 # ------------------------------------------------------------------ 3. system
 NEED_RELOGIN=0
@@ -245,8 +270,8 @@ if [[ " $(get AUTOLOGIN) " != *" $PI_USER "* ]]; then
 fi
 
 # ------------------------------------------------------------------ 4. install
-step "Copying pi/ and running install.sh"
-COPYFILE_DISABLE=1 tar -C "$ROOT/pi" --exclude='__pycache__' --exclude='*.pyc' -czf - . | \
+step "Copying server/ and running install.sh"
+COPYFILE_DISABLE=1 tar -C "$ROOT/server" --exclude='__pycache__' --exclude='*.pyc' --exclude='node_modules' -czf - . | \
     remote 'rm -rf ~/arstro-remote-src && mkdir -p ~/arstro-remote-src && tar -xzf - -C ~/arstro-remote-src'
 remote 'cd ~/arstro-remote-src && ./install.sh' | sed 's/^/  /'
 
@@ -286,11 +311,24 @@ else
     [ "$NEED_RELOGIN" = 1 ] && c_warn "(groups / auto-login changed: a reboot is required anyway)"
 fi
 
+if [ "$WEB_PASS_SET" = 1 ]; then
+    if [ "$running" = 1 ]; then
+        if [ -z "$WEB_PASS" ]; then
+            ask WEB_PASS "Web / remote-CLI password (8+ characters): " silent || { c_err "no terminal to ask - set ARSTRO_WEB_PASS"; exit 1; }
+        fi
+        step "Setting the web password"
+        printf '%s\n' "$WEB_PASS" | remote '~/.local/bin/arstro-remote web --set-password -' | sed 's/^/  /'
+    else
+        c_warn "cannot set the web password yet: the service is not running (run again after a reboot)"
+    fi
+fi
+
 if [ "$RUN_TESTS" = 1 ]; then
     if [ "$running" = 1 ]; then
         step "Running the Pi test suites"
-        remote 'cd ~/arstro-remote-src && python3 tests/test_agent_policy.py | tail -1 && DISPLAY=:0 XAUTHORITY=~/.Xauthority python3 tests/test_daemon.py' | \
-            grep -E '^(PASS|FAIL)|passed' | sed 's/^/  /'
+        remote 'cd ~/arstro-remote-src/tests && export DISPLAY=:0 XAUTHORITY=~/.Xauthority;
+                for t in test_daemon.py test_sync_web.py test_recorder.py; do echo "-- $t"; python3 $t 2>&1 | grep -E "^(PASS|FAIL)|passed"; done' | \
+            sed 's/^/  /'
     else
         c_warn "skipping tests: the service is not running"
     fi
@@ -299,7 +337,7 @@ fi
 if [ "$APK" = 1 ]; then
     step "Installing the Android app"
     apk=$(ls -t "$ROOT"/release/*.apk 2>/dev/null | head -1)
-    if [ -z "$apk" ]; then c_err "no APK in release/ (run ./build_app.sh)";
+    if [ -z "$apk" ]; then c_err "no APK in release/ (run ./build_apk.sh)";
     elif ! command -v adb >/dev/null; then c_err "adb not found";
     else adb ${APK_SERIAL:+-s "$APK_SERIAL"} install -r "$apk" | tail -1; fi
 fi
@@ -307,7 +345,8 @@ fi
 step "Done"
 cat <<EOF
   Pi:        $TARGET  (key login: $([ "$KEY_OK" = 1 ] && echo yes || echo no))
-  Manage:    ssh $([ "$PORT" = 22 ] || echo "-p $PORT ")$TARGET '~/.local/bin/arstro-remote status'   (pair | unpair ADDR)
+  Manage:    ssh $([ "$PORT" = 22 ] || echo "-p $PORT ")$TARGET '~/.local/bin/arstro-remote status'   (pair | unpair ADDR | rec | gallery | web)
+  Web:       http://${TARGET#*@}:8080/   (password: 'arstro-remote web --show' on the Pi)
   Phone:     install release/*.apk, open Arstro Remote, Scan, pick "Arstro-<hostname>".
              New phones can pair during the first 10 min after boot or after 'arstro-remote pair'.
 EOF

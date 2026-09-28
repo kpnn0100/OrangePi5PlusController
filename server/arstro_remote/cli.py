@@ -227,6 +227,17 @@ def cmd_web(ctl, a):
 
 
 def cmd_stats(ctl, a):
+    if getattr(a, "watch", False):              # STAT-02: live, every 2 s
+        try:
+            while True:
+                s = ctl.call("stats.get")
+                c, m = s["cpu"], s["memory"]
+                print("%s  CPU %5.1f%%  %s°C  mem %s/%s  load %s" % (
+                    time.strftime("%H:%M:%S"), c["percent"], "%.0f" % (s.get("cpu_temp") or 0),
+                    fmt_size(m["used"]), fmt_size(m["total"]), " ".join(map(str, c["load"]))), flush=True)
+                time.sleep(2)
+        except KeyboardInterrupt:
+            return 0
     s = ctl.call("stats.get")
 
     def human(s):
@@ -644,7 +655,8 @@ def build_parser():
     wg = wb.add_mutually_exclusive_group()
     wg.add_argument("--open", action="store_true", help="no password at all (anyone on the network)")
     wg.add_argument("--require-password", action="store_true", help="need the password again")
-    sub.add_parser("stats", help="system monitor snapshot")
+    sst = sub.add_parser("stats", help="system monitor snapshot")
+    sst.add_argument("--watch", action="store_true", help="print a line every 2 s (Ctrl+C stops)")
 
     wf = sub.add_parser("wifi", help="Wi-Fi")
     ws_ = wf.add_subparsers(dest="wifi_cmd")
