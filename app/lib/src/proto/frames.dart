@@ -9,11 +9,11 @@ import 'dart:typed_data';
 ///   0x03 TERM_OUT  shell output: [term_id u8][offset u64 BE][raw bytes]
 ///                  (offset = stream position of the first byte, used to drop
 ///                  bytes the app already has after a reconnect replay)
-const int kProtoVersion = 1;
+const int kProtoVersion = 2;
 const int kFrameJson = 0x01;
 const int kFrameTerm = 0x02;
 const int kFrameTermOut = 0x03;
-const int kMaxFrame = 1 << 20;
+const int kMaxFrame = 8 << 20;
 
 /// UUID of the RFCOMM service registered by the Pi daemon.
 const String kServiceUuid = 'a57e0001-7c2b-4d1e-9f3a-5e7a1b2c3d4e';
@@ -68,12 +68,12 @@ class FrameDecoder {
       final bd = ByteData.sublistView(_buf, _pos);
       final type = bd.getUint8(0);
       final len = bd.getUint32(1, Endian.big);
-      if (type != kFrameJson && type != kFrameTerm && type != kFrameTermOut) {
-        throw ProtocolException('unknown frame type $type');
-      }
       if (len > kMaxFrame) throw ProtocolException('frame too large: $len');
       if (_buf.length - _pos < 5 + len) break;
-      frames.add(Frame(type, Uint8List.fromList(Uint8List.sublistView(_buf, _pos + 5, _pos + 5 + len))));
+      // Unknown frame types (newer servers) are skipped, not fatal.
+      if (type == kFrameJson || type == kFrameTerm || type == kFrameTermOut) {
+        frames.add(Frame(type, Uint8List.fromList(Uint8List.sublistView(_buf, _pos + 5, _pos + 5 + len))));
+      }
       _pos += 5 + len;
     }
     return frames;

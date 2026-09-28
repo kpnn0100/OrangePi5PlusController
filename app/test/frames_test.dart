@@ -47,8 +47,11 @@ void main() {
     expect(jsonDecode(utf8.decode(frames.last.payload)), {'i': 499});
   });
 
-  test('decoder rejects unknown types and oversized frames', () {
-    expect(() => FrameDecoder().feed(Uint8List.fromList([9, 0, 0, 0, 1, 0])), throwsA(isA<ProtocolException>()));
+  test('decoder skips unknown types and rejects oversized frames', () {
+    // A newer server may send frame types this app does not know (e.g. 0x04 VIDEO): skip them.
+    final frames = FrameDecoder().feed(Uint8List.fromList([4, 0, 0, 0, 1, 0, ...encodeJson({'a': 1})]));
+    expect(frames.length, 1);
+    expect(jsonDecode(utf8.decode(frames.single.payload)), {'a': 1});
     expect(() => FrameDecoder().feed(Uint8List.fromList([1, 0x7f, 0, 0, 0])), throwsA(isA<ProtocolException>()));
   });
 
