@@ -45,7 +45,7 @@ class Client:
             raise ValueError("https is not supported by the built-in client; use http://")
         if not base.endswith("/ws"):
             base += "/ws"
-        conn = wsmod.connect(base, {"Authorization": "Bearer %s" % token}, timeout=timeout)
+        conn = wsmod.connect(base, {"Authorization": "Bearer %s" % token} if token else {}, timeout=timeout)
         return cls(wsmod.WSStream(conn))
 
     @property

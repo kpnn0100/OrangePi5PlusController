@@ -2,9 +2,10 @@
 """Sync, web server and CLI tests (ARC-02/03/04, CON-03/04/05, SEC-03, ADM-*, WIFI-07).
 
 Run on the Pi (the server must be running):
-    python3 tests/test_sync_web.py [--rotate-token]
+    python3 tests/test_sync_web.py
 
---rotate-token also tests token rotation (web pages must log in again afterwards).
+The password and access-mode tests change them temporarily and always restore the
+user's password and mode afterwards.
 """
 
 import json
@@ -13,6 +14,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from harness import check, run, test, wait_until
@@ -44,12 +46,11 @@ def teardown(c):
 
 
 def http(c, method, path, body=None, token=None, headers=None):
-    h = dict(headers or {})
+    h = {"Content-Type": "application/json"} if body is not None else {}
+    h.update(headers or {})
     if token:
         h["Authorization"] = "Bearer " + token
     data = json.dumps(body).encode() if body is not None else None
-    if data is not None:
-        h["Content-Type"] = "application/json"
     req = urllib.request.Request(c.base + path, data=data, headers=h, method=method)
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
@@ -81,15 +82,85 @@ def ping_static_and_token_required(c):
 
 
 @test("CON-03", "SEC-03")
-def login_sets_httponly_cookie(c):
-    st, _, _ = http(c, "POST", "/api/login", body={"token": "nope"})
+def login_sets_httponly_cookie_not_the_password(c):
+    st, _, _ = http(c, "POST", "/api/login", body={"password": "nope-nope"})
     check(st == 401, st)
-    st, h, _ = http(c, "POST", "/api/login", body={"token": c.token})
+    st, h, _ = http(c, "POST", "/api/login", body={"password": c.token})
     cookie = h.get("Set-Cookie", "")
-    check(st == 200 and "HttpOnly" in cookie and "SameSite=Strict" in cookie, cookie)
+    check(st == 200 and "HttpOnly" in cookie and "SameSite=Strict" in cookie, "cookie flags")
     value = cookie.split(";", 1)[0]
+    check(c.token not in value and urllib.parse.quote(c.token) not in value, "the cookie holds the password")
     st, _, body = http(c, "POST", "/api/op/ping", body={}, headers={"Cookie": value})
     check(st == 200 and json.loads(body)["ok"], body)
+    c.cookie = value
+
+
+@test("SEC-03")
+def cross_site_requests_are_refused(c):
+    evil = {"Origin": "http://evil.example"}
+    st, _, _ = http(c, "POST", "/api/op/ping", body={}, token=c.token, headers=evil)
+    check(st == 403, "cross-origin POST -> %s" % st)
+    st, _, _ = http(c, "POST", "/api/op/ping", body={}, token=c.token, headers={"Origin": c.base})
+    check(st == 200, "same-origin POST -> %s" % st)
+    from arstro_remote.web import ws as wsmod
+    Client.ws(c.base, c.token).close()                  # no Origin (CLI, app): allowed
+    try:
+        wsmod.connect(c.base + "/ws", dict(evil, Authorization="Bearer " + c.token)).close()
+        refused = False
+    except (ConnectionError, PermissionError, OSError):
+        refused = True
+    check(refused, "cross-origin WebSocket accepted")
+
+
+@test("SEC-03", "ADM-03", "CON-03", "ARC-04")
+def password_change_signs_others_out_and_is_restored(c):
+    original = c.token
+    temp = "arstro-test-%d" % int(time.time())
+    w = Client.ws(c.base, original)
+    w.call("hello", app="arstro-web")
+    try:
+        info = c.local.call("web.set_password", password=temp)
+        check(info["token"] == temp and auth.load() == temp, "password not stored")
+        check(wait_until(lambda: w.closed, 3), "other remote session not signed out")
+        st, _, _ = http(c, "POST", "/api/op/ping", body={}, token=original)
+        check(st == 401, "old password still accepted")
+        if getattr(c, "cookie", None):
+            st, _, _ = http(c, "POST", "/api/op/ping", body={}, headers={"Cookie": c.cookie})
+            check(st == 401, "old login cookie still accepted")
+        st, _, _ = http(c, "POST", "/api/op/ping", body={}, token=temp)
+        check(st == 200, "new password rejected")
+        r = c.local.request("web.set_password", password="short")
+        check(r["ok"] is False and "8" in r["error"], r)
+    finally:
+        c.local.call("web.set_password", password=original)
+    check(auth.load() == original, "password not restored")
+    c.token = original
+
+
+@test("SEC-03", "ADM-03", "ARC-03")
+def open_mode_needs_no_password_but_blocks_rebinding(c):
+    was_open = c.local.call("web.info")["auth"] == "open"
+    try:
+        info = c.local.call("web.set_auth", required=False)
+        check(info["auth"] == "open", info)
+        ok = c.local.wait_state("web", lambda d: d.get("auth") == "open", 2)
+        check(ok, "web state not pushed")
+        st, _, body = http(c, "GET", "/api/ping")
+        check(json.loads(body)["authorized"] is True, body)
+        st, _, _ = http(c, "POST", "/api/op/ping", body={})
+        check(st == 200, "open mode still wants a password: %s" % st)
+        w = Client.ws(c.base, None)
+        check(w.call("ping", t=1)["echo"] == 1, "WebSocket without password")
+        w.close()
+        st, _, _ = http(c, "POST", "/api/op/ping", body={}, headers={"Host": "evil.example:%d" % c.port})
+        check(st == 403, "DNS-rebinding Host accepted: %s" % st)
+        code, out, err = cli("--url", c.base, "rec", "status")
+        check(code == 0 and "Signal" in out, err)
+    finally:
+        c.local.call("web.set_auth", required=not was_open)
+    if not was_open:
+        st, _, _ = http(c, "POST", "/api/op/ping", body={})
+        check(st == 401, "password not required again")
 
 
 @test("ARC-02", "ARC-04")
@@ -196,28 +267,9 @@ def remote_cli_with_url_and_token(c):
     code, out, err = cli("--url", c.base, "--token", c.token, "--json", "rec", "status")
     check(code == 0 and "signal" in json.loads(out), err)
     code, out, err = cli("--url", c.base, "--token", "wrong-token-xxxxxxxx", "status")
-    check(code != 0 and "token" in (out + err).lower(), out + err)
+    check(code != 0 and "password" in (out + err).lower(), out + err)
     code, out, err = cli("rec", "status", env={"ARSTRO_URL": c.base, "ARSTRO_TOKEN": c.token})
     check(code == 0 and "Signal" in out, err)
-
-
-@test("SEC-03")
-def token_rotation_kicks_web_sessions(c):
-    if "--rotate-token" not in sys.argv:
-        print("      (skipped: add --rotate-token)")
-        return
-    w = Client.ws(c.base, c.token)
-    w.call("hello", app="arstro-web")
-    info = c.local.call("web.rotate_token")
-    new = info["token"]
-    check(new != c.token and len(new) >= 32, "token not changed")
-    check(wait_until(lambda: w.closed, 3), "old web session not closed")
-    st, _, _ = http(c, "POST", "/api/op/ping", body={}, token=c.token)
-    check(st == 401, "old token still accepted")
-    st, _, _ = http(c, "POST", "/api/op/ping", body={}, token=new)
-    check(st == 200, "new token rejected")
-    check(auth.load() == new, "token file not updated")
-    c.token = new
 
 
 if __name__ == "__main__":

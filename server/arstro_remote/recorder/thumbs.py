@@ -34,6 +34,18 @@ def _from_media(src, out, duration):
     return subprocess.run(cmd, capture_output=True, timeout=30).returncode == 0
 
 
+def _semi_planar_422_to_420(data, v):
+    """NV16/NV61 -> NV12/NV21 by keeping every other chroma row (ffmpeg's swscale
+    cannot read NV16). Also drops any row padding."""
+    w, hgt = v["width"], v["height"]
+    offs = v.get("plane_offsets") or [0, w * hgt]
+    strides = v.get("plane_strides") or [w, w]
+    mv = memoryview(data)
+    rows = [mv[offs[0] + y * strides[0]:offs[0] + y * strides[0] + w] for y in range(hgt)]
+    rows += [mv[offs[1] + y * strides[1]:offs[1] + y * strides[1] + w] for y in range(0, hgt, 2)]
+    return b"".join(rows)
+
+
 def _from_arh(src, out):
     r = arh.ArhReader(src)
     v = r.video
@@ -43,12 +55,14 @@ def _from_arh(src, out):
     frame = next(r.chunks((arh.VFRM,), False), None)
     if not frame:
         return False
-    data = frame[3]
+    data = bytes(frame[3][:v["frame_size"]])
+    if pix in ("nv16", "nv61"):
+        data = _semi_planar_422_to_420(data, v)
+        pix = "nv12" if pix == "nv16" else "nv21"
     cmd = ["ffmpeg", "-v", "error", "-nostdin", "-y", "-f", "rawvideo", "-pix_fmt", pix,
            "-s", "%dx%d" % (v["width"], v["height"]), "-i", "pipe:0", "-frames:v", "1",
            "-vf", "scale=%d:-2" % WIDTH, "-q:v", "4", out]
-    return subprocess.run(cmd, input=bytes(data[:v["frame_size"]]), capture_output=True,
-                          timeout=30).returncode == 0
+    return subprocess.run(cmd, input=data, capture_output=True, timeout=30).returncode == 0
 
 
 def get(folder, take):

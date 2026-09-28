@@ -26,9 +26,9 @@ IDs are stable: never renumber, mark removed ones `(withdrawn)`.
 |---|---|
 | SEC-01 | Bluetooth pairing is only possible inside the pairing window (default 600 s after start; `admin.pair`). Outside it the adapter is neither pairable nor discoverable. |
 | SEC-02 | The Bluetooth service accepts only trusted devices (bonded inside the window). |
-| SEC-03 | Web and remote-CLI access need the access token (random, ≥ 128 bit, stored 0600 in the config dir). The token can be rotated; rotation disconnects existing web/remote sessions. |
+| SEC-03 | Web and remote-CLI access need the **access password** (≥ 8 characters; random until the user sets their own; stored 0600 in the config dir, never in the repo). It can be changed, or replaced by a random one, from any controller; that signs out the other web/remote sessions. An **open mode** (no password) can be switched on explicitly (user decision 2026-09-28: simple access on the home LAN). Requests from other web sites are refused (Origin must match Host); in open mode only LAN host names are accepted (no DNS rebinding). |
 | SEC-04 | The local control socket is 0600 in the user's runtime directory. |
-| SEC-05 | Tokens and Wi-Fi passwords are never written to logs. |
+| SEC-05 | The access password and Wi-Fi passwords are never written to logs. |
 
 ## CON – Controller connections
 
@@ -36,7 +36,7 @@ IDs are stable: never renumber, mark removed ones `(withdrawn)`.
 |---|---|
 | CON-01 | The GUI connects over Bluetooth RFCOMM, reconnects automatically with back-off and resumes shells byte-exact. |
 | CON-02 | The GUI uses Wi-Fi (the web server) for media – preview, thumbnails, playback – after getting the server's addresses and token over Bluetooth. It shows why media is unavailable (e.g. phone not on the Pi's network). |
-| CON-03 | The Web UI asks for the token once and remembers it (cookie); a wrong or rotated token shows the login again. |
+| CON-03 | The Web UI asks for the password once and remembers it (HttpOnly cookie derived from the password, not the password itself); a wrong or changed password shows the login again. In open mode there is no login. The app never asks: it gets the password over Bluetooth. |
 | CON-04 | The CLI works on the Pi (local socket, no token) and from any machine (`--url`, `--token` / `ARSTRO_URL`, `ARSTRO_TOKEN`). |
 | CON-05 | Every controller shows which other controllers are connected (`controllers` state). |
 
@@ -108,7 +108,7 @@ IDs are stable: never renumber, mark removed ones `(withdrawn)`.
 |---|---|
 | ADM-01 | Status: server version, Bluetooth adapter, pairing window, paired devices, connected controllers. |
 | ADM-02 | Open or close the pairing window; forget a paired device. |
-| ADM-03 | Show web access (URLs, port, token) and rotate the token. |
+| ADM-03 | Show web access (URLs, port, password, open or password mode); change the password or the mode. |
 
 ## UX – Look and feel
 

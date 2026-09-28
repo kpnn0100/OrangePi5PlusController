@@ -15,3 +15,5 @@ app/android/key.properties
 *.keystore
 # per-machine settings for the scripts (Pi address, device serial, ...)
 local.env
+# APKs built by scripts/build_apk.sh
+release/

@@ -1,0 +1,12 @@
+{
+  "name": "arstro-web-ui-tests",
+  "private": true,
+  "type": "module",
+  "description": "Browser tests of the Arstro Remote web controller (puppeteer-core + a local Chrome)",
+  "scripts": {
+    "test": "node ui_test.mjs"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^24.0.0"
+  }
+}

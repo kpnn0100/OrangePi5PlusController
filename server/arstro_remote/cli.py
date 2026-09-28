@@ -48,12 +48,11 @@ class Ctl:
         if self._client is None:
             from .client import Client
             if self.url:
-                if not self.token:
-                    sys.exit("arstro-remote: --url needs a token (--token or ARSTRO_TOKEN)")
                 try:
                     self._client = Client.ws(self.url, self.token)
                 except PermissionError:
-                    sys.exit("arstro-remote: the server refused the token")
+                    sys.exit("arstro-remote: the server refused the password (--token or ARSTRO_TOKEN)"
+                             if self.token else "arstro-remote: the server needs the password (--token or ARSTRO_TOKEN)")
                 except OSError as e:
                     sys.exit("arstro-remote: cannot reach %s (%s)" % (self.url, e))
             else:
@@ -196,13 +195,34 @@ def cmd_unpair(ctl, a):
 
 
 def cmd_web(ctl, a):
-    info = ctl.call("web.rotate_token" if a.rotate else "web.info")
+    if a.set_password is not None:
+        pw = a.set_password
+        if pw == "-":
+            pw = sys.stdin.readline().rstrip("\n")
+        elif pw == "":
+            import getpass
+            pw = getpass.getpass("New password: ")
+            if getpass.getpass("Again: ") != pw:
+                sys.exit("arstro-remote: the passwords differ")
+        info = ctl.call("web.set_password", password=pw)
+        note = "password changed - other browsers and remote CLIs must log in again"
+    elif a.rotate:
+        info = ctl.call("web.rotate_token")
+        note = "new random password - other browsers and remote CLIs must log in again"
+    elif a.open or a.require_password:
+        info = ctl.call("web.set_auth", required=bool(a.require_password))
+        note = ("anyone on the network can use the web UI now (no password)" if a.open
+                else "the web UI and remote CLIs need the password again")
+    else:
+        info, note = ctl.call("web.info"), None
 
     def human(i):
-        print("URLs : %s" % (", ".join(i.get("urls", [])) or "no network address"))
-        print("Token: %s" % i.get("token"))
-        if a.rotate:
-            print("(new token - other web pages and remote CLIs must log in again)")
+        print("URLs    : %s" % (", ".join(i.get("urls", [])) or "no network address"))
+        print("Access  : %s" % ("OPEN (no password)" if i.get("auth") == "open" else "password"))
+        if a.show or a.set_password is None:
+            print("Password: %s" % (i.get("token") if a.show else "(hidden - add --show)"))
+        if note:
+            print("(%s)" % note)
     out(a, info, human)
 
 
@@ -459,7 +479,7 @@ def save_preview(ctl, path, seconds):
     from .web import ws as wsmod
     base, token = ctl.http_base()
     url = base.replace("https://", "wss://") + "/ws/preview"
-    conn = wsmod.connect(url, {"Authorization": "Bearer %s" % token})
+    conn = wsmod.connect(url, {"Authorization": "Bearer %s" % token} if token else {})
     frames, keyed, t0, size = 0, False, time.monotonic(), 0
     with open(path, "wb") as f:
         try:
@@ -546,7 +566,7 @@ def wait_job(ctl, job_id):
 def download(ctl, name, dest):
     base, token = ctl.http_base()
     url = "%s/api/media/%s?download=1" % (base, urllib.parse.quote(name))
-    req = urllib.request.Request(url, headers={"Authorization": "Bearer %s" % token})
+    req = urllib.request.Request(url, headers={"Authorization": "Bearer %s" % token} if token else {})
     dest = dest or name
     if os.path.isdir(dest):
         dest = os.path.join(dest, name)
@@ -593,7 +613,7 @@ def build_parser():
     ap = argparse.ArgumentParser(prog="arstro-remote", description="Arstro Remote - Orange Pi 5 Plus controller",
                                  formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__.split("\n\n", 1)[1])
     ap.add_argument("--url", help="server URL for remote use, e.g. http://192.0.2.10:8080 (env ARSTRO_URL)")
-    ap.add_argument("--token", help="access token for --url (env ARSTRO_TOKEN; `arstro-remote web` shows it)")
+    ap.add_argument("--token", help="access password for --url (env ARSTRO_TOKEN; `arstro-remote web --show`)")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     sub = ap.add_subparsers(dest="cmd")
 
@@ -612,8 +632,14 @@ def build_parser():
     p.add_argument("seconds", nargs="?", type=int)
     u = sub.add_parser("unpair", help="forget a paired phone")
     u.add_argument("address")
-    wb = sub.add_parser("web", help="web access URLs and token")
-    wb.add_argument("--rotate", action="store_true", help="make a new token (logs other web users out)")
+    wb = sub.add_parser("web", help="web access: URLs, password, open/closed")
+    wb.add_argument("--show", action="store_true", help="print the password")
+    wb.add_argument("--set-password", nargs="?", const="", metavar="PASSWORD",
+                    help="set your own password (asks when no value; '-' reads it from stdin)")
+    wb.add_argument("--rotate", action="store_true", help="replace the password with a random one")
+    wg = wb.add_mutually_exclusive_group()
+    wg.add_argument("--open", action="store_true", help="no password at all (anyone on the network)")
+    wg.add_argument("--require-password", action="store_true", help="need the password again")
     sub.add_parser("stats", help="system monitor snapshot")
 
     wf = sub.add_parser("wifi", help="Wi-Fi")

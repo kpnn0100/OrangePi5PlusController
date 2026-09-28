@@ -178,8 +178,8 @@ def transcode(args):
         desc += (f" appsrc name=asrc format=time block=true max-bytes=2000000 "
                  f"caps=audio/x-raw,format={a['format']},rate={a['rate']},"
                  f"channels={a['channels']},layout=interleaved ! "
-                 "queue max-size-time=0 max-size-bytes=0 max-size-buffers=0 ! "
-                 "audioconvert ! mux.")
+                 "queue max-size-time=0 max-size-bytes=0 max-size-buffers=0 ! " +
+                 (_audio_tail(args.codec) or "audioconvert ! mux."))
     try:
         pipe = Gst.parse_launch(desc)
     except GLib.Error as e:
@@ -488,8 +488,8 @@ def transcode_media(args):
             f"{_scale_desc(args.scale)}videoconvert n-threads=4 ! video/x-raw,format={need} ! {enc} ! "
             f"identity name=counter ! {mux} name=mux ! filesink name=fsink")
     if audio:
-        desc += (" dec. ! queue max-size-time=0 max-size-bytes=0 max-size-buffers=0 ! "
-                 "audioconvert ! audioresample ! audio/x-raw,format=S16LE ! mux.")
+        desc += (" dec. ! queue max-size-time=0 max-size-bytes=0 max-size-buffers=0 ! " +
+                 (_audio_tail(args.codec) or "audioconvert ! audioresample ! audio/x-raw,format=S16LE ! mux."))
     try:
         pipe = Gst.parse_launch(desc)
     except GLib.Error as e:
@@ -549,6 +549,15 @@ def transcode_media(args):
         emit(state="cancelled" if result["code"] == 3 else "failed",
              error=result["error"] or "unknown error")
     return result["code"]
+
+
+def _audio_tail(codec):
+    """Audio into the muxer: the MP4 share copy needs AAC (mp4mux takes no PCM);
+    MOV/MKV copies keep the audio lossless."""
+    if codec == "h264-vpu":
+        enc = "voaacenc bitrate=192000" if Gst.ElementFactory.find("voaacenc") else "avenc_aac bitrate=192000"
+        return f"audioconvert ! audioresample ! {enc} ! aacparse ! mux."
+    return None
 
 
 def _mux(codec):
