@@ -1,40 +1,26 @@
 #!/usr/bin/env python3
-"""End-to-end tests against a running daemon over its local control socket.
+"""Core server tests against the running server over its local control socket.
 
-Run on the Orange Pi:
+Run on the Orange Pi (the server must run in the desktop session - Wi-Fi needs polkit):
     python3 tests/test_daemon.py [--wifi-live]
 
 --wifi-live also disconnects and reconnects the active Wi-Fi profile (the link drops
-for a few seconds; the test restores it). Needs the daemon running in the desktop
-session (polkit), i.e. started by the autostart launcher.
+for a few seconds; the test restores it).
 """
 
-import argparse
 import os
 import re
 import subprocess
 import sys
+import threading
 import time
-import traceback
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from harness import check, run, test, wait_until
 
 from arstro_remote.client import Client  # noqa: E402
-from arstro_remote.daemon import control_socket_path  # noqa: E402
+from arstro_remote.paths import control_socket_path  # noqa: E402
 from arstro_remote.protocol import (FrameDecoder, ProtocolError, T_JSON, T_TERM,  # noqa: E402
                                     encode_json, encode_term)
-
-RESULTS = []
-
-
-def test(fn):
-    RESULTS.append(fn)
-    return fn
-
-
-def check(cond, msg):
-    if not cond:
-        raise AssertionError(msg)
 
 
 def term_text(c, tid):
@@ -47,7 +33,7 @@ def wait_term(c, tid, pattern, timeout=8):
 
 
 # ----------------------------------------------------------------- protocol
-@test
+@test("ARC-02")
 def protocol_codec():
     d = FrameDecoder()
     data = encode_json({"a": 1}) + encode_term(3, b"xyz") + encode_json({"b": "é"})
@@ -69,17 +55,17 @@ def protocol_codec():
         pass
 
 
-@test
+@test("ARC-02")
 def hello_and_ping(c):
     h = c.call("hello", app="test", version="0")
-    check(h["proto"] == 1 and h["name"] == "Arstro Remote", h)
+    check(h["proto"] == 2 and h["name"] == "Arstro Remote", h)
     check(set(["stats", "wifi", "terminal", "input"]) <= set(h["features"]), h)
     check(h["input"]["available"], "input backend unavailable: %s" % h["input"])
     p = c.call("ping", t=123)
     check(p["echo"] == 123, p)
 
 
-@test
+@test("ARC-02")
 def unknown_op_is_error(c):
     r = c.request("nope.nothing")
     check(r["ok"] is False and "unknown op" in r["error"], r)
@@ -88,7 +74,7 @@ def unknown_op_is_error(c):
 
 
 # -------------------------------------------------------------------- stats
-@test
+@test("STAT-01")
 def stats_snapshot(c):
     s = c.call("stats.get")
     for key in ("hostname", "uptime", "cpu", "memory", "temps", "network", "disks", "wifi", "processes"):
@@ -104,7 +90,7 @@ def stats_snapshot(c):
         s["wifi"].get("ssid"), s["devfreq"].get("gpu"), s["fan_percent"]))
 
 
-@test
+@test("STAT-02")
 def stats_subscription(c):
     c.events.clear()
     r = c.call("stats.subscribe", interval_ms=500)
@@ -122,7 +108,7 @@ def stats_subscription(c):
 
 
 # ----------------------------------------------------------------- terminal
-@test
+@test("TERM-01")
 def terminal_basic(c):
     tid = c.call("term.open", cols=100, rows=30)["term"]
     c.term_write(tid, b"echo ARSTRO_$((6*7))\n")
@@ -155,7 +141,7 @@ def terminal_basic(c):
     check(ev["code"] == 3, ev)
 
 
-@test
+@test("TERM-01")
 def terminal_multiple_and_close(c):
     a = c.call("term.open", cols=80, rows=24)["term"]
     b = c.call("term.open", cols=80, rows=24)["term"]
@@ -174,63 +160,75 @@ def terminal_multiple_and_close(c):
     c.call("term.close", term=a)
 
 
-@test
-def terminal_closed_with_session():
+@test("TERM-03")
+def terminal_ephemeral_dies_normal_survives():
     c2 = Client.unix(control_socket_path())
-    tid = c2.call("term.open")["term"]
-    c2.term_write(tid, b"echo $$ > /tmp/arstro_term_pid2\n")
-    time.sleep(0.6)
-    pid = int(open("/tmp/arstro_term_pid2").read())
+    eph = c2.call("term.open", ephemeral=True)["term"]
+    keep = c2.call("term.open")["term"]
+    for t, f in ((eph, "/tmp/arstro_term_eph"), (keep, "/tmp/arstro_term_keep")):
+        c2.term_write(t, ("echo $$ > %s\n" % f).encode())
+    time.sleep(0.8)
+    pid_eph = int(open("/tmp/arstro_term_eph").read())
+    pid_keep = int(open("/tmp/arstro_term_keep").read())
     c2.close()
     time.sleep(1.0)
-    check(not os.path.exists("/proc/%d" % pid), "shell survived disconnect")
-
-
-@test
-def terminal_persists_across_reconnect():
-    cid = "test-%d" % int(time.time() * 1000)
-    c1 = Client.unix(control_socket_path())
-    c1.call("hello", app="test", client_id=cid)
-    tid = c1.call("term.open", cols=80, rows=24)["term"]
-    c1.term_write(tid, b"X=persisted; echo BEFORE_DROP; sleep 1; echo WHILE_DETACHED\n")
-    wait_term(c1, tid, r"BEFORE_DROP\r?\n")
-    time.sleep(0.2)
-    have = len(c1.term_output[tid])
-    c1.close()  # link drops while the shell is still busy
-    time.sleep(2.0)
-    c2 = Client.unix(control_socket_path())
-    h = c2.call("hello", app="test", client_id=cid)
-    mine = [t for t in h["terminals"] if t["term"] == tid]
-    check(mine and not mine[0]["attached"], "detached terminal not listed: %s" % h["terminals"])
-    r = c2.call("term.attach", term=tid, cols=90, rows=20, since=have)
-    check(r["gap"] is False and r["start"] == have and r["replayed"] > 0, r)
-    wait_term(c2, tid, "WHILE_DETACHED")  # produced while nobody was attached
-    check("BEFORE_DROP" not in term_text(c2, tid), "exact replay repeated old output: %r" % term_text(c2, tid))
-    # a client with no offset gets the whole buffer and gap=true
-    c2b = Client.unix(control_socket_path())
-    c2b.call("hello", app="test", client_id=cid)
-    r = c2b.call("term.attach", term=tid)
-    check(r["gap"] is True and r["start"] == 0, r)
-    wait_term(c2b, tid, "WHILE_DETACHED")
-    check("BEFORE_DROP" in term_text(c2b, tid), "full replay incomplete")
-    c2b.close()
-    time.sleep(0.5)
-    r = c2.call("term.attach", term=tid, since=have + r["replayed"] - 0)  # take it back
-    c2.term_write(tid, b"echo VAR=$X; stty size\n")
-    wait_term(c2, tid, r"VAR=persisted")
-    wait_term(c2, tid, r"20 90")
+    check(not os.path.exists("/proc/%d" % pid_eph), "ephemeral shell survived its opener")
+    check(os.path.exists("/proc/%d" % pid_keep), "normal shell died with its viewer (TERM-03)")
     c3 = Client.unix(control_socket_path())
-    c3.call("hello", app="test", client_id=cid + "-other")
-    check(tid not in [t["term"] for t in c3.call("term.list")["terminals"]], "other client sees terminal")
-    check(c3.request("term.attach", term=tid)["ok"] is False, "other client attached")
+    lst = {t["term"]: t for t in c3.call("term.list")["terminals"]}
+    check(keep in lst and lst[keep]["viewers"] == 0 and lst[keep]["detached_for"] >= 0, lst)
+    c3.call("term.close", term=keep)
+    time.sleep(0.5)
+    check(not os.path.exists("/proc/%d" % pid_keep), "closed shell still alive")
     c3.close()
-    c2.call("term.close", term=tid)
-    check(tid not in [t["term"] for t in c2.call("term.list")["terminals"]], "closed terminal still listed")
+
+
+@test("TERM-02", "TERM-03", "TERM-04", "ARC-03")
+def terminal_shared_mirrored_and_resumed():
+    c1 = Client.unix(control_socket_path())
+    c1.call("hello", app="test-a")
+    c2 = Client.unix(control_socket_path())
+    c2.call("hello", app="test-b")
+    tid = c1.call("term.open", cols=80, rows=24)["term"]
+    ok = c2.wait_state("terminals", lambda ts: any(t["term"] == tid for t in ts), 3)
+    check(ok, "second controller did not see the new shell (TERM-04)")
+    c2.call("term.attach", term=tid, cols=80, rows=24)
+    ok = c1.wait_state("terminals", lambda ts: any(t["term"] == tid and t["viewers"] == 2 for t in ts), 3)
+    check(ok, "viewer count not pushed")
+    c1.term_write(tid, b"echo FROM_A_$((1+1))\n")
+    wait_term(c1, tid, "FROM_A_2")
+    wait_term(c2, tid, "FROM_A_2")          # mirrored live to the other viewer (TERM-02)
+    c2.term_write(tid, b"echo FROM_B_$((2+2))\n")
+    wait_term(c1, tid, "FROM_B_4")          # the other viewer can type too
+    # A drops while the shell is busy; it resumes exactly where it left off (TERM-03)
+    c1.term_write(tid, b"X=persisted; sleep 1; echo WHILE_AWAY\n")
+    time.sleep(0.3)
+    have = len(c1.term_output[tid])
+    c1.close()
+    time.sleep(2.0)
+    c1b = Client.unix(control_socket_path())
+    r = c1b.call("term.attach", term=tid, cols=90, rows=20, since=have)
+    check(r["gap"] is False and r["start"] == have and r["replayed"] > 0, r)
+    wait_term(c1b, tid, "WHILE_AWAY")
+    check("FROM_A_2" not in term_text(c1b, tid), "exact replay repeated old output")
+    c1b.term_write(tid, b"echo VAR=$X; stty size\n")
+    wait_term(c1b, tid, r"VAR=persisted")
+    wait_term(c1b, tid, r"20 90")           # resize by the latest viewer wins
+    fresh = Client.unix(control_socket_path())
+    r = fresh.call("term.attach", term=tid)  # no offset: whole buffer, gap=true
+    check(r["gap"] is True and r["start"] == 0, r)
+    wait_term(fresh, tid, "FROM_B_4")
+    fresh.close()
+    c1b.call("term.close", term=tid)
+    ok = c2.wait_for(lambda: any(e.get("ev") == "term.exit" and e.get("term") == tid for e in c2.events), 3)
+    check(ok, "other viewer not told that the shell was closed")
+    check(tid not in [t["term"] for t in c2.call("term.list")["terminals"]], "closed shell still listed")
+    c1b.close()
     c2.close()
 
 
 # -------------------------------------------------------------------- input
-@test
+@test("INP-01")
 def mouse_motion(c):
     c.call("in.move_to", x=300, y=300)
     p = c.call("in.pointer")
@@ -253,12 +251,18 @@ class Xev:
              "-event", "button", "-event", "focus"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
             env=dict(os.environ, DISPLAY=os.environ.get("DISPLAY", ":0")))
-        time.sleep(1.5)
+        self.lines = []
+        self.reader = threading.Thread(target=lambda: self.lines.extend(self.proc.stdout), daemon=True)
+        self.reader.start()
+        # the window is ready for clicks once it has focus
+        wait_until(lambda: any(line.startswith("FocusIn") for line in list(self.lines)), 6)
+        time.sleep(0.3)
 
     def stop(self):
         self.proc.terminate()
-        out, _ = self.proc.communicate(timeout=5)
-        return out
+        self.proc.wait(timeout=5)
+        self.reader.join(5)
+        return "".join(self.lines)
 
 
 def xev_keys(out):
@@ -276,7 +280,7 @@ def xev_keys(out):
     return "".join(chars), syms
 
 
-@test
+@test("INP-01", "INP-02")
 def keyboard_and_buttons(c):
     xev = Xev()
     try:
@@ -315,7 +319,7 @@ def keyboard_and_buttons(c):
     check(releases.count("2") == 1, releases)
 
 
-@test
+@test("INP-03")
 def held_buttons_released_on_disconnect():
     c2 = Client.unix(control_socket_path())
     c2.call("in.move_to", x=50, y=50)
@@ -332,7 +336,7 @@ def held_buttons_released_on_disconnect():
     check(not p["mask"] & 0x101, "button/shift still held after disconnect: mask=%x" % p["mask"])
 
 
-@test
+@test("ARC-06")
 def input_helper_respawns_daemon_survives(c):
     """An X crash only kills the input helper, never the daemon or its shells."""
     daemon_pid = c.call("admin.status")["pid"]
@@ -358,7 +362,7 @@ def input_helper_respawns_daemon_survives(c):
     c.call("term.close", term=tid)
 
 
-@test
+@test("INP-02")
 def bad_input_rejected(c):
     r = c.request("in.key", k="NoSuchKeyName")
     check(r["ok"] is False and "unknown key" in r["error"], r)
@@ -367,7 +371,7 @@ def bad_input_rejected(c):
 
 
 # --------------------------------------------------------------------- wifi
-@test
+@test("WIFI-01", "WIFI-02")
 def wifi_status_scan_saved(c):
     st = c.call("wifi.status")
     check(st["device"], st)
@@ -384,7 +388,7 @@ def wifi_status_scan_saved(c):
         st["ssid"], st["signal"], len(sc["networks"]), len(saved)))
 
 
-@test
+@test("WIFI-03")
 def wifi_connect_errors(c):
     st = c.call("wifi.status")
     r = c.call("wifi.connect", ssid=st["ssid"])
@@ -399,6 +403,7 @@ def wifi_connect_errors(c):
     check(st2["connected"] and st2["ssid"] == st["ssid"], "lost Wi-Fi: %s" % st2)
 
 
+@test("WIFI-03", "WIFI-04", "WIFI-07")
 def wifi_live_reconnect(c):
     st = c.call("wifi.status")
     ssid = st["ssid"]
@@ -416,7 +421,7 @@ def wifi_live_reconnect(c):
             c.request("wifi.connect", ssid=ssid, timeout=90)
 
 
-@test
+@test("ADM-01", "SEC-02")
 def admin_status(c):
     st = c.call("admin.status")
     check(st["bluetooth"]["ready"], st["bluetooth"])
@@ -424,35 +429,14 @@ def admin_status(c):
     check(any(s["local"] for s in st["sessions"]), st["sessions"])
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--wifi-live", action="store_true")
-    ap.add_argument("-k", help="only run tests whose name contains this")
-    args = ap.parse_args()
-    tests = list(RESULTS)
-    if args.wifi_live:
-        tests.append(wifi_live_reconnect)
-    if args.k:
-        tests = [t for t in tests if args.k in t.__name__]
+def setup():
     c = Client.unix(control_socket_path())
-    passed = failed = 0
-    for t in tests:
-        t0 = time.time()
-        try:
-            if t.__code__.co_argcount:
-                t(c)
-            else:
-                t()
-            passed += 1
-            print("PASS  %-36s %.1fs" % (t.__name__, time.time() - t0))
-        except Exception as e:
-            failed += 1
-            print("FAIL  %-36s %s" % (t.__name__, e))
-            traceback.print_exc(limit=3)
-    c.close()
-    print("\n%d passed, %d failed" % (passed, failed))
-    return 1 if failed else 0
+    c.call("hello", app="test-daemon")
+    return c
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    if "--wifi-live" not in sys.argv:
+        from harness import TESTS
+        TESTS.remove(wifi_live_reconnect)
+    sys.exit(run(setup, lambda c: c.close(), __doc__))

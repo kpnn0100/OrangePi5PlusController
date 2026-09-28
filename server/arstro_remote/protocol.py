@@ -15,6 +15,8 @@ Frame types:
                      offset = position of the first byte in the shell's output
                      stream, so a client can drop bytes it already has (replays
                      after a reconnect can never show up twice).
+    0x04 VIDEO     - encoded video access unit (recorder worker -> daemon only),
+                     payload = [flags u8 (bit0 keyframe)][pts_us u64 BE][Annex-B bytes]
 
 JSON conventions:
     request   {"id": 7, "op": "wifi.scan", ...params}
@@ -27,15 +29,16 @@ JSON conventions:
 import json
 import struct
 
-PROTO_VERSION = 1
+PROTO_VERSION = 2   # 2: shared terminals, state events, recorder/gallery/web ops
 
 T_JSON = 0x01
 T_TERM = 0x02
 T_TERM_OUT = 0x03
+T_VIDEO = 0x04
 
 HEADER = struct.Struct(">BI")
 OFFSET = struct.Struct(">Q")
-MAX_FRAME = 1 << 20  # 1 MiB
+MAX_FRAME = 8 << 20  # 8 MiB (a 4K keyframe fits)
 
 
 class ProtocolError(Exception):
@@ -60,6 +63,19 @@ def encode_term_out(term_id: int, offset: int, data: bytes) -> bytes:
     return encode(T_TERM_OUT, bytes([term_id & 0xFF]) + OFFSET.pack(offset) + data)
 
 
+VIDEO_HEAD = struct.Struct(">BQ")
+
+
+def encode_video(keyframe: bool, pts_us: int, data: bytes) -> bytes:
+    return encode(T_VIDEO, VIDEO_HEAD.pack(1 if keyframe else 0, max(0, int(pts_us))) + data)
+
+
+def decode_video(payload: bytes):
+    """-> (keyframe, pts_us, data)"""
+    flags, pts = VIDEO_HEAD.unpack_from(payload, 0)
+    return bool(flags & 1), pts, payload[VIDEO_HEAD.size:]
+
+
 def decode_term_out(payload: bytes):
     """-> (term_id, offset, data)"""
     return payload[0], OFFSET.unpack_from(payload, 1)[0], payload[1 + OFFSET.size:]
@@ -76,7 +92,7 @@ class FrameDecoder:
         frames = []
         while len(self._buf) >= HEADER.size:
             ftype, length = HEADER.unpack_from(self._buf, 0)
-            if ftype not in (T_JSON, T_TERM, T_TERM_OUT):
+            if ftype not in (T_JSON, T_TERM, T_TERM_OUT, T_VIDEO):
                 raise ProtocolError("unknown frame type 0x%02x" % ftype)
             if length > MAX_FRAME:
                 raise ProtocolError("frame too large: %d" % length)

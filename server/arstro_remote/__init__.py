@@ -1,3 +1,3 @@
-"""Arstro Remote System - Orange Pi side."""
+"""Arstro Remote - Orange Pi 5 Plus controller server."""
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"

@@ -189,6 +189,7 @@ class Bluetooth:
         self._pair_timer = None
         self._reassert_timer = None
         self._to_trust = set()
+        self.on_pairing_change = lambda: None   # daemon: publish the "pairing" state
         self.profile = Profile(bus, self)
         self.agent = Agent(bus, self)
         bus.add_signal_receiver(self._on_props_changed, signal_name="PropertiesChanged",
@@ -300,6 +301,7 @@ class Bluetooth:
                     props.Set(ADAPTER_IFACE, prop, dbus.Boolean(want))
         except dbus.DBusException as e:
             log.warning("cannot set Discoverable/Pairable=%s: %s", want, e)
+        self.on_pairing_change()
         # Other agents (blueman-applet) may grab the default-agent slot when the
         # desktop starts; keep reclaiming it while pairing is allowed.
         if want and self._reassert_timer is None:
@@ -412,6 +414,7 @@ class Bluetooth:
                 if bonded and (self.pairing_open or path in self._to_trust):
                     self._trust(path)
                 self._to_trust.discard(path)
+                self.on_pairing_change()
             if "Connected" in changed and not changed["Connected"]:
                 self._on_disconnect(str(path))
         elif iface == ADAPTER_IFACE and path == self.adapter_path and "Powered" in changed:

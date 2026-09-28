@@ -1,4 +1,11 @@
-"""Arstro Remote daemon: Bluetooth RFCOMM server + local control socket."""
+"""Arstro Remote server: the one process that owns the Pi's hardware and state (ARC-01).
+
+Controllers reach it over
+  * Bluetooth RFCOMM (the Android app),
+  * the local control socket (the CLI on the Pi),
+  * HTTP/WebSocket (the web page, the remote CLI, the app's Wi-Fi media link),
+and all of them see the same state through the hub (ARC-03).
+"""
 
 import fcntl
 import json
@@ -11,7 +18,10 @@ import sys
 import threading
 import time
 
-from . import __version__
+from . import __version__, wifi
+from .hub import Hub
+from .paths import (DEFAULT_CONFIG, cache_dir, config_dir, control_socket_path, load_config,  # noqa: F401
+                    runtime_dir, state_dir)
 from .input_x11 import create_input
 from .session import Session
 from .stats import StatsCollector
@@ -19,58 +29,13 @@ from .terminal import TerminalPool
 
 log = logging.getLogger("arstro")
 
-DEFAULT_CONFIG = {
-    # Bluetooth name shown to phones. {hostname} is replaced. null keeps the current name.
-    "alias": "Arstro-{hostname}",
-    # "window": pairing allowed for pair_window_sec after start (and after `arstro-remote pair`)
-    # "always": always discoverable and pairable, "never": only already-paired phones
-    "pairing": "window",
-    "pair_window_sec": 600,
-    # Preferred RFCOMM channel (a free one is chosen if it is taken)
-    "channel": 22,
-    # Adapter name (e.g. "hci0"); null = first adapter
-    "adapter": None,
-    # How long a phone's shells survive after the Bluetooth link drops
-    "term_keep_sec": 600,
-}
-
-
-def config_dir():
-    return os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "arstro-remote")
-
-
-def state_dir():
-    return os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "arstro-remote")
-
-
-def runtime_dir():
-    return os.environ.get("XDG_RUNTIME_DIR") or "/run/user/%d" % os.getuid()
-
-
-def control_socket_path():
-    return os.path.join(runtime_dir(), "arstro-remote.sock")
-
-
-def load_config():
-    cfg = dict(DEFAULT_CONFIG)
-    path = os.path.join(config_dir(), "config.json")
-    try:
-        with open(path) as f:
-            cfg.update(json.load(f))
-    except FileNotFoundError:
-        pass
-    except (OSError, ValueError) as e:
-        print("arstro-remote: ignoring bad config %s: %s" % (path, e), file=sys.stderr)
-    return cfg
-
-
 def setup_logging(debug=False):
     os.makedirs(state_dir(), exist_ok=True)
     fmt = logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s")
     root = logging.getLogger()
     root.setLevel(logging.DEBUG if debug else logging.INFO)
     fh = logging.handlers.RotatingFileHandler(os.path.join(state_dir(), "arstro-remote.log"),
-                                              maxBytes=1_000_000, backupCount=3)
+                                              maxBytes=2_000_000, backupCount=3)
     fh.setFormatter(fmt)
     root.addHandler(fh)
     if sys.stderr.isatty() or os.environ.get("ARSTRO_LOG_STDERR"):
@@ -84,12 +49,16 @@ class Daemon:
         self.config = config
         self.use_bluetooth = use_bluetooth
         self.started = time.time()
+        self.hub = Hub()
         self.stats = StatsCollector()
         self.input = create_input()
-        self.terms = TerminalPool(int(config.get("term_keep_sec", 600)))
+        self.terms = TerminalPool(int(config.get("term_keep_sec", 600)),
+                                  on_change=lambda terms: self.hub.publish("terminals", terms))
         self.sessions = set()
         self._lock = threading.Lock()
         self.bt = None
+        self.web = None
+        self.recorder = None
         self.loop = None
         self._lock_file = None
 
@@ -118,18 +87,32 @@ class Daemon:
         return box.get("value")
 
     # -------------------------------------------------------------- sessions
-    def _add_session(self, sock, peer, local, device_path=None):
-        session = Session(sock, self, peer, local=local)
+    def add_session(self, sock, peer, kind, device_path=None):
+        session = Session(sock, self, peer, kind=kind)
         session.device_path = device_path
         with self._lock:
             self.sessions.add(session)
-        log.info("session %d started: %s%s", session.num, peer, " (local)" if local else "")
+        self.hub.attach(session)
+        log.info("session %d started: %s (%s)", session.num, peer, kind)
         session.start()
+        self.controllers_changed()
         return session
 
     def session_closed(self, session):
         with self._lock:
             self.sessions.discard(session)
+        self.hub.detach(session)
+        self.controllers_changed()
+
+    def sessions_of(self, kinds):
+        with self._lock:
+            return [s for s in self.sessions if s.kind in kinds]
+
+    def controllers_changed(self):
+        with self._lock:
+            ctl = [{"session": s.num, "controller": s.controller, "kind": s.kind, "peer": s.peer,
+                    "since": int(s.connected_at)} for s in self.sessions if s.client]
+        self.hub.publish("controllers", sorted(ctl, key=lambda c: c["session"]))
 
     def _bt_connection(self, device_path, fd):
         peer = self.bt.device_label(device_path) if self.bt else device_path
@@ -140,7 +123,7 @@ class Daemon:
             os.close(fd)
             return
         sock.setblocking(True)
-        self._add_session(sock, peer, local=False, device_path=device_path)
+        self.add_session(sock, peer, "bluetooth", device_path=device_path)
 
     def _bt_disconnect(self, device_path):
         with self._lock:
@@ -149,29 +132,70 @@ class Daemon:
             threading.Thread(target=s.close, args=("device disconnected",), daemon=True).start()
 
     # ---------------------------------------------------------- admin/status
+    def bt_status(self):
+        if not self.bt:
+            return {"ready": False, "disabled": True}
+        try:
+            return self.call_in_main(self.bt.adapter_status)
+        except Exception as e:
+            return {"ready": False, "error": str(e)}
+
     def status(self):
-        bt = self.call_in_main(self.bt.adapter_status) if self.bt else {"ready": False, "disabled": True}
         with self._lock:
             sessions = [s.describe() for s in self.sessions]
         return {
             "version": __version__,
             "pid": os.getpid(),
+            "hostname": socket.gethostname(),
             "uptime": int(time.time() - self.started),
-            "bluetooth": bt,
+            "bluetooth": self.bt_status(),
             "input": {"backend": self.input.backend, "available": self.input.available},
+            "web": self.web.info(include_token=False) if self.web else {"enabled": False},
+            "recorder": {"enabled": self.recorder is not None},
             "sessions": sessions,
-            "config": self.config,
+            "config": {k: v for k, v in self.config.items()},
         }
+
+    def publish_pairing(self):
+        st = self.bt_status()
+        self.hub.publish("pairing", {
+            "ready": st.get("ready", False), "alias": st.get("alias"), "address": st.get("address"),
+            "pairing_open": st.get("pairing_open", False),
+            "pairing_remaining": st.get("pairing_remaining", 0),
+            "paired_devices": st.get("paired_devices", []),
+        })
 
     def open_pairing(self, seconds):
         if not self.bt:
             raise RuntimeError("bluetooth disabled")
         self.call_in_main(self.bt.open_pairing, seconds)
+        self.publish_pairing()
 
     def remove_device(self, address):
         if not self.bt:
             raise RuntimeError("bluetooth disabled")
-        return self.call_in_main(self.bt.remove_device, address)
+        r = self.call_in_main(self.bt.remove_device, address)
+        self.publish_pairing()
+        return r
+
+    def wifi_refresh(self):
+        """Read Wi-Fi status now and push it if it changed (WIFI-07)."""
+        st = wifi.status()
+        self.hub.publish("wifi", st)
+        return st
+
+    def _wifi_poller(self):
+        interval = max(3, int(self.config.get("wifi_poll_sec", 10)))
+        while True:
+            try:
+                self.wifi_refresh()
+            except Exception as e:
+                log.debug("wifi poll: %s", e)
+            if self.bt:
+                bt = self.hub.get("pairing") or {}
+                if bt.get("pairing_open") or not bt:
+                    self.publish_pairing()
+            time.sleep(interval)
 
     # --------------------------------------------------------- control socket
     def _serve_control(self, path):
@@ -189,7 +213,7 @@ class Daemon:
         log.info("control socket %s", path)
         while True:
             conn, _ = srv.accept()
-            self._add_session(conn, "local", local=True)
+            self.add_session(conn, "local", "local")
 
     # ------------------------------------------------------------------ run
     def _single_instance(self):
@@ -203,17 +227,32 @@ class Daemon:
         self._lock_file.write(str(os.getpid()))
         self._lock_file.flush()
 
+    def _start_services(self):
+        if self.config.get("recorder_enabled", True):
+            try:
+                from .recorder.service import RecorderService
+                self.recorder = RecorderService(self)
+                self.recorder.start()
+            except Exception:
+                log.exception("recorder unavailable")
+                self.recorder = None
+        if self.config.get("web_enabled", True):
+            try:
+                from .web.server import WebServer
+                self.web = WebServer(self)
+                self.web.start()
+            except Exception:
+                log.exception("web server unavailable")
+                self.web = None
+
     def run(self):
         self._single_instance()
         log.info("Arstro Remote %s starting (pid %d, input backend %s, DISPLAY=%s)", __version__,
                  os.getpid(), self.input.backend, os.environ.get("DISPLAY"))
-        threading.Thread(target=self._serve_control, args=(control_socket_path(),),
-                         name="control", daemon=True).start()
 
         import dbus
         import dbus.mainloop.glib
         from gi.repository import GLib
-        from .bluez import Bluetooth
 
         dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
         self.loop = GLib.MainLoop()
@@ -226,8 +265,18 @@ class Daemon:
         GLib.unix_signal_add(GLib.PRIORITY_HIGH, signal.SIGTERM, quit_)
         GLib.unix_signal_add(GLib.PRIORITY_HIGH, signal.SIGINT, quit_)
 
+        self.hub.publish("terminals", [])
+        self.hub.publish("controllers", [])
+        threading.Thread(target=self._serve_control, args=(control_socket_path(),),
+                         name="control", daemon=True).start()
+        self._start_services()
+        threading.Thread(target=self._wifi_poller, name="wifi-poll", daemon=True).start()
+
         if self.use_bluetooth:
+            from .bluez import Bluetooth
             self.bt = Bluetooth(dbus.SystemBus(), self.config, self._bt_connection, self._bt_disconnect)
+            self.bt.on_pairing_change = lambda: threading.Thread(
+                target=self.publish_pairing, daemon=True).start()
 
             def first_setup():
                 try:
@@ -243,6 +292,7 @@ class Daemon:
                     self.bt.open_pairing(int(self.config.get("pair_window_sec", 600)))
                 else:
                     self.bt.open_pairing(0)
+                threading.Thread(target=self.publish_pairing, daemon=True).start()
                 return False
 
             GLib.idle_add(first_setup)
@@ -252,7 +302,14 @@ class Daemon:
             with self._lock:
                 sessions = list(self.sessions)
             for s in sessions:
-                s.close("daemon stopping")
+                s.close("server stopping")
+            if self.recorder:
+                try:
+                    self.recorder.shutdown()
+                except Exception:
+                    log.exception("recorder shutdown")
+            if self.web:
+                self.web.stop()
             self.terms.close_all()
             if self.bt and self.bt.ready:
                 try:

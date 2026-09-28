@@ -1,9 +1,15 @@
-"""One client connection (Bluetooth RFCOMM or the local control socket)."""
+"""One controller connection: Bluetooth RFCOMM (app), local socket (CLI on the Pi),
+WebSocket (web page, remote CLI, the app's Wi-Fi link) - or a REST call.
+
+All of them run the same ops (`dispatch`), so the three controllers stay feature-equal
+(ARC-02/04), and all of them receive the hub's state events (ARC-03).
+"""
 
 import json
 import logging
 import os
 import pwd
+import select
 import socket
 import threading
 import time
@@ -16,48 +22,61 @@ from .protocol import (PROTO_VERSION, T_JSON, T_TERM, FrameDecoder, ProtocolErro
 
 log = logging.getLogger("arstro.session")
 
-FEATURES = ["stats", "wifi", "terminal", "input"]
+FEATURES = ["stats", "wifi", "terminal", "input", "recorder", "gallery", "sync", "web"]
 
-# Ops that may block for seconds run on a worker pool so input and terminal
-# traffic from the same client never waits behind them.
-SLOW_OPS = {"wifi.status", "wifi.scan", "wifi.connect", "wifi.disconnect", "wifi.saved",
-            "wifi.forget", "wifi.radio", "stats.get"}
+# Ops that may block for seconds run on a worker pool so input and terminal traffic
+# from the same controller never waits behind them.
+SLOW_PREFIXES = ("wifi.", "stats.get", "recorder.", "gallery.", "jobs.", "admin.", "web.")
 RESPONDED = object()  # handler already sent its own response
 
-# Input ops run on one dedicated thread so their order is preserved (typed text
-# must land before the Enter that follows it) without blocking the reader.
+# Input ops run on one dedicated thread so their order is preserved (typed text must
+# land before the Enter that follows it) without blocking the reader.
 INPUT_PREFIX = "in."
+
+APP_TO_CONTROLLER = {"arstro-android": "app", "arstro-web": "web", "arstro-cli": "cli"}
+KIND_TO_CONTROLLER = {"bluetooth": "app", "web": "web", "local": "cli", "remote": "cli", "rest": "rest"}
+
+
+class OpError(Exception):
+    """A user-facing error of an op (bad arguments, not possible now...)."""
 
 
 class Session:
     _counter = 0
+    _counter_lock = threading.Lock()
 
-    def __init__(self, sock, ctx, peer, local=False):
-        Session._counter += 1
-        self.num = Session._counter
+    def __init__(self, sock, ctx, peer, kind="local"):
+        with Session._counter_lock:
+            Session._counter += 1
+            self.num = Session._counter
         self.sock = sock
         self.ctx = ctx
         self.peer = peer
-        self.local = local
+        self.kind = kind
+        self.controller = KIND_TO_CONTROLLER.get(kind, kind)
         self.connected_at = time.time()
         self.client = {}
-        # Terminals are keyed by client id; only clients that send a stable
-        # client_id in hello get their shells kept across reconnects.
-        self.client_id = "session-%d" % self.num
-        self.persistent = False
         self._send_lock = threading.Lock()
         self._closed = threading.Event()
         self._stats_interval = None
         self._stats_wakeup = threading.Event()
+        self._state_pending = {}
+        self._state_lock = threading.Lock()
+        self._state_wakeup = threading.Event()
         self._pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="s%d-op" % self.num)
         self._input_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="s%d-in" % self.num)
         self.bytes_in = 0
         self.bytes_out = 0
 
+    @property
+    def local(self):
+        return self.kind == "local"
+
     # --------------------------------------------------------------- lifecycle
     def start(self):
         threading.Thread(target=self._reader, name="s%d-rx" % self.num, daemon=True).start()
         threading.Thread(target=self._stats_loop, name="s%d-stats" % self.num, daemon=True).start()
+        threading.Thread(target=self._state_loop, name="s%d-state" % self.num, daemon=True).start()
 
     @property
     def closed(self):
@@ -68,7 +87,8 @@ class Session:
             return
         self._closed.set()
         self._stats_wakeup.set()
-        log.info("session %d (%s) closing %s", self.num, self.peer, reason)
+        self._state_wakeup.set()
+        log.info("session %d (%s %s) closing %s", self.num, self.controller, self.peer, reason)
         try:
             self.ctx.terms.detach_session(self)
         except Exception:
@@ -77,25 +97,52 @@ class Session:
             self.ctx.input.release_all()
         except Exception:
             pass
-        try:
-            self.sock.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            pass
-        try:
-            self.sock.close()
-        except OSError:
-            pass
+        if self.sock is not None:
+            try:
+                self.sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                self.sock.close()
+            except OSError:
+                pass
         self._pool.shutdown(wait=False, cancel_futures=True)
         self._input_pool.shutdown(wait=False, cancel_futures=True)
         self.ctx.session_closed(self)
 
     # -------------------------------------------------------------------- send
+    SEND_STALL_LIMIT = 30.0     # a link that accepts nothing for this long is dead
+
+    def _sendall(self, data):
+        """sendall() that survives EAGAIN: RFCOMM sockets can report it on a slow link
+        even in blocking mode, and plain sendall() then loses track of what was sent."""
+        send = getattr(self.sock, "send", None)
+        if send is None:                     # WebSocket stream: its own sendall
+            self.sock.sendall(data)
+            return
+        view = memoryview(data)
+        stalled_since = None
+        while view:
+            try:
+                n = send(view)
+            except (BlockingIOError, InterruptedError):
+                n = 0
+            if n:
+                view = view[n:]
+                stalled_since = None
+                continue
+            now = time.monotonic()
+            stalled_since = stalled_since or now
+            if now - stalled_since > self.SEND_STALL_LIMIT:
+                raise OSError("link stalled for %ds" % self.SEND_STALL_LIMIT)
+            select.select([], [self.sock], [], 1.0)
+
     def _send(self, data: bytes):
-        if self._closed.is_set():
+        if self._closed.is_set() or self.sock is None:
             raise ConnectionError("session closed")
         with self._send_lock:
             try:
-                self.sock.sendall(data)
+                self._sendall(data)
                 self.bytes_out += len(data)
             except OSError as e:
                 threading.Thread(target=self.close, args=("send failed: %s" % e,), daemon=True).start()
@@ -116,6 +163,28 @@ class Session:
             self.send_json(fields)
         except ConnectionError:
             pass
+
+    # ------------------------------------------------------------ state events
+    def post_state(self, topic, data):
+        """Queue a state event (called by the hub from any thread). Several updates of
+        one topic before the sender runs collapse into the newest one."""
+        if self._closed.is_set() or self.sock is None:
+            return
+        with self._state_lock:
+            self._state_pending[topic] = data
+        self._state_wakeup.set()
+
+    def _state_loop(self):
+        while not self._closed.is_set():
+            self._state_wakeup.wait()
+            self._state_wakeup.clear()
+            with self._state_lock:
+                pending, self._state_pending = self._state_pending, {}
+            for topic, data in pending.items():
+                try:
+                    self.send_json({"ev": "state", "topic": topic, "data": data})
+                except ConnectionError:
+                    return
 
     # --------------------------------------------------------------------- rx
     def _reader(self):
@@ -149,7 +218,12 @@ class Session:
         except (ValueError, KeyError, TypeError, UnicodeDecodeError):
             log.warning("bad json message: %r", payload[:200])
             return
-        pool = self._input_pool if op.startswith(INPUT_PREFIX) else self._pool if op in SLOW_OPS else None
+        if op.startswith(INPUT_PREFIX):
+            pool = self._input_pool
+        elif op.startswith(SLOW_PREFIXES):
+            pool = self._pool
+        else:
+            pool = None
         if pool is None:
             self._handle(msg)
             return
@@ -161,16 +235,14 @@ class Session:
     def _handle(self, msg):
         op = msg.get("op")
         req_id = msg.get("id")
-        handler = getattr(self, "op_" + op.replace(".", "_"), None)
         try:
-            if handler is None or (op.startswith("admin.") and not self.local):
-                raise ValueError("unknown op %s" % op)
-            result = handler(msg)
+            result = self.dispatch(msg)
             if req_id is not None and result is not RESPONDED:
                 self.send_json({"id": req_id, "ok": True, "data": result})
         except ConnectionError:
             pass
-        except (wifi.WifiError, InputUnavailable, ValueError, KeyError, RuntimeError, OSError) as e:
+        except (OpError, wifi.WifiError, InputUnavailable, ValueError, KeyError, RuntimeError,
+                OSError, TypeError) as e:
             if not isinstance(e, InputUnavailable) or req_id is not None:
                 log.info("op %s failed: %s", op, e)
             if req_id is not None:
@@ -185,6 +257,21 @@ class Session:
                     self.send_json({"id": req_id, "ok": False, "error": "internal error: %s" % e})
                 except ConnectionError:
                     pass
+
+    def dispatch(self, msg):
+        """Run one op and return its result (raises on error)."""
+        op = msg.get("op") or ""
+        for prefix, service in (("recorder.", "recorder"), ("gallery.", "recorder"),
+                                ("jobs.", "recorder"), ("web.", "web")):
+            if op.startswith(prefix):
+                svc = getattr(self.ctx, service, None)
+                if svc is None:
+                    raise OpError("%s is not available on this server" % prefix.rstrip("."))
+                return svc.handle(self, op, msg)
+        handler = getattr(self, "op_" + op.replace(".", "_"), None)
+        if handler is None:
+            raise OpError("unknown op %s" % op)
+        return handler(msg)
 
     # ------------------------------------------------------------------ stats
     def _stats_loop(self):
@@ -205,11 +292,11 @@ class Session:
 
     # ------------------------------------------------------------ general ops
     def op_hello(self, msg):
-        self.client = {"app": msg.get("app"), "version": msg.get("version"), "device": msg.get("device")}
-        if msg.get("client_id"):
-            self.client_id = "client-%s" % str(msg["client_id"])[:64]
-            self.persistent = True
-        log.info("session %d hello from %s", self.num, self.client)
+        self.client = {"app": msg.get("app"), "version": msg.get("version"),
+                       "device": msg.get("device"), "client_id": msg.get("client_id")}
+        self.controller = APP_TO_CONTROLLER.get(msg.get("app"), self.controller)
+        log.info("session %d hello from %s (%s)", self.num, self.client, self.controller)
+        self.ctx.controllers_changed()
         return {
             "name": "Arstro Remote",
             "version": __version__,
@@ -217,13 +304,19 @@ class Session:
             "hostname": socket.gethostname(),
             "user": pwd.getpwuid(os.getuid()).pw_name,
             "features": FEATURES,
+            "session": self.num,
+            "controller": self.controller,
             "input": {"backend": self.ctx.input.backend, "available": self.ctx.input.available},
-            "terminals": self.ctx.terms.list(self),
+            "terminals": self.ctx.terms.list(),
             "term_keep_sec": self.ctx.terms.keep_sec,
+            "state": self.ctx.hub.snapshot(),
         }
 
     def op_ping(self, msg):
         return {"t": time.time(), "echo": msg.get("t")}
+
+    def op_state_get(self, msg):
+        return self.ctx.hub.snapshot(msg.get("topics"))
 
     def op_stats_get(self, _msg):
         return self.ctx.stats.collect()
@@ -240,7 +333,7 @@ class Session:
 
     # --------------------------------------------------------------- wifi ops
     def op_wifi_status(self, _msg):
-        return wifi.status()
+        return self.ctx.wifi_refresh()
 
     def op_wifi_scan(self, msg):
         return wifi.scan(rescan=msg.get("rescan", True))
@@ -249,26 +342,45 @@ class Session:
         return {"networks": wifi.saved_networks()}
 
     def op_wifi_connect(self, msg):
-        log.info("wifi connect to %r (password: %s, hidden: %s)", msg.get("ssid"),
-                 "yes" if msg.get("password") else "no", bool(msg.get("hidden")))
-        return wifi.connect(msg.get("ssid"), msg.get("password") or None, bool(msg.get("hidden")))
+        log.info("wifi connect to %r (password: %s, hidden: %s) from %s", msg.get("ssid"),
+                 "yes" if msg.get("password") else "no", bool(msg.get("hidden")), self.controller)
+        try:
+            return wifi.connect(msg.get("ssid"), msg.get("password") or None, bool(msg.get("hidden")))
+        finally:
+            self.ctx.wifi_refresh()
 
     def op_wifi_disconnect(self, _msg):
-        return wifi.disconnect()
+        try:
+            return wifi.disconnect()
+        finally:
+            self.ctx.wifi_refresh()
 
     def op_wifi_forget(self, msg):
-        return wifi.forget(msg.get("uuid"))
+        target = msg.get("uuid") or msg.get("name")
+        if target and not msg.get("uuid"):
+            match = [n for n in wifi.saved_networks() if target in (n["name"], n["ssid"])]
+            if not match:
+                raise OpError("no saved network %r" % target)
+            target = match[0]["uuid"]
+        try:
+            return wifi.forget(target)
+        finally:
+            self.ctx.wifi_refresh()
 
     def op_wifi_radio(self, msg):
-        return wifi.set_radio(bool(msg.get("enabled", True)))
+        try:
+            return wifi.set_radio(bool(msg.get("enabled", True)))
+        finally:
+            self.ctx.wifi_refresh()
 
     # ----------------------------------------------------------- terminal ops
     def op_term_open(self, msg):
-        term_id = self.ctx.terms.open(self, int(msg.get("cols", 80)), int(msg.get("rows", 24)))
+        term_id = self.ctx.terms.open(self, int(msg.get("cols", 80)), int(msg.get("rows", 24)),
+                                      ephemeral=bool(msg.get("ephemeral")))
         return {"term": term_id}
 
     def op_term_list(self, _msg):
-        return {"terminals": self.ctx.terms.list(self)}
+        return {"terminals": self.ctx.terms.list()}
 
     def op_term_attach(self, msg):
         req_id = msg.get("id")
@@ -281,6 +393,10 @@ class Session:
                               since=msg.get("since"), respond=respond)
         return RESPONDED
 
+    def op_term_detach(self, msg):
+        self.ctx.terms.detach(self, int(msg["term"]))
+        return {}
+
     def op_term_resize(self, msg):
         self.ctx.terms.resize(self, int(msg["term"]), int(msg["cols"]), int(msg["rows"]))
         return {}
@@ -290,8 +406,10 @@ class Session:
         return {}
 
     def op_term_input(self, msg):
-        """JSON alternative to TERM frames (handy for debugging)."""
-        self.ctx.terms.write(self, int(msg["term"]), msg["data"].encode("utf-8"))
+        """JSON alternative to TERM frames (handy for scripts and REST)."""
+        term = int(msg["term"])
+        t = self.ctx.terms._get(term)
+        t.write(msg["data"].encode("utf-8"))
         return {}
 
     # -------------------------------------------------------------- input ops
@@ -317,7 +435,9 @@ class Session:
         self.ctx.input.move_to(msg["x"], msg["y"])
         return {}
 
-    # -------------------------------------------------- admin (local socket)
+    # -------------------------------------------------------------- admin ops
+    # Every session is authenticated (trusted Bluetooth device, token, or the
+    # user's own 0600 socket), so admin is available to all controllers (ARC-04).
     def op_admin_status(self, _msg):
         return self.ctx.status()
 
@@ -332,6 +452,8 @@ class Session:
     def describe(self):
         return {
             "num": self.num,
+            "kind": self.kind,
+            "controller": self.controller,
             "peer": self.peer,
             "local": self.local,
             "client": self.client,
@@ -340,3 +462,18 @@ class Session:
             "bytes_out": self.bytes_out,
             "stats_subscribed": self._stats_interval is not None,
         }
+
+
+class RestSession(Session):
+    """A single REST call (`POST /api/op/<op>`): same ops, no socket, no events."""
+
+    def __init__(self, ctx, peer):
+        super().__init__(None, ctx, peer, kind="rest")
+
+    def start(self):
+        pass
+
+    def close(self, reason=""):
+        self._closed.set()
+        self._pool.shutdown(wait=False)
+        self._input_pool.shutdown(wait=False)
