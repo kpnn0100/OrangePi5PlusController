@@ -1,0 +1,174 @@
+{
+ "time": 1790326333,
+ "hostname": "mypi",
+ "os": "Orange Pi 1.2.2 Bookworm",
+ "kernel": "6.1.99-rockchip-rk3588",
+ "arch": "aarch64",
+ "uptime": 5819,
+ "cpu": {
+  "percent": 1.5,
+  "per_core": [
+   3.4,
+   2.5,
+   0.0,
+   0.0,
+   1.0,
+   1.0,
+   3.4,
+   0.5
+  ],
+  "freq_mhz": [
+   408,
+   408,
+   408
+  ],
+  "count": 8,
+  "load": [
+   0.35,
+   0.76,
+   1.2
+  ]
+ },
+ "memory": {
+  "total": 8319426560,
+  "used": 1077469184,
+  "available": 7241957376,
+  "percent": 13.0
+ },
+ "swap": {
+  "total": 4159709184,
+  "used": 242745344,
+  "percent": 5.8
+ },
+ "temps": {
+  "soc": 40.7,
+  "bigcore0": 40.7,
+  "bigcore1": 40.7,
+  "littlecore": 40.7,
+  "center": 39.8,
+  "gpu": 40.7,
+  "npu": 40.7,
+  "iwlwifi_1": 58.0
+ },
+ "cpu_temp": 40.7,
+ "devfreq": {
+  "gpu": {
+   "load": 0,
+   "mhz": 400
+  },
+  "npu": {
+   "load": 100,
+   "mhz": 1000
+  },
+  "dmc": {
+   "load": 11,
+   "mhz": 528
+  }
+ },
+ "fan_percent": 0,
+ "disks": [
+  {
+   "mount": "/",
+   "device": "/dev/nvme0n1p1",
+   "fstype": "ext4",
+   "total": 498996408320,
+   "used": 9570484224,
+   "free": 484266221568,
+   "percent": 1.9
+  }
+ ],
+ "network": {
+  "interfaces": [
+   {
+    "name": "eth0",
+    "up": false,
+    "ipv4": [],
+    "ipv6": [],
+    "mac": "02:00:00:00:00:db",
+    "speed": 0,
+    "rx": 0,
+    "tx": 0,
+    "rx_rate": 0,
+    "tx_rate": 0
+   },
+   {
+    "name": "eth1",
+    "up": false,
+    "ipv4": [],
+    "ipv6": [],
+    "mac": "02:00:00:00:00:a9",
+    "speed": 0,
+    "rx": 0,
+    "tx": 0,
+    "rx_rate": 0,
+    "tx_rate": 0
+   },
+   {
+    "name": "wlan0",
+    "up": true,
+    "ipv4": [
+     "10.0.0.42"
+    ],
+    "ipv6": [],
+    "mac": "02:00:00:00:00:8b",
+    "speed": 0,
+    "rx": 109790312,
+    "tx": 56957693,
+    "rx_rate": 1314,
+    "tx_rate": 1291
+   }
+  ],
+  "gateway": "10.0.0.1",
+  "gateway_iface": "wlan0",
+  "ip": "10.0.0.42"
+ },
+ "wifi": {
+  "ssid": "HomeNet",
+  "signal": 52,
+  "device": "wlan0"
+ },
+ "processes": [
+  {
+   "pid": 87958,
+   "name": "python3",
+   "user": "pi",
+   "cpu": 3.3,
+   "mem": 0.3
+  },
+  {
+   "pid": 55515,
+   "name": "Xorg",
+   "user": "root",
+   "cpu": 2.4,
+   "mem": 2.8
+  },
+  {
+   "pid": 616,
+   "name": "brltty",
+   "user": "root",
+   "cpu": 1.9,
+   "mem": 0.1
+  },
+  {
+   "pid": 56436,
+   "name": "claude",
+   "user": "pi",
+   "cpu": 0.9,
+   "mem": 3.8
+  },
+  {
+   "pid": 1117,
+   "name": "containerd",
+   "user": "root",
+   "cpu": 0.5,
+   "mem": 0.1
+  },
+  {
+   "pid": 929,
+   "name": "NetworkManager",
+   "user": "root",
+   "cpu": 0.5,
+   "mem": 0.1
+  }
+ ]
+}

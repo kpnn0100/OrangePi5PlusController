@@ -1,0 +1,89 @@
+"""Arstro Remote wire protocol.
+
+Every message on the stream is a frame:
+
+    +---------+------------------+-----------------+
+    | type u8 | length u32 (BE)  | payload         |
+    +---------+------------------+-----------------+
+
+Frame types:
+    0x01 JSON      - UTF-8 JSON object (requests, responses, events, input)
+    0x02 TERM      - keyboard bytes for a shell (client -> Pi),
+                     payload = [term_id u8][raw bytes...]
+    0x03 TERM_OUT  - shell output (Pi -> client),
+                     payload = [term_id u8][offset u64 BE][raw bytes...]
+                     offset = position of the first byte in the shell's output
+                     stream, so a client can drop bytes it already has (replays
+                     after a reconnect can never show up twice).
+
+JSON conventions:
+    request   {"id": 7, "op": "wifi.scan", ...params}
+    response  {"id": 7, "ok": true,  "data": {...}}
+              {"id": 7, "ok": false, "error": "message"}
+    notify    {"op": "in.move", "dx": 3, "dy": -1}      (no id -> no response)
+    event     {"ev": "stats", "data": {...}}             (server push)
+"""
+
+import json
+import struct
+
+PROTO_VERSION = 1
+
+T_JSON = 0x01
+T_TERM = 0x02
+T_TERM_OUT = 0x03
+
+HEADER = struct.Struct(">BI")
+OFFSET = struct.Struct(">Q")
+MAX_FRAME = 1 << 20  # 1 MiB
+
+
+class ProtocolError(Exception):
+    pass
+
+
+def encode(ftype: int, payload: bytes) -> bytes:
+    if len(payload) > MAX_FRAME:
+        raise ProtocolError("frame too large: %d" % len(payload))
+    return HEADER.pack(ftype, len(payload)) + payload
+
+
+def encode_json(obj) -> bytes:
+    return encode(T_JSON, json.dumps(obj, separators=(",", ":")).encode("utf-8"))
+
+
+def encode_term(term_id: int, data: bytes) -> bytes:
+    return encode(T_TERM, bytes([term_id & 0xFF]) + data)
+
+
+def encode_term_out(term_id: int, offset: int, data: bytes) -> bytes:
+    return encode(T_TERM_OUT, bytes([term_id & 0xFF]) + OFFSET.pack(offset) + data)
+
+
+def decode_term_out(payload: bytes):
+    """-> (term_id, offset, data)"""
+    return payload[0], OFFSET.unpack_from(payload, 1)[0], payload[1 + OFFSET.size:]
+
+
+class FrameDecoder:
+    """Incremental decoder: feed() raw bytes, get back complete frames."""
+
+    def __init__(self):
+        self._buf = bytearray()
+
+    def feed(self, data: bytes):
+        self._buf += data
+        frames = []
+        while len(self._buf) >= HEADER.size:
+            ftype, length = HEADER.unpack_from(self._buf, 0)
+            if ftype not in (T_JSON, T_TERM, T_TERM_OUT):
+                raise ProtocolError("unknown frame type 0x%02x" % ftype)
+            if length > MAX_FRAME:
+                raise ProtocolError("frame too large: %d" % length)
+            end = HEADER.size + length
+            if len(self._buf) < end:
+                break
+            payload = bytes(self._buf[HEADER.size:end])
+            del self._buf[:end]
+            frames.append((ftype, payload))
+        return frames

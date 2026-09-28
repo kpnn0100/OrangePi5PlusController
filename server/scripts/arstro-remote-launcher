@@ -1,0 +1,48 @@
+#!/bin/bash
+# Arstro Remote startup script.
+#
+# Started by the XFCE autostart entry (~/.config/autostart/arstro-remote.desktop)
+# so the daemon lives inside the logged-in desktop session. That gives it:
+#   * polkit "active session" rights  -> nmcli can connect Wi-Fi without root
+#   * the X display                   -> mouse/keyboard injection via XTEST
+# The loop restarts the daemon if it ever exits (crash, update, X restart).
+
+APP_DIR="${ARSTRO_APP_DIR:-$HOME/.local/share/arstro-remote}"
+LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/arstro-remote"
+RUN_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+LOG="$LOG_DIR/launcher.log"
+
+mkdir -p "$LOG_DIR"
+exec 9>"$RUN_DIR/arstro-remote-launcher.lock"
+if ! flock -n 9; then
+    echo "arstro-remote-launcher is already running" >&2
+    exit 0
+fi
+
+# Keep the launcher log small (the daemon has its own rotating log).
+if [ -f "$LOG" ] && [ "$(stat -c %s "$LOG")" -gt 1000000 ]; then
+    mv -f "$LOG" "$LOG.1"
+fi
+
+export DISPLAY="${DISPLAY:-:0}"
+[ -z "$XAUTHORITY" ] && [ -f "$HOME/.Xauthority" ] && export XAUTHORITY="$HOME/.Xauthority"
+export PYTHONPATH="$APP_DIR${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONUNBUFFERED=1
+
+log() { echo "$(date '+%F %T') $*" >>"$LOG"; }
+
+trap 'log "launcher stopping"; kill "$child" 2>/dev/null; wait "$child" 2>/dev/null; exit 0' TERM INT HUP
+
+log "launcher started (pid $$, DISPLAY=$DISPLAY, session ${XDG_SESSION_ID:-?})"
+delay=2
+while true; do
+    started=$(date +%s)
+    python3 -m arstro_remote run 9>&- >>"$LOG" 2>&1 &
+    child=$!
+    wait "$child"
+    code=$?
+    ran=$(( $(date +%s) - started ))
+    if [ "$ran" -gt 60 ]; then delay=2; else delay=$(( delay * 2 > 30 ? 30 : delay * 2 )); fi
+    log "daemon exited (code $code after ${ran}s), restarting in ${delay}s"
+    sleep "$delay"
+done

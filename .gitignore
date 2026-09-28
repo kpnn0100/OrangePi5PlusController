@@ -1,0 +1,17 @@
+# build output
+app/build/
+app/.dart_tool/
+app/.flutter-plugins-dependencies
+app/android/.gradle/
+app/android/.kotlin/
+app/android/local.properties
+**/__pycache__/
+*.pyc
+dist/
+node_modules/
+# release signing key: keep it safe, never commit
+app/android/key.properties
+*.jks
+*.keystore
+# per-machine settings for the scripts (Pi address, device serial, ...)
+local.env
