@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'bt/bluetooth.dart';
+import 'media.dart';
 import 'proto/frames.dart';
 import 'terminal_hub.dart';
 import 'transport.dart';
@@ -20,7 +21,7 @@ class RemoteError implements Exception {
   String toString() => message;
 }
 
-const String kAppVersion = '1.1.0';
+const String kAppVersion = '2.0.0';
 
 /// Owns the link to one Pi: handshake, request/response matching, server
 /// events, stats, terminal routing, input coalescing and auto-reconnect.
@@ -36,6 +37,9 @@ class RemoteClient extends ChangeNotifier {
   final Bluetooth bt = Bluetooth.instance;
   late final TerminalHub terminals = TerminalHub(this);
 
+  /// Wi-Fi media link (preview, thumbnails, playback) to this Pi's web server.
+  late final MediaLink media = MediaLink(this);
+
   LinkState state = LinkState.idle;
   BtDevice? device;
   BtDevice? lastDevice;
@@ -46,6 +50,11 @@ class RemoteClient extends ChangeNotifier {
   DateTime? nextRetryAt;
 
   final ValueNotifier<Map<String, dynamic>?> stats = ValueNotifier(null);
+
+  /// Live server state (ARC-03): recorder, recorder.settings, gallery, jobs, wifi,
+  /// terminals, pairing, controllers, web. Filled from hello, then by `state` events.
+  final Map<String, ValueNotifier<dynamic>> _topics = {};
+  ValueNotifier<dynamic> topic(String name) => _topics.putIfAbsent(name, () => ValueNotifier<dynamic>(null));
   final List<double> cpuHistory = [];
   final List<double> tempHistory = [];
   static const int historyLength = 90;
@@ -147,6 +156,12 @@ class RemoteClient extends ChangeNotifier {
     server = Map<String, dynamic>.from(hello as Map);
     if ((server!['proto'] as int? ?? 0) != kProtoVersion) {
       throw RemoteError('Protocol mismatch: Pi speaks v${server!['proto']}, app speaks v$kProtoVersion');
+    }
+    final st = server!['state'];
+    if (st is Map) {
+      for (final e in st.entries) {
+        topic(e.key as String).value = e.value;
+      }
     }
     await request('stats.subscribe', {'interval_ms': 2000});
     await terminals.onConnected(List<Map<String, dynamic>>.from(
@@ -273,8 +288,14 @@ class RemoteClient extends ChangeNotifier {
     return _request(op, params, const Duration(seconds: 15), onReply);
   }
 
+  /// Widget tests answer requests here instead of a Pi.
+  @visibleForTesting
+  Future<dynamic> Function(String op, Map<String, dynamic> params)? requestOverride;
+
   Future<dynamic> _request(String op, Map<String, dynamic> params, Duration timeout,
       [void Function(dynamic)? onReply]) {
+    final fake = requestOverride;
+    if (fake != null) return fake(op, params);
     final id = _nextId++;
     final c = Completer<dynamic>();
     _pending[id] = c;
@@ -334,6 +355,8 @@ class RemoteClient extends ChangeNotifier {
         }
       } else if (msg['ev'] == 'stats') {
         _onStats(Map<String, dynamic>.from(msg['data'] as Map));
+      } else if (msg['ev'] == 'state') {
+        topic(msg['topic'] as String).value = msg['data'];
       } else if (msg['ev'] == 'term.exit') {
         terminals.onExit(msg['term'] as int, msg['code'] as int?);
       }

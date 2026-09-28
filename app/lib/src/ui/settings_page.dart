@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../app_scope.dart';
 import '../proto/frames.dart';
 import '../remote_client.dart';
+import 'system_section.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key});
@@ -75,6 +76,7 @@ class SettingsPage extends StatelessWidget {
                   value: s.autoConnect,
                   onChanged: (v) => s.autoConnect = v,
                 ),
+                if (client.isConnected) SystemSections(client: client),
                 const _Header('About'),
                 ListTile(
                   leading: const Icon(Icons.info_outline),

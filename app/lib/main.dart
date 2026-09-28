@@ -18,10 +18,24 @@ class ArstroApp extends StatelessWidget {
   final RemoteClient client;
   final Settings settings;
 
-  static const _seed = Color(0xFF3D7BFF);
+  // One accent colour, the same as the web UI (UX-01).
+  static const _seed = Color(0xFF7C9CFF);
 
   ThemeData _theme(Brightness b) {
-    final scheme = ColorScheme.fromSeed(seedColor: _seed, brightness: b);
+    var scheme = ColorScheme.fromSeed(seedColor: _seed, brightness: b);
+    if (b == Brightness.dark) {
+      scheme = scheme.copyWith(
+        primary: _seed,
+        onPrimary: const Color(0xFF0B0E18),
+        surface: const Color(0xFF0B0C0F),
+        surfaceContainerLowest: const Color(0xFF0A0B0D),
+        surfaceContainerLow: const Color(0xFF15181D),
+        surfaceContainer: const Color(0xFF1B1F25),
+        surfaceContainerHigh: const Color(0xFF22272E),
+        surfaceContainerHighest: const Color(0xFF2A3038),
+        outlineVariant: const Color(0xFF30363F),
+      );
+    }
     return ThemeData(
       colorScheme: scheme,
       useMaterial3: true,

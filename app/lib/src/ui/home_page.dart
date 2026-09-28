@@ -6,6 +6,7 @@ import '../app_scope.dart';
 import '../bt/bluetooth.dart';
 import '../remote_client.dart';
 import 'dashboard_page.dart';
+import 'recorder/recorder_page.dart';
 import 'remote_page.dart';
 import 'settings_page.dart';
 import 'terminal_page.dart';
@@ -27,6 +28,7 @@ class _Dest {
 
 const _dests = [
   _Dest('Dashboard', Icons.speed_outlined, Icons.speed),
+  _Dest('Recorder', Icons.videocam_outlined, Icons.videocam),
   _Dest('Wi-Fi', Icons.wifi_outlined, Icons.wifi),
   _Dest('Terminal', Icons.terminal_outlined, Icons.terminal),
   _Dest('Remote', Icons.mouse_outlined, Icons.mouse),
@@ -37,8 +39,8 @@ class _HomePageState extends State<HomePage> {
 
   void _select(int i) {
     setState(() => _index = i);
-    // Keep the screen awake while it is used as a touchpad or terminal.
-    AppScope.of(context).client.bt.keepScreenOn(i >= 2).catchError((_) {});
+    // Keep the screen awake while it shows the live picture, a terminal or the touchpad.
+    AppScope.of(context).client.bt.keepScreenOn(i == 1 || i >= 3).catchError((_) {});
     FocusManager.instance.primaryFocus?.unfocus();
   }
 
@@ -54,13 +56,19 @@ class _HomePageState extends State<HomePage> {
     final wide = MediaQuery.sizeOf(context).width >= 840;
     final pages = [
       const DashboardPage(),
+      RecorderPage(active: _index == 1),
       const WifiPage(),
-      TerminalPage(active: _index == 2),
-      RemotePage(active: _index == 3),
+      TerminalPage(active: _index == 3),
+      RemotePage(active: _index == 4),
     ];
     final body = Column(children: [
       _LinkBanner(client: client),
-      Expanded(child: IndexedStack(index: _index, children: pages)),
+      // hidden tabs keep their state but stop animating (battery)
+      Expanded(
+        child: IndexedStack(index: _index, children: [
+          for (var i = 0; i < pages.length; i++) TickerMode(enabled: i == _index, child: pages[i]),
+        ]),
+      ),
     ]);
     return ListenableBuilder(
       listenable: client,

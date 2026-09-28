@@ -8,7 +8,7 @@
 Branches are bins linked to the tees on start and unlinked + drained (EOS) on stop,
 so capture never restarts when a viewer joins or a recording starts/stops.
 
-  StreamBranch      H.264 preview on the VPU (mpph264enc), access units to a callback
+  StreamBranch      H.264 preview on the VPU (mpph264enc; x264 without one), access units to a callback
   EncodedRecording  real-time H.265 on the VPU (mpph265enc) -> MP4/MKV
   RawRecording      frames copied out of the capture buffers, framed as ARH chunks
 """
@@ -452,9 +452,16 @@ class StreamBranch:
         rate = f"videorate drop-only=true max-rate={fps} ! "
         # rounded framerate for the encoder's rate control (fractional fps confuse mpp)
         fix = f"capssetter caps=\"video/x-raw,framerate={fps}/1\" ! "
-        enc = (f"mpph264enc name=penc rc-mode=cbr bps={bps} gop={fps} header-mode=each-idr "
-               "profile=main min-force-key-unit-interval=500000000")
-        direct = self.zero_copy and self.cap.format == "NV12" and not self.cap.sim \
+        hw = Gst.ElementFactory.find("mpph264enc") is not None
+        if hw:
+            enc = (f"mpph264enc name=penc rc-mode=cbr bps={bps} gop={fps} header-mode=each-idr "
+                   "profile=main min-force-key-unit-interval=500000000")
+        else:
+            # no Rockchip VPU (a dev PC, another board): software x264, same stream format
+            enc = (f"x264enc name=penc tune=zerolatency speed-preset=ultrafast bitrate={bps // 1000} "
+                   f"key-int-max={fps} byte-stream=true")
+        parse = "h264parse config-interval=-1 ! " if Gst.ElementFactory.find("h264parse") else ""
+        direct = hw and self.zero_copy and self.cap.format == "NV12" and not self.cap.sim \
             and getattr(self.cap, "dmabuf", False)
         if direct:
             conv = f"{fix}{enc} width={w} height={h}"
@@ -462,10 +469,10 @@ class StreamBranch:
             conv = (f"videoscale method=bilinear n-threads=2 ! video/x-raw,width={w},height={h} ! "
                     f"videoconvert n-threads=2 ! video/x-raw,format=I420 ! {fix}{enc}")
         desc = ("queue name=pq max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! "
-                f"{rate}{conv} ! h264parse config-interval=-1 ! "
-                "video/x-h264,stream-format=byte-stream,alignment=au ! "
+                f"{rate}{conv} ! {parse}"
+                f"video/x-h264,stream-format=byte-stream,alignment=au{'' if hw else ',profile=main'} ! "
                 "appsink name=psink emit-signals=true sync=false async=false max-buffers=8 drop=true")
-        self.path = "zero-copy" if direct else "cpu-scale"
+        self.path = "zero-copy" if direct else "cpu-scale" if hw else "software x264"
         self.bin = Gst.parse_bin_from_description(desc, False)
         pad = Gst.GhostPad.new("video", self.bin.get_by_name("pq").get_static_pad("sink"))
         self.bin.add_pad(pad)

@@ -464,6 +464,10 @@ def cmd_rec(ctl, a):
         print("preview quality: %s" % a.value)
     elif sub == "preview":
         save_preview(ctl, a.file, a.seconds)
+    elif sub == "source":
+        st = ctl.call("recorder.source", simulate=None if a.hdmi else a.test, timeout=60) \
+            if (a.hdmi or a.test) else ctl.call("recorder.status")
+        print("Source: %s" % ("test pattern " + st["simulate"] if st.get("simulate") else "HDMI RX"))
 
 
 def _deep_merge(a, b):
@@ -706,6 +710,10 @@ def build_parser():
     ed.add_argument("value", choices=["4k60", "4k30", "1080p", "keep"])
     q = rs.add_parser("quality", help="live preview quality")
     q.add_argument("value", choices=["low", "medium", "high"])
+    so = rs.add_parser("source", help="HDMI RX or a test pattern (no argument: show it)")
+    sg = so.add_mutually_exclusive_group()
+    sg.add_argument("--hdmi", action="store_true", help="record the HDMI input")
+    sg.add_argument("--test", metavar="WxH@FPS", help="test pattern, e.g. 1920x1080@30")
     pv = rs.add_parser("preview", help="save the live preview to an .h264 file")
     pv.add_argument("file")
     pv.add_argument("--seconds", type=float, default=5)

@@ -1,0 +1,85 @@
+{
+  "recorder": {
+    "available": true,
+    "caps": {"vpu_h265": true, "vpu_h264": true, "x265": true, "ffv1": true, "gpu_ffv1": true, "audio": true,
+             "device": "/dev/video0", "simulate": false},
+    "signal": {"present": true, "text": "3840x2160@29.97 NV16", "width": 3840, "height": 2160, "fps": 29.97,
+               "format": "NV16", "link": "locked", "why": null},
+    "capture": {"running": true, "fps": 29.97, "drops": 0, "audio": true, "error": null},
+    "recording": {"active": true, "kind": "raw", "file": "REC_20260101_120000.arh", "elapsed": 83.4,
+                  "size": 41000000000, "rate": 497000000, "drops": 0, "audio": true, "stopping": false},
+    "preview": {"viewers": 2, "on": true, "stream": null, "quality": "medium", "path": "/ws/preview", "state": "live"},
+    "disk": {"path": "/home/pi/Videos/HDMI-Recorder", "free": 463899164672, "total": 498996408320},
+    "mode": "raw", "mode_text": "RAW +HQ +FFV1",
+    "last": {"file": "REC_20251231_235959.arh", "reason": "stopped", "error": null, "size": 6548898617, "duration": 10.4},
+    "simulate": null
+  },
+  "recorder.settings": {
+    "mode": "raw",
+    "h265": {"bitrate": 160, "rc": "vbr", "gop": 1.0, "container": "mp4"},
+    "raw": {"hq": true, "hq_engine": "x265", "hq_quality": "high", "x265_preset": "fast", "hq_chroma": "420",
+            "ffv1": true, "ffv1_engine": "gpu", "when": "during"},
+    "audio": {"record": true}, "storage": "/home/pi/Videos/HDMI-Recorder with a rather long folder name/archive",
+    "edid": "4k30", "preview": {"quality": "medium"}
+  },
+  "jobs": [
+    {"id": 1, "title": "H.264 MP4 (VPU, share)", "codec": "h264-vpu", "state": "running",
+     "source": "REC_20251231_235959.arh", "output": "REC_20251231_235959_H264_720p.mp4", "frames": 120, "total": 314,
+     "fps": 61.0, "live": false, "progress": 0.38, "eta": 3, "error": null, "options": {}, "created": 1767225600},
+    {"id": 2, "title": "FFV1 lossless · GPU", "codec": "ffv1-gpu", "state": "failed",
+     "source": "REC_20251231_235959.arh", "output": "REC_20251231_235959_FFV1.mkv", "frames": 0, "total": 0,
+     "fps": 0, "live": false, "progress": 0, "eta": null,
+     "error": "GPU FFV1 can't take NV16 frames with this layout; use CPU FFV1 (a long error message to wrap)",
+     "options": {}, "created": 1767225601}
+  ],
+  "gallery": {"version": 3, "takes": 2, "files": 4, "size": 12000000000, "folder": "/home/pi/Videos/HDMI-Recorder"},
+  "gallery.list": {
+    "folder": "/home/pi/Videos/HDMI-Recorder", "version": 3,
+    "takes": [
+      {"id": "REC_20260101_120000", "title": "1 Jan 2026  12:00:00", "created": 1767268800, "size": 41000000000,
+       "duration": 83.4, "kinds": ["RAW"], "recording": true,
+       "items": [{"id": "REC_20260101_120000.arh", "kind": "RAW", "codec": "raw", "size": 41000000000, "width": 3840,
+                  "height": 2160, "fps": 29.97, "duration": 83.4, "audio": true, "pixel_format": "NV16", "problem": null,
+                  "mtime": 1767268883, "recording": true, "busy": false, "url": "/api/media/REC_20260101_120000.arh"}]},
+      {"id": "REC_20251231_235959", "title": "31 Dec 2025  23:59:59", "created": 1767225599, "size": 7900000000,
+       "duration": 10.4, "kinds": ["RAW", "H.265", "H.264", "FFV1"], "recording": false,
+       "items": [
+         {"id": "REC_20251231_235959.arh", "kind": "RAW", "codec": "raw", "size": 5194351472, "width": 3840, "height": 2160,
+          "fps": 29.97, "duration": 10.4, "audio": true, "pixel_format": "NV16", "problem": null, "mtime": 1767225610,
+          "recording": false, "busy": true, "url": "/api/media/REC_20251231_235959.arh"},
+         {"id": "REC_20251231_235959_H265.mov", "kind": "H.265", "codec": "hevc", "size": 141168981, "width": 3840,
+          "height": 2160, "fps": 29.97, "duration": 10.4, "audio": true, "pixel_format": "yuv420p", "problem": null,
+          "mtime": 1767225620, "recording": false, "busy": false, "url": "/api/media/REC_20251231_235959_H265.mov"},
+         {"id": "REC_20251231_235959_H264_720p.mp4", "kind": "H.264", "codec": "h264", "size": 9000000, "width": 1280,
+          "height": 720, "fps": 29.97, "duration": 10.4, "audio": true, "pixel_format": "yuv420p", "problem": null,
+          "mtime": 1767225630, "recording": false, "busy": false, "url": "/api/media/REC_20251231_235959_H264_720p.mp4"},
+         {"id": "REC_20251231_235959_FFV1.mkv", "kind": "FFV1", "codec": "ffv1", "size": 1213378164, "width": 3840,
+          "height": 2160, "fps": 29.97, "duration": 10.4, "audio": true, "pixel_format": "yuv422p",
+          "problem": "incomplete: the conversion was interrupted", "mtime": 1767225640, "recording": false, "busy": false,
+          "url": "/api/media/REC_20251231_235959_FFV1.mkv"}]}
+    ]
+  },
+  "gallery.targets": {"targets": [
+    {"id": "h264-vpu", "title": "H.264 MP4 · share", "available": true, "description": "Plays everywhere.",
+     "options": {"quality": ["high", "higher", "max"], "bitrate": true, "scale": ["source", "1080", "720"], "preset": null}},
+    {"id": "h265-vpu", "title": "H.265 · VPU", "available": true, "description": "Small high-quality files.",
+     "options": {"quality": ["high", "higher", "max"], "bitrate": true, "scale": null, "preset": null}},
+    {"id": "h265-x265", "title": "H.265 · x265", "available": true, "description": "Best quality per MB.",
+     "options": {"quality": ["high", "higher", "max"], "bitrate": true, "scale": null,
+                 "preset": ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow"]}},
+    {"id": "ffv1", "title": "FFV1 lossless · CPU", "available": true, "description": "Lossless .mkv.",
+     "options": {"quality": ["high", "higher", "max"], "bitrate": false, "scale": null, "preset": null}},
+    {"id": "ffv1-gpu", "title": "FFV1 lossless · GPU", "available": false, "description": "Lossless on the GPU.",
+     "options": {"quality": ["high", "higher", "max"], "bitrate": false, "scale": null, "preset": null}}
+  ]},
+  "pairing": {"ready": true, "alias": "Arstro-mypi", "address": "00:11:22:33:44:55", "pairing_open": true,
+              "pairing_remaining": 312, "paired_devices": [
+                {"address": "AA:BB:CC:DD:EE:01", "name": "A phone with a very long Bluetooth name", "connected": true, "trusted": true}]},
+  "controllers": [
+    {"session": 1, "controller": "app", "kind": "bluetooth", "peer": "AA:BB:CC:DD:EE:01", "since": 1767225600},
+    {"session": 2, "controller": "web", "kind": "web", "peer": "10.0.0.7:51234", "since": 1767225600},
+    {"session": 3, "controller": "cli", "kind": "local", "peer": "local", "since": 1767225600}
+  ],
+  "web.info": {"enabled": true, "host": "0.0.0.0", "port": 8080, "auth": "password",
+               "urls": ["http://10.0.0.42:8080/"], "token": "example-password"}
+}
