@@ -30,6 +30,22 @@ class Ctx:
     pass
 
 
+
+@test("CAM-01", "CAM-02", "REC-08")
+def camera_source_is_chosen_and_kept(c):
+    r = c.a.call("camera.sources")
+    ids = [x["id"] for x in r["sources"]]
+    check("hdmi" in ids and "test" in ids, ids)
+    try:
+        st = c.a.call("camera.select", source="test", spec="1280x720@30", timeout=60)
+        check(st["source"] == "test:1280x720@30" and st["simulate"] == "1280x720@30", st.get("source"))
+        check(load_config().get("recorder_simulate") == "1280x720@30", "the source is not saved")
+        check(c.a.call("camera.sources")["current"] == "test:1280x720@30", "sources do not show the choice")
+        r = c.a.request("camera.select", source="v4l2:/dev/video99")
+        check(r["ok"] is False and "not connected" in r["error"], r)
+    finally:
+        c.a.call("recorder.source", simulate=c.source, timeout=60)
+
 def setup():
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", default="1280x720@30")

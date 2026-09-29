@@ -12,8 +12,8 @@ server code is `server/arstro_remote/protocol.py` + `session.py`; the Dart side 
 |---|---|---|
 | App | Bluetooth RFCOMM, SPP UUID `a57e0001-7c2b-4d1e-9f3a-5e7a1b2c3d4e` | trusted (bonded) device |
 | App (developer) | TCP `tcp:host:port` to the control socket through an SSH tunnel (`scripts/dev_tunnel.sh`) | the socket owner |
-| CLI on the Pi | unix socket `$XDG_RUNTIME_DIR/arstro-remote.sock` (0600; `ARSTRO_SOCKET` overrides) | file permissions |
-| CLI remote, web UI | WebSocket `ws://<pi>:8080/ws` | password (see *HTTP*) |
+| CLI on the Pi | unix socket `$XDG_RUNTIME_DIR/arstro-remote-<slot>.sock` (0600; `ARSTRO_SOCKET` overrides) | file permissions |
+| CLI remote, web UI | WebSocket `ws://<pi>:<port>/ws` (slot A 8080, B 8081, ...) | password (see *HTTP*) |
 
 ## Frames
 
@@ -42,7 +42,10 @@ Controllers must skip frame types they do not know.
 The first op of a session is `hello` `{app, version, device?, client_id?}`; `app` is
 `arstro-android`, `arstro-web` or `arstro-cli` and sets the controller type. The reply holds
 `name, version, proto (=2), hostname, user, features, session, controller, input,
-terminals, term_keep_sec` and **`state`**: a snapshot of every state topic.
+terminals, term_keep_sec, slot` and **`modules`** `[{name, title, description, state:
+enabled|disabled|failed, note, ops}]` (MOD-01: ops of a module that is not enabled answer
+`the <Module> module is not enabled on this server`), and **`state`**: a snapshot of every
+state topic. `features` lists only what the enabled modules provide.
 
 ### State topics (ARC-03)
 
@@ -60,6 +63,9 @@ Pushed to every session whenever they change (whoever changed them), newest valu
 | `controllers` | connected controllers `[{session, controller, kind, peer, since}]` |
 | `web` | `{enabled, port, urls, auth: "password" \| "open"}` (never the password) |
 | `screen` | remote screen `{available, display, state: stopped\|starting\|live\|error, viewers, screen: [w, h], stream: {width, height, fps, bitrate, quality}, quality, error}` |
+| `net` | `{devices: [...net.devices], connections: [...net.connections]}` (polled every ~30 s and after every change) |
+| `io.gpio` | `{held: [{chip, line, pin, mode, bias, drive, active_low, edge, debounce_us, value, events}], events: [{chip, line, pin, edge: rising\|falling, t}]}` (latest 20 events) |
+| `io.pwm` | the `io.pwm.list` chips after a change |
 
 Other events: `stats` `{data}` (after `stats.subscribe`), `term.exit` `{term, code, reason?}`.
 
@@ -96,6 +102,8 @@ Other events: `stats` `{data}` (after `stats.subscribe`), `term.exit` `{term, co
 | `recorder.edid` | `value` (4k60, 4k30, 1080p, keep) | |
 | `recorder.preview.quality` | `quality` (low, medium, high) | |
 | `recorder.source` | `simulate` (`"1920x1080@30"`) or null for HDMI RX | status |
+| `camera.sources` | | `{sources: [{id: hdmi\|test\|v4l2:/dev/videoN, kind, title, device, available, modes?, note}], current}` |
+| `camera.select` | `source`, `mode?` (V4L2: `"MJPG 1280x720@30"`), `spec?` (test: `"1920x1080@30"`) | recorder status (`source`, `camera`); saved in config.json (CAM-01) |
 | `recorder.test_signal` | `present` (test source only) | status |
 | `gallery.list` | `kind?` (RAW, H.265, H.264, FFV1, VIDEO) | `{folder, version, takes}` |
 | `gallery.get` | `take` | one take `{id, title, created, size, duration, kinds, recording, items}` |
@@ -111,28 +119,65 @@ Other events: `stats` `{data}` (after `stats.subscribe`), `term.exit` `{term, co
 | `admin.pair` | `seconds` (0 closes) | status |
 | `admin.unpair` | `address` | |
 | `web.info` | | `{enabled, port, urls, auth, app, token}` - `token` is the password |
-| `web.set_password` | `password` (8..256 chars) | info; signs out the other web/remote sessions |
+| `web.set_password` | `password` (5..256 chars) | info; signs out the other web/remote sessions |
 | `web.rotate_token` | | a new random password |
 | `web.set_auth` | `required` (bool) | info; `false` = open mode |
+| `system.info` | | `{version, slot, instance, port, pid, hostname, machine, kernel, python, board, model, uptime, paths: {code, install, config, logs, socket}, bluetooth, modules, log_level}` |
+| `system.modules` / `system.modules.set` | `modules` (list), `restart?` (default true) | saved to config.json; the server restarts (MOD-02) |
+| `system.restart` / `system.reboot` / `system.poweroff` | | the server exits 0 (the launcher restarts it) / `systemctl reboot\|poweroff` |
+| `log.files` | | `{dir, files: [{name, path, size, mtime}]}` |
+| `log.tail` | `file?` (default `arstro-remote`), `lines?` (≤ 2000), `grep?`, `level?` | `{file, path, lines}` |
+| `log.level` | `level?` (debug, info, warning, error), `save?` | `{level}` |
+| `log.mark` | `text` | writes a marker line (WARNING) |
+| `net.status` / `net.devices` / `net.connections` | | the `net` topic / `{devices}` / `{connections}` |
+| `net.connection.get` | `uuid` | `{name, uuid, type, interface, autoconnect, ipv4: {method, addresses, gateway, dns, never_default}, ipv6, mtu}` |
+| `net.connection.set` | `uuid`, any of `name, autoconnect, interface, ipv4_method (auto\|manual\|shared\|disabled\|link-local), addresses, gateway, dns, mtu` | the profile (validated first; reactivate to apply) |
+| `net.connection.add_ethernet` | `interface, name?, ipv4_method?, addresses?, gateway?, dns?` | the new profile |
+| `net.connection.up` / `.down` / `.delete` | `uuid` | `{message}` |
+| `net.device.connect` / `net.device.disconnect` | `device` | `{message}` |
+| `bt.status` / `bt.power` | `on` (power) | `{present, address, name, alias, powered, discoverable, pairable, discovering}` |
+| `bt.devices` / `bt.scan` | `seconds?` (scan, 3..30) | `{devices: [{address, name, alias, icon, paired, trusted, connected, rssi}]}` |
+| `bt.pair` / `bt.connect` / `bt.disconnect` / `bt.trust` / `bt.untrust` / `bt.remove` | `address` | the device |
+| `io.info` | | `{board, model, header, gpio: [chips], i2c: [buses], spi, uart, pwm, leds, adc, problems: [text]}` |
+| `io.gpio.chips` / `io.gpio.lines` | `chip` (lines: path, number or label) | `{chips}` / `{chip, label, lines: [{line, name, consumer, used, direction, bias, drive, active_low, edge, pin, held, value?}]}` |
+| `io.gpio.header` | | `{board, pins: [{pin, name, alt, gpio?: {bank, line, number}, power?, chip, state, held}], enable_hint}` |
+| `io.gpio.request` | `chip, line, mode (input\|output), bias (as-is\|pull-up\|pull-down\|disabled), drive (push-pull\|open-drain\|open-source), active_low, edge (none\|rising\|falling\|both), debounce_us, value` | the line; a held line is reconfigured |
+| `io.gpio.set` / `io.gpio.get` / `io.gpio.release` / `io.gpio.clear_events` | `chip, line, value` (set) | `{chip, line, value}` |
+| `io.i2c.buses` / `io.i2c.scan` | `bus, first?, last?` (scan) | `{buses: [{bus, path, name, dt, access}]}` / `{bus, found, busy}` |
+| `io.i2c.transfer` | `bus, addr, write?` (hex `"10 ff"` or list), `read?` (count), `ten_bit?` | `{read: "hex", bytes}` (write, repeated start, read) |
+| `io.i2c.dump` | `bus, addr, start?, count?, reg_bytes?` | `{start, data, bytes}` |
+| `io.spi.devices` / `io.spi.transfer` | `device, tx (hex), mode, speed_hz, bits, lsb_first?, cs_high?, delay_us?` | `{devices}` / `{rx, bytes}` |
+| `io.uart.ports` | | `{ports: [{port, path, driver, kind, dt, console, access}], bauds}` |
+| `io.uart.open` | `port, baud, data_bits, parity (none\|even\|odd), stop_bits, flow (none\|rtscts\|xonxoff)` | `{term, settings}` - a *serial console* in the terminal pool (`term.attach` / TERM frames like a shell; `terminals` lists it with `kind: "serial", port, settings, rx_bytes, tx_bytes`) |
+| `io.uart.config` / `io.uart.modem` / `io.uart.break` / `io.uart.send` | `term` + settings / `dtr?, rts?` / - / `hex` or `text` | `{settings}` / `{dtr, rts, cts, dsr, cd, ri}` / `{}` / `{sent}` |
+| `io.pwm.list` / `io.pwm.set` / `io.pwm.unexport` | `chip, channel, period_ns \| freq_hz, duty_ns \| duty_pct, polarity, enabled` | `{chips}` / the channel |
+| `io.led.list` / `io.led.set` | `name, brightness?, trigger?` | `{leds}` / the LED |
+| `io.adc.read` | | `{devices: [{device, name, channels: [{channel, raw, scale, mv}]}]}` |
+| `files.roots` / `files.list` | `path?, hidden?` (list) | `{roots}` / `{path, parent, root, entries: [{name, path, type, size, mtime, mode, target?}], writable}` |
+| `files.stat` / `files.read` / `files.write` | `path` (+ `max?, tail?` / `text`) | entry / `{text, size, truncated}` / entry |
+| `files.mkdir` / `files.rename` / `files.delete` | `dir + name` or `path` / `path, to` / `path, recursive?` | entry / entry / `{deleted}` |
+| `files.upload_check` | `dir, name, overwrite?` | `{path, exists}` - call before a big upload |
 
 Gallery items carry `verified` (`{raw, frames, checked}` for an FFV1 proven identical to its RAW, else null).
 Take ids are `REC_YYYYMMDD_HHMMSS`; its files are `<take>.arh` (RAW), `<take>_H265.mp4|mov|mkv`,
 `<take>_H264[_720p|_1080p].mp4`, `<take>_FFV1.mkv`.
 
-## HTTP (web server, default port 8080)
+## HTTP (web server, port 8080 for slot A, 8081 for B, ...)
 
 | Route | |
 |---|---|
 | `GET /` , `/assets/*` | the web UI (no password needed to load) |
-| `GET /api/ping` | `{name, version, hostname, authorized, auth, app}` (`app`: `{url, version}` or null) |
+| `GET /api/ping` | `{name, version, hostname, authorized, auth, slot, app}` (`app`: `{url, version}` or null) |
 | `GET /app.apk` | the Android app uploaded by `setup_pi.sh` (no password; 404 if none) |
-| `POST /api/login` `{password}` / `POST /api/logout` | sets / clears the HttpOnly `arstro_token` cookie (derived from the password) |
+| `POST /api/login` `{password}` / `POST /api/logout` | sets / clears the HttpOnly `arstro_token_<port>` cookie (derived from the password; per port so A/B slots keep separate logins) |
 | `GET /ws` | WebSocket session (the protocol above) |
 | `GET /ws/preview` | live H.264 preview (below) |
 | `GET /ws/screen` | the Pi's desktop, same messages as `/ws/preview`; control it with `in.move_to` (absolute desktop pixels), `in.btn`, `in.scroll`, `in.key`, `in.text` |
 | `GET /api/media/<file>` | a recording, HTTP Range; `?download=1` |
 | `GET /api/thumb/<take>` | JPEG thumbnail |
 | `POST /api/op/<op>` | one op, JSON body → `{ok, data \| error}` |
+| `GET /api/files/download?path=P` | a file of the Files module (HTTP Range); `&inline=1` to show instead of save |
+| `PUT /api/files/upload?dir=D&name=N[&overwrite=1]` | raw body (Content-Length required) streamed to `D/N` → `{ok, data: entry}` |
 
 Credentials: the cookie, `Authorization: Bearer <password>`, or `?token=<password>`. Requests
 whose `Origin` does not match `Host` get 403; in open mode the `Host` must be an IP address or

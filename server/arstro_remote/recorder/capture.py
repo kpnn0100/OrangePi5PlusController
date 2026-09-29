@@ -112,7 +112,7 @@ class Capture:
         if self.audio_failed:
             return False
         if self.sim:
-            return True
+            return not getattr(self.sim, "device", None)      # a V4L2 camera has no audio here
         return bool(self.audio_card) and audio_present(self.dev)
 
     def audio_alive(self):
@@ -191,7 +191,9 @@ class Capture:
     def _desc(self, timing):
         w, h, fps = timing
         n, d = _fraction(fps)
-        if self.sim:
+        if self.sim and getattr(self.sim, "device", None):
+            src = self.sim.source_desc(n, d)
+        elif self.sim:
             src = (f"videotestsrc name=src is-live=true pattern={self.sim.pattern} horizontal-speed=4 ! "
                    f"video/x-raw,format={self.format},width={w},height={h},framerate={n}/{d} ! ")
         else:
@@ -870,7 +872,7 @@ class RawRecording(Recording):
             "format": "ARH", "version": arh.VERSION,
             "created": datetime.now().astimezone().isoformat(timespec="seconds"),
             "software": SOFTWARE,
-            "source": {"device": self.cap.dev if not self.cap.sim else "simulated",
+            "source": {"device": self.cap.dev if not self.cap.sim else getattr(self.cap.sim, "device", "simulated"),
                        "signal": f"{w}x{h}p{fps:.2f}"},
             "video": {"format": vi.finfo.name, "width": vi.width, "height": vi.height,
                       "fps_n": vi.fps_n, "fps_d": vi.fps_d, "frame_size": buf.get_size(),

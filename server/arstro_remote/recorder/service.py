@@ -40,6 +40,7 @@ class RecorderService:
         self.ctx = ctx
         self.hub = ctx.hub
         self.simulate = ctx.config.get("recorder_simulate") or os.environ.get("ARSTRO_RECORDER_SIMULATE")
+        self.camera = ctx.config.get("camera_device") or None      # a V4L2 camera instead (CAM-02)
         self.settings = settings_mod.load()
         self.library = library.Library()
         self.preview = Preview(self._on_viewers, lambda: self._send({"cmd": "keyframe"}, quiet=True))
@@ -102,7 +103,9 @@ class RecorderService:
         env = dict(os.environ, PYTHONUNBUFFERED="1", ARSTRO_EDID=self.settings.get("edid", "keep"))
         env["PYTHONPATH"] = pkg_parent + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
         cmd = [sys.executable, "-m", "arstro_remote.recorder.worker"]
-        if self.simulate:
+        if self.camera:
+            cmd += ["--camera", self.camera]
+        elif self.simulate:
             cmd += ["--simulate", self.simulate]
         logf = self._log_file()
         try:
@@ -110,8 +113,7 @@ class RecorderService:
                                          stderr=logf, bufsize=0, env=env)
         finally:
             logf.close()
-        log.info("recorder worker started (pid %d%s)", self.proc.pid,
-                 ", simulate %s" % self.simulate if self.simulate else "")
+        log.info("recorder worker started (pid %d, source %s)", self.proc.pid, self.source_id())
         threading.Thread(target=self._reader, args=(self.proc,), name="recorder-rx", daemon=True).start()
         if self.preview.count:
             self._send({"cmd": "preview", "on": True, "quality": self._quality()}, quiet=True)
@@ -270,7 +272,9 @@ class RecorderService:
             "disk": disk,
             "mode": s["mode"], "mode_text": mode,
             "last": self.last_recording,
-            "simulate": self.simulate,
+            "simulate": None if self.camera else self.simulate,
+            "camera": self.camera,
+            "source": self.source_id(),
         }
 
     def _publish_status(self):
@@ -436,15 +440,17 @@ class RecorderService:
         self._publish_status()
         return dict(data, file=os.path.basename(data.get("path") or ""))
 
-    def op_recorder_source(self, session, msg):
-        """Switch between HDMI RX and a test pattern (REC-08); restarts only the worker."""
-        import re
-        spec = msg.get("simulate") or None
-        if spec and not re.fullmatch(r"\d{2,4}x\d{2,4}@\d{1,3}(\.\d+)?(:\w+)?(:[\w-]+)?", spec):
-            raise OpError("simulate must look like 1280x720@30")
+    def source_id(self):
+        if self.camera:
+            return "v4l2:" + self.camera
+        return "test:" + self.simulate if self.simulate else "hdmi"
+
+    def _switch_source(self, session, camera=None, simulate=None):
+        """Restart only the worker with another source (REC-08, CAM-01/02)."""
         if (self.worker_status.get("recording") or {}).get("active"):
             raise OpError("stop the recording first")
-        log.info("recorder source -> %s (session %d, %s)", spec or "HDMI RX", session.num, session.controller)
+        label = ("camera " + camera) if camera else ("test pattern " + simulate) if simulate else "HDMI RX"
+        log.info("camera source -> %s (session %d, %s)", label, session.num, session.controller)
         old, self.proc = self.proc, None
         if old and old.poll() is None:
             try:
@@ -453,14 +459,66 @@ class RecorderService:
                 old.wait(15)
             except (OSError, subprocess.TimeoutExpired):
                 old.kill()
-        self.simulate = spec
+        self.camera, self.simulate = camera, simulate
         self.caps, self.worker_status = {}, {}
         self._spawn_worker()
         deadline = time.monotonic() + 10
         while not self.caps and time.monotonic() < deadline:
             time.sleep(0.1)
+        try:
+            from ..paths import save_config_values
+            save_config_values({"camera_device": camera, "recorder_simulate": simulate})
+        except OSError as e:
+            log.warning("could not save the camera source: %s", e)
         self._publish_status()
         return self.status()
+
+    def op_recorder_source(self, session, msg):
+        """Switch between HDMI RX and a test pattern (REC-08); restarts only the worker."""
+        import re
+        spec = msg.get("simulate") or None
+        if spec and not re.fullmatch(r"\d{2,4}x\d{2,4}@\d{1,3}(\.\d+)?(:\w+)?(:[\w-]+)?", spec):
+            raise OpError("simulate must look like 1280x720@30")
+        return self._switch_source(session, None, spec)
+
+    def op_camera_sources(self, _s, _m):
+        from . import v4l2
+        hdmi = v4l2.find_hdmirx_device()
+        sources = [{"id": "hdmi", "kind": "hdmi", "title": "HDMI input", "device": hdmi, "available": bool(hdmi),
+                    "note": None if hdmi else "no HDMI receiver on this machine"}]
+        for cam in v4l2.list_cameras():
+            sources.append({"id": "v4l2:" + cam["device"], "kind": "v4l2", "title": cam["name"],
+                            "device": cam["device"], "available": True, "modes": cam["modes"],
+                            "note": "%s · %s" % (cam["driver"], cam["bus"])})
+        if self.camera and not any(s_.get("device") == self.camera.split("@")[0] for s_ in sources):
+            sources.append({"id": "v4l2:" + self.camera, "kind": "v4l2", "title": self.camera,
+                            "device": self.camera.split("@")[0], "available": False, "note": "not connected"})
+        sources.append({"id": "test", "kind": "test", "title": "Test pattern", "available": True,
+                        "note": "a moving pattern with a tick sound, for trying things out"})
+        return {"sources": sources, "current": self.source_id()}
+
+    def op_camera_select(self, session, msg):
+        """source: "hdmi" | "test" (+ spec "1920x1080@30") | "v4l2:/dev/videoN" (+ mode "MJPG 1280x720@30")."""
+        import re
+        src = str(msg.get("source") or "")
+        if src == "hdmi":
+            return self._switch_source(session, None, None)
+        if src.startswith("test"):
+            spec = msg.get("spec") or src.partition(":")[2] or "1920x1080@30"
+            if not re.fullmatch(r"\d{2,4}x\d{2,4}@\d{1,3}(\.\d+)?(:\w+)?(:[\w-]+)?", spec):
+                raise OpError("the test pattern size must look like 1280x720@30")
+            return self._switch_source(session, None, spec)
+        if src.startswith("v4l2:"):
+            dev = src[5:].split("@")[0]
+            if not re.fullmatch(r"/dev/video\d+", dev):
+                raise OpError("camera must look like v4l2:/dev/video2")
+            if not os.path.exists(dev):
+                raise OpError("%s is not connected" % dev)
+            mode = msg.get("mode")
+            if mode and not re.fullmatch(r"\w+ \d+x\d+@[\d.]+", mode):
+                raise OpError("mode must look like 'MJPG 1280x720@30'")
+            return self._switch_source(session, dev + ("@" + mode if mode else ""), None)
+        raise OpError("unknown camera source %r" % src)
 
     def op_recorder_test_signal(self, _s, msg):
         """Test pattern only: pretend the HDMI signal went away / came back (REC-05 tests)."""

@@ -424,8 +424,11 @@ def wifi_live_reconnect(c):
 @test("ADM-01", "SEC-02")
 def admin_status(c):
     st = c.call("admin.status")
-    check(st["bluetooth"]["ready"], st["bluetooth"])
-    check(st["bluetooth"]["uuid"] == "a57e0001-7c2b-4d1e-9f3a-5e7a1b2c3d4e", st["bluetooth"])
+    if st["bluetooth"].get("disabled"):          # a slot without the app link (ADM-06)
+        check(not st["config"].get("bluetooth_enabled", True), st["bluetooth"])
+    else:
+        check(st["bluetooth"]["ready"], st["bluetooth"])
+        check(st["bluetooth"]["uuid"] == "a57e0001-7c2b-4d1e-9f3a-5e7a1b2c3d4e", st["bluetooth"])
     check(any(s["local"] for s in st["sessions"]), st["sessions"])
 
 
@@ -449,6 +452,49 @@ def wifi_forget_unknown_and_radio_on(c):
         c.call("wifi.radio", enabled=True)
         st2 = c.call("wifi.status")
         check(st2["enabled"] and st2.get("connected") == st.get("connected"), "radio on changed the link: %s" % st2)
+
+
+@test("NET-01", "NET-02")
+def network_devices_and_profiles(c):
+    devs = c.call("net.devices")["devices"]
+    check(devs and all({"device", "type", "state", "ip4"} <= set(d) for d in devs), devs)
+    cons = c.call("net.connections")["connections"]
+    check(all({"name", "uuid", "type", "active"} <= set(x) for x in cons), cons)
+    if cons:
+        p = c.call("net.connection.get", uuid=cons[0]["uuid"])
+        check(p["uuid"] == cons[0]["uuid"] and "method" in p["ipv4"], p)
+        # validation happens before anything is changed
+        r = c.request("net.connection.set", uuid=cons[0]["uuid"], ipv4_method="manual")
+        check(r["ok"] is False and "static address" in r["error"], r)
+        r = c.request("net.connection.set", uuid=cons[0]["uuid"], addresses="999.1.1.1/24")
+        check(r["ok"] is False and "not an IPv4" in r["error"], r)
+    print("      %d interfaces, %d profiles" % (len(devs), len(cons)))
+
+
+@test("NET-03")
+def connection_changes_are_validated_first(c):
+    r = c.request("net.connection.add_ethernet", name="x")
+    check(r["ok"] is False and "interface" in r["error"], r)
+    r = c.request("net.connection.add_ethernet", interface="eth-none", ipv4_method="manual")
+    check(r["ok"] is False and "static address" in r["error"], r)
+    for op in ("net.connection.up", "net.connection.down", "net.connection.delete"):
+        r = c.request(op, uuid="not-a-uuid")
+        check(r["ok"] is False and "UUID" in r["error"], (op, r))
+    r = c.request("net.device.disconnect", device="bad name; rm")
+    check(r["ok"] is False and "bad device" in r["error"], r)
+
+
+@test("NET-04", "NET-05")
+def bluetooth_adapter_and_devices(c):
+    st = c.call("bt.status")
+    if not st.get("present"):
+        print("      (no Bluetooth adapter: %s)" % st.get("error"))
+        return
+    check("powered" in st and st.get("address"), st)
+    devs = c.call("bt.devices")["devices"]
+    check(all("address" in d for d in devs), devs)
+    r = c.request("bt.pair", address="not-a-mac")
+    check(r["ok"] is False and "address" in r["error"], r)
 
 
 def setup():

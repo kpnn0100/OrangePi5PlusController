@@ -66,6 +66,16 @@ def cli(*args, env=None, timeout=60):
 
 
 # ------------------------------------------------------------------- tests
+@test("ADM-07", "SEC-03")
+def login_cookie_is_per_port_and_ping_names_the_slot(c):
+    st, headers, body = http(c, "POST", "/api/login", body={"password": c.token})
+    check(st == 200, body)
+    cookie = headers.get("Set-Cookie", "")
+    check(cookie.startswith("arstro_token_%d=" % c.port) and "HttpOnly" in cookie, cookie.split("=")[0])
+    ping = json.loads(http(c, "GET", "/api/ping")[2])
+    check("slot" in ping and ping["slot"] == (os.environ.get("ARSTRO_SLOT") or None), ping.get("slot"))
+
+
 @test("CON-03", "SEC-03")
 def ping_static_and_token_required(c):
     st, _, body = http(c, "GET", "/api/ping")
@@ -146,8 +156,8 @@ def password_change_signs_others_out_and_is_restored(c):
             check(st == 401, "old login cookie still accepted")
         st, _, _ = http(c, "POST", "/api/op/ping", body={}, token=temp)
         check(st == 200, "new password rejected")
-        r = c.local.request("web.set_password", password="short")
-        check(r["ok"] is False and "8" in r["error"], r)
+        r = c.local.request("web.set_password", password="abcd")      # < 5 characters
+        check(r["ok"] is False and "5" in r["error"], r)
         log = os.path.join(state_dir(), "arstro-remote.log")          # SEC-05
         if os.path.exists(log):
             check(temp not in open(log, encoding="utf-8", errors="replace").read(), "the password is in the log")
@@ -247,6 +257,9 @@ def change_on_web_arrives_on_cli_and_back(c):
 @test("ADM-01", "ADM-02", "ARC-04", "ARC-03")
 def pairing_window_from_web_is_seen_by_all(c):
     before = c.local.call("admin.status")["bluetooth"]
+    if before.get("disabled"):
+        print("      (skipped: this slot does not own the Bluetooth link - ADM-06)")
+        return
     if not before.get("ready"):
         raise AssertionError("bluetooth not ready: %s" % before)
     w = Client.ws(c.base, c.token)

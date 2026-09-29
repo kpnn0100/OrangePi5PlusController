@@ -1,3 +1,3 @@
-"""Arstro Remote - Orange Pi 5 Plus controller server."""
+"""Arstro Remote - embedded Linux board controller server (modular, A/B slots)."""
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"

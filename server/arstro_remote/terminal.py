@@ -46,6 +46,10 @@ class Terminal:
         self.total_out = 0  # bytes ever produced; ring holds the tail ending here
         self.lock = threading.RLock()  # orders live output vs. replay on attach
         self.closed = False
+        self._spawn(cols, rows)
+        threading.Thread(target=self._reader, name="term-%d" % term_id, daemon=True).start()
+
+    def _spawn(self, cols, rows):
         user = pwd.getpwuid(os.getuid())
         shell = user.pw_shell or "/bin/bash"
         env = {
@@ -73,9 +77,8 @@ class Terminal:
         self.pid = pid
         self.fd = fd
         self.rows, self.cols = _set_winsize(fd, rows, cols)
-        threading.Thread(target=self._reader, name="term-%d" % term_id, daemon=True).start()
-        log.info("terminal %d opened pid=%d %sx%s by %s%s", term_id, pid, cols, rows, opened_by,
-                 " (ephemeral)" if ephemeral_owner else "")
+        log.info("terminal %d opened pid=%d %sx%s by %s%s", self.id, pid, cols, rows, self.opened_by,
+                 " (ephemeral)" if self.ephemeral_owner else "")
 
     def _reader(self):
         while True:
@@ -164,7 +167,7 @@ class Terminal:
         log.info("terminal %d killed", self.id)
 
     def describe(self):
-        return {"term": self.id, "cols": self.cols, "rows": self.rows,
+        return {"term": self.id, "kind": "shell", "cols": self.cols, "rows": self.rows,
                 "viewers": len(self.viewers), "attached": bool(self.viewers),
                 "opened_by": self.opened_by, "ephemeral": self.ephemeral_owner is not None,
                 "age": int(time.time() - self.created),
@@ -199,13 +202,16 @@ class TerminalPool:
                     if not t.closed]
 
     # ----------------------------------------------------------- lifecycle
-    def open(self, session, cols=80, rows=24, ephemeral=False):
+    def open(self, session, cols=80, rows=24, ephemeral=False, factory=None):
+        """Open a shell - or, with `factory(term_id, cols, rows, pool, opened_by, owner)`,
+        another kind of terminal (a serial console, IO-09)."""
+        factory = factory or Terminal
         with self._lock:
             if len(self._terms) >= self.MAX_TERMINALS:
                 raise RuntimeError("too many shells (max %d)" % self.MAX_TERMINALS)
             term_id = next(i for i in range(256) if i not in self._terms)
-            term = Terminal(term_id, cols, rows, self, session.controller,
-                            ephemeral_owner=session if ephemeral else None)
+            term = factory(term_id, cols, rows, self, session.controller,
+                           ephemeral_owner=session if ephemeral else None)
             term.viewers.add(session)
             self._terms[term.id] = term
         self._changed()

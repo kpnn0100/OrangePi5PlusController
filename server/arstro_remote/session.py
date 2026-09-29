@@ -15,7 +15,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from . import __version__, wifi
+from . import __version__, modules, wifi
 from .input_x11 import InputUnavailable
 from .protocol import (PROTO_VERSION, T_JSON, T_TERM, FrameDecoder, ProtocolError,
                        encode_json, encode_term_out)
@@ -23,10 +23,19 @@ from .protocol import (PROTO_VERSION, T_JSON, T_TERM, FrameDecoder, ProtocolErro
 log = logging.getLogger("arstro.session")
 
 FEATURES = ["stats", "wifi", "terminal", "input", "recorder", "gallery", "sync", "web", "screen"]
+# hello "features" (what older controllers look at) -> the module that provides it
+FEATURE_MODULE = {"stats": "monitor", "wifi": "connection", "terminal": "terminal", "input": "screen",
+                  "recorder": "camera", "gallery": "camera", "screen": "screen"}
 
 # Ops that may block for seconds run on a worker pool so input and terminal traffic
 # from the same controller never waits behind them.
-SLOW_PREFIXES = ("wifi.", "stats.get", "recorder.", "gallery.", "jobs.", "admin.", "web.", "screen.")
+SLOW_PREFIXES = ("wifi.", "stats.get", "recorder.", "gallery.", "jobs.", "admin.", "web.", "screen.",
+                 "camera.", "net.", "bt.", "io.", "files.", "system.", "log.")
+# prefix -> daemon attribute of the service that runs those ops
+ROUTES = (("recorder.", "recorder"), ("gallery.", "recorder"), ("jobs.", "recorder"), ("camera.", "recorder"),
+          ("web.", "web"), ("screen.", "screen"), ("io.", "io"), ("files.", "files"), ("net.", "conn"),
+          ("bt.", "conn"), ("system.", "system"), ("log.", "system"))
+QUIET_OPS = ("ping", "stats.get", "state.get", "log.tail", "term.resize", "io.gpio.get")
 RESPONDED = object()  # handler already sent its own response
 
 # Input ops run on one dedicated thread so their order is preserved (typed text must
@@ -235,16 +244,22 @@ class Session:
     def _handle(self, msg):
         op = msg.get("op")
         req_id = msg.get("id")
+        t0 = time.monotonic()
         try:
             result = self.dispatch(msg)
             if req_id is not None and result is not RESPONDED:
                 self.send_json({"id": req_id, "ok": True, "data": result})
+            if not op.startswith(INPUT_PREFIX) and op not in QUIET_OPS and log.isEnabledFor(logging.DEBUG):
+                log.debug("op %s by session %d (%s) ok in %.0f ms", op, self.num, self.controller,
+                          (time.monotonic() - t0) * 1000)
         except ConnectionError:
             pass
         except (OpError, wifi.WifiError, InputUnavailable, ValueError, KeyError, RuntimeError,
                 OSError, TypeError) as e:
             if not isinstance(e, InputUnavailable) or req_id is not None:
-                log.info("op %s failed: %s", op, e)
+                log.warning("op %s by session %d (%s) failed: %s: %s", op, self.num, self.controller,
+                            type(e).__name__, e)
+                log.debug("op %s traceback", op, exc_info=True)
             if req_id is not None:
                 try:
                     self.send_json({"id": req_id, "ok": False, "error": str(e).strip("'\"")})
@@ -261,8 +276,13 @@ class Session:
     def dispatch(self, msg):
         """Run one op and return its result (raises on error)."""
         op = msg.get("op") or ""
-        for prefix, service in (("recorder.", "recorder"), ("gallery.", "recorder"),
-                                ("jobs.", "recorder"), ("web.", "web"), ("screen.", "screen")):
+        mod = modules.module_of(op)
+        enabled = getattr(self.ctx, "modules", None)
+        # serial consoles (IO module) are terminals too: attach/resize/... stay usable
+        serial_ok = mod == "terminal" and op != "term.open" and enabled is not None and "io" in enabled
+        if mod and enabled is not None and mod not in enabled and not serial_ok:
+            raise OpError("the %s module is not enabled on this server (op %s)" % (modules.MODULES[mod][0], op))
+        for prefix, service in ROUTES:
             if op.startswith(prefix):
                 svc = getattr(self.ctx, service, None)
                 if svc is None:
@@ -297,13 +317,17 @@ class Session:
         self.controller = APP_TO_CONTROLLER.get(msg.get("app"), self.controller)
         log.info("session %d hello from %s (%s)", self.num, self.client, self.controller)
         self.ctx.controllers_changed()
+        enabled = getattr(self.ctx, "modules", list(modules.MODULES))
+        from .paths import slot
         return {
             "name": "Arstro Remote",
             "version": __version__,
             "proto": PROTO_VERSION,
             "hostname": socket.gethostname(),
             "user": pwd.getpwuid(os.getuid()).pw_name,
-            "features": FEATURES,
+            "features": [f for f in FEATURES if FEATURE_MODULE.get(f, "system") in enabled],
+            "modules": modules.describe(enabled, getattr(self.ctx, "module_ok", None)),
+            "slot": slot(),
             "session": self.num,
             "controller": self.controller,
             "input": {"backend": self.ctx.input.backend, "available": self.ctx.input.available},

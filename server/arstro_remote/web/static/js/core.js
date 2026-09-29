@@ -4,7 +4,7 @@
 // The web UI speaks the same protocol as the app and the CLI (docs/protocol.md):
 // JSON ops out, replies + `state` events in, TERM frames for shells.
 
-export const VERSION = "2.0.0";
+export const VERSION = "2.1.0";
 
 // ------------------------------------------------------------------ DOM
 export function h(tag, attrs, ...children) {
@@ -95,6 +95,14 @@ const P = {
   signal: '<path d="M4 20v-3M9 20v-7M14 20V9M19 20V4"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   send: '<path d="M4 12 20 4l-6 16-3-7z"/>',
+  chip: '<rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 2.5V5M12 2.5V5M15 2.5V5M9 19v2.5M12 19v2.5M15 19v2.5M2.5 9H5M2.5 12H5M2.5 15H5M19 9h2.5M19 12h2.5M19 15h2.5"/><circle cx="12" cy="12" r="2.5"/>',
+  plug: '<path d="M9 3v5M15 3v5M6.5 8h11v3a5.5 5.5 0 0 1-11 0zM12 16.5V21"/>',
+  file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
+  upload: '<path d="M12 20V9M7 14l5-5 5 5M5 4h14"/>',
+  ethernet: '<rect x="3" y="7" width="18" height="12" rx="2"/><path d="M7 19v-4M10 19v-4M14 19v-4M17 19v-4M9 7V4h6v3"/>',
+  logs: '<path d="M5 4h14v16H5z"/><path d="M8 8h8M8 12h8M8 16h5"/>',
+  camera: '<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>',
+  edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/>',
   hidden: '<path d="M3 3l18 18M10.6 5.1A10 10 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3 3.9M6.6 6.6A17 17 0 0 0 2 12s3.5 7 10 7a9.6 9.6 0 0 0 4.4-1"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/>',
 };
 

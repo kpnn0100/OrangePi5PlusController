@@ -43,6 +43,46 @@ def set_edid(dev, edid, edid_file=None):
     return True
 
 
+def _edid_marker(dev):
+    run = os.environ.get("XDG_RUNTIME_DIR") or "/run/user/%d" % os.getuid()
+    return os.path.join(run, "arstro-edid-" + os.path.basename(dev))
+
+
+def current_edid(dev):
+    rc, out = v4l2(dev, "--get-edid", "pad=0,format=hex")
+    return out.strip() if rc == 0 and out.strip() else None
+
+
+def ensure_edid(dev, edid):
+    """Set the EDID only when the receiver does not already hold the one we set last time:
+    every write re-plugs the source, which would glitch a recording another instance (the
+    other A/B slot) is making (ADM-06)."""
+    import hashlib
+    cur = current_edid(dev)
+    want = "%s %s" % (edid, hashlib.sha1((cur or "").encode()).hexdigest())
+    try:
+        with open(_edid_marker(dev)) as f:
+            if cur and f.read().strip() == want:
+                print(f"[info] EDID {EDID_TYPES[edid]} already set - not re-plugging the source")
+                return True
+    except OSError:
+        pass
+    ok = set_edid(dev, edid)
+    if ok:
+        remember_edid(dev, edid)
+    return ok
+
+
+def remember_edid(dev, edid):
+    import hashlib
+    now = current_edid(dev)
+    try:
+        with open(_edid_marker(dev), "w") as f:
+            f.write("%s %s\n" % (edid, hashlib.sha1((now or "").encode()).hexdigest()))
+    except OSError:
+        pass
+
+
 def link_state(dev):
     """Why there is (no) picture: (state, explanation) with state one of
     'none' (no 5 V from a source), 'idle' (source connected but not transmitting),
@@ -224,3 +264,126 @@ class SimulatedSignal:
 
     def toggle(self):
         self.present = not self.present
+
+
+# --------------------------------------------------------------------- V4L2 cameras
+def _v4l2_info(dev):
+    """{"driver", "card", "bus", "capture"} from `v4l2-ctl -D` (standard V4L2 querycap)."""
+    rc, out = v4l2(dev, "-D")
+    if rc != 0:
+        return None
+    info = {"driver": "", "card": "", "bus": "", "capture": False}
+    for key, field in (("Driver name", "driver"), ("Card type", "card"), ("Bus info", "bus")):
+        m = re.search(r"^\s*%s\s*:\s*(.*)$" % key, out, re.M)
+        if m:
+            info[field] = m.group(1).strip()
+    caps = out.split("Device Caps", 1)[-1]
+    info["capture"] = "Video Capture" in caps and "Memory-to-Memory" not in caps
+    return info
+
+
+def camera_modes(dev):
+    """[(fourcc, w, h, fps)] the device offers (`v4l2-ctl --list-formats-ext`)."""
+    rc, out = v4l2(dev, "--list-formats-ext")
+    if rc != 0:
+        return []
+    modes, fourcc, size = [], None, None
+    for line in out.splitlines():
+        m = re.search(r"\[\d+\]: '(\w+)'", line)
+        if m:
+            fourcc, size = m.group(1), None
+            continue
+        m = re.search(r"Size: Discrete (\d+)x(\d+)", line)
+        if m:
+            size = (int(m.group(1)), int(m.group(2)))
+            continue
+        m = re.search(r"\(([\d.]+) fps\)", line)
+        if m and fourcc and size:
+            modes.append((fourcc, size[0], size[1], float(m.group(1))))
+    return modes
+
+
+SUPPORTED_FOURCC = {"MJPG": None, "YUYV": "YUY2", "NV12": "NV12", "UYVY": "UYVY", "YU12": "I420"}
+
+
+def best_mode(modes, max_pixels=1920 * 1080):
+    """Largest mode up to 1080p with >= 24 fps; MJPG preferred above 640x480 (USB bandwidth)."""
+    usable = [m for m in modes if m[0] in SUPPORTED_FOURCC]
+    if not usable:
+        return None
+
+    def score(m):
+        fourcc, w, h, fps = m
+        px = w * h
+        return (px <= max_pixels, fps >= 24, px if px <= max_pixels else -px,
+                fourcc == "MJPG" if px > 640 * 480 else fourcc != "MJPG", fps)
+    return max(usable, key=score)
+
+
+def list_cameras():
+    """USB / UVC capture devices (the board's HDMI receiver is its own source)."""
+    out = []
+    for path in sorted(glob.glob("/sys/class/video4linux/video*"), key=lambda p: int(re.sub(r"\D", "", p) or 0)):
+        dev = "/dev/" + os.path.basename(path)
+        try:
+            with open(os.path.join(path, "name")) as f:
+                name = f.read().strip()
+        except OSError:
+            continue
+        if "hdmirx" in name.lower():
+            continue
+        info = _v4l2_info(dev)
+        if not info or not info["capture"]:
+            continue
+        if not (info["bus"].startswith("usb-") or info["driver"] == "uvcvideo"):
+            continue
+        modes = camera_modes(dev)
+        if not any(m[0] in SUPPORTED_FOURCC for m in modes):
+            continue                      # metadata node of a UVC camera
+        out.append({"device": dev, "name": info["card"] or name, "driver": info["driver"], "bus": info["bus"],
+                    "modes": ["%s %dx%d@%g" % m for m in modes if m[0] in SUPPORTED_FOURCC]})
+    return out
+
+
+class V4l2Camera:
+    """A standard V4L2 camera as the recorder's source (CAM-02).
+
+    spec: "/dev/video2" (best mode) or "/dev/video2@MJPG 1280x720@30". Frames are
+    converted to NV12 in system memory, like the test pattern, so preview, recording
+    and conversion work unchanged."""
+
+    format = "NV12"
+    pattern = None
+
+    def __init__(self, spec):
+        dev, _, mode = spec.partition("@")
+        if not re.fullmatch(r"/dev/video\d+", dev):
+            raise ValueError("camera must look like /dev/video2 or /dev/video2@MJPG 1280x720@30")
+        self.device = dev
+        self.present = True
+        chosen = None
+        if mode:
+            m = re.fullmatch(r"(\w+) (\d+)x(\d+)@([\d.]+)", mode.strip())
+            if not m:
+                raise ValueError("camera mode must look like 'MJPG 1280x720@30'")
+            chosen = (m.group(1), int(m.group(2)), int(m.group(3)), float(m.group(4)))
+        else:
+            chosen = best_mode(camera_modes(dev))
+        if not chosen:
+            chosen = ("YUYV", 640, 480, 30.0)
+        self.input_fourcc = chosen[0]
+        self.timing = (chosen[1], chosen[2], chosen[3])
+
+    def query(self):
+        return self.timing if self.present and os.path.exists(self.device) else None
+
+    def source_desc(self, n, d):
+        w, h, _fps = self.timing
+        if self.input_fourcc == "MJPG":
+            return (f"v4l2src name=src device={self.device} do-timestamp=true ! "
+                    f"image/jpeg,width={w},height={h},framerate={n}/{d} ! jpegdec ! "
+                    "videoconvert n-threads=2 ! video/x-raw,format=NV12 ! ")
+        fmt = SUPPORTED_FOURCC.get(self.input_fourcc) or "YUY2"
+        return (f"v4l2src name=src device={self.device} do-timestamp=true ! "
+                f"video/x-raw,format={fmt},width={w},height={h},framerate={n}/{d} ! "
+                "videoconvert n-threads=2 ! video/x-raw,format=NV12 ! ")

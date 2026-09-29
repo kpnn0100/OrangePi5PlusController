@@ -16,7 +16,7 @@ import secrets
 import threading
 
 _lock = threading.Lock()
-MIN_LEN = 8
+MIN_LEN = 5          # "admin", the installer default, is the shortest accepted
 MAX_LEN = 256
 
 

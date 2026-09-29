@@ -1,4 +1,8 @@
 // Web controller entry: login (CON-03), navigation shell, router, connection status.
+//
+// Navigation is by feature group (MOD-04): each group belongs to one server module and is
+// shown only when the server has that module enabled; a group with several pages gets a
+// sub-tab bar. Routes are #/<group>[/<page>] (old #/<page> links still work).
 
 import { h, clear, icon, conn, store, closeAllSheets, VERSION } from "./core.js";
 import { login } from "./login.js";
@@ -6,12 +10,29 @@ import recorder from "./views/recorder.js";
 import gallery from "./views/gallery.js";
 import monitor from "./views/monitor.js";
 import wifi from "./views/wifi.js";
+import network from "./views/network.js";
+import bluetooth from "./views/bluetooth.js";
 import terminal from "./views/terminal.js";
 import remote from "./views/remote.js";
 import screen from "./views/screen.js";
 import system from "./views/system.js";
+import logs from "./views/logs.js";
+import files from "./views/files.js";
+import { pins, i2c, spi, uart, pwm, adc } from "./views/io.js";
 
-const VIEWS = [recorder, gallery, screen, monitor, wifi, terminal, remote, system];
+const GROUPS = [
+  { id: "monitor", title: "Monitor", icon: "monitor", module: "monitor", pages: [[monitor, "Monitor"]] },
+  { id: "camera", title: "Camera", icon: "recorder", module: "camera", pages: [[recorder, "Live"], [gallery, "Gallery"]] },
+  { id: "screen", title: "Screen", icon: "screen", module: "screen", pages: [[screen, "Screen"], [remote, "Touchpad & keys"]] },
+  { id: "terminal", title: "Terminal", short: "Shell", icon: "terminal", module: "terminal", pages: [[terminal, "Terminal"]] },
+  { id: "connection", title: "Connection", short: "Net", icon: "wifi", module: "connection",
+    pages: [[wifi, "Wi-Fi"], [network, "Network"], [bluetooth, "Bluetooth"]] },
+  { id: "io", title: "IO Control", short: "IO", icon: "chip", module: "io",
+    pages: [[pins, "Pins"], [i2c, "I2C"], [spi, "SPI"], [uart, "UART"], [pwm, "PWM & LEDs"], [adc, "ADC"]] },
+  { id: "files", title: "Files", icon: "folder", module: "files", pages: [[files, "Files"]] },
+  { id: "system", title: "System", icon: "system", module: "system", pages: [[system, "System"], [logs, "Logs"]] },
+];
+let VIEWS = GROUPS;         // the groups this server offers (set from hello)
 const root = document.getElementById("root");
 let current = null;          // {view, cleanup, el}
 let shell = null;
@@ -86,21 +107,22 @@ function buildShell() {
   const title = h("div.topbar-title");
   const top = h("header.topbar", null, h("div.logo", null, icon("logo")), title, hostLine());
   const tabs = h("nav.tabbar", { "aria-label": "Main" },
-    VIEWS.map((v) => (tabItems[v.id] = h("button.tab", { onclick: () => go(v.id), "aria-label": v.title }, icon(v.icon), h("span", null, v.title)))));
+    VIEWS.map((v) => (tabItems[v.id] = h("button.tab", { onclick: () => go(v.id), "aria-label": v.title }, icon(v.icon), h("span", null, v.short || v.title)))));
   const content = h("div.content");
   const main = h("main.main", null, top, content);
   clear(root, h("div.app", null, side, main, tabs));
 
   const setBadge = (id, on) => {
     for (const el of [navItems[id], tabItems[id]]) {
+      if (!el) continue;
       const b = el.querySelector(".badge-dot");
       if (on && !b) el.append(h("span.badge-dot"));
       if (!on && b) b.remove();
     }
   };
   const offs = [
-    store.on("recorder", (r) => setBadge("recorder", !!(r && r.recording && r.recording.active))),
-    store.on("jobs", (j) => setBadge("gallery", (j || []).some((x) => x.state === "running"))),
+    store.on("recorder", (r) => setBadge("camera", !!(r && r.recording && r.recording.active))),
+    store.on("jobs", (j) => setBadge("camera", (j || []).some((x) => x.state === "running"))),
   ];
   clear(content, h("div.empty", { style: { paddingTop: "120px" } }, h("span.spin", { style: { margin: "0 auto 12px" } }),
                    h("div", null, "Connecting…")));
@@ -129,8 +151,15 @@ function unmountView() {
 }
 
 function route() {
-  const id = (location.hash.replace(/^#\/?/, "") || "recorder").split("?")[0];
-  return VIEWS.find((v) => v.id === id) || recorder;
+  const [a, b] = (location.hash.replace(/^#\/?/, "").split("?")[0] || "").split("/");
+  let group = VIEWS.find((g) => g.id === a);
+  let page = group ? group.pages.find(([v]) => v.id === b) : null;
+  if (!group && a) {                    // old #/<page> links
+    group = VIEWS.find((g) => g.pages.some(([v]) => v.id === a));
+    page = group && group.pages.find(([v]) => v.id === a);
+  }
+  group = group || VIEWS.find((g) => g.id === "camera") || VIEWS[0];
+  return { group, page: page || group.pages[0] };
 }
 
 function go(id) {
@@ -140,19 +169,33 @@ function go(id) {
 
 function render() {
   if (!shell || !conn.hello) return;          // views mount once the server said hello
-  const view = route();
+  const { group, page } = route();
+  const [view, label] = page;
   if (current && current.view === view) return;
   closeAllSheets();
   unmountView();
-  const el = h("section.view", { "data-view": view.id });
-  clear(shell.content, el);
-  shell.select(view.id);
-  shell.title.textContent = view.title;
-  document.title = view.title + " · Arstro Remote";
+  const el = h("section.view", { "data-view": view.id, "data-group": group.id });
+  const sub = group.pages.length > 1 ? h("nav.subnav", { "aria-label": group.title },
+    group.pages.map(([v, l]) => h("button", { class: v === view ? "active" : "", "aria-current": v === view ? "page" : "false",
+                                              onclick: () => go(group.id + "/" + v.id) }, l))) : null;
+  clear(shell.content, sub, el);
+  shell.select(group.id);
+  shell.title.textContent = group.pages.length > 1 ? `${group.title} · ${label}` : group.title;
+  document.title = shell.title.textContent + " · Arstro Remote";
   window.scrollTo({ top: 0 });
   let cleanup = null;
   try { cleanup = view.mount(el, { logout }); } catch (e) { console.error(e); }
   current = { view, cleanup, el };
+}
+
+/** The groups whose server module is enabled (hello.modules; all when the server is older). */
+function applyModules(hello) {
+  const mods = hello && hello.modules;
+  const on = mods ? new Set(mods.filter((m) => m.state !== "disabled").map((m) => m.name)) : null;
+  const next = on ? GROUPS.filter((g) => on.has(g.module)) : GROUPS;
+  const changed = next.length !== VIEWS.length || next.some((g, i) => g !== VIEWS[i]);
+  VIEWS = next.length ? next : GROUPS.filter((g) => g.id === "system");
+  return changed;
 }
 
 async function logout() {
@@ -201,7 +244,13 @@ async function boot() {
     });
     conn.on("ready", (hello) => {
       if (!shell) return;
-      shell.setHost(hello.hostname);
+      if (applyModules(hello)) {            // modules changed (server restarted): rebuild the nav
+        unmountView();
+        shell.offs.forEach((f) => f());
+        shell = buildShell();
+        shell.setStatus(conn.status);
+      }
+      shell.setHost(hello.hostname + (hello.slot ? " · " + hello.slot.toUpperCase() : ""));
       if (!current) render();
     });
     conn.on("event", (ev, msg) => {

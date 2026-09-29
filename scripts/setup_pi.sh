@@ -20,6 +20,8 @@
 #   --reboot             reboot the Pi at the end if the service is not running yet,
 #                        then wait until it is up
 #   --web-password       set the web / remote-CLI password (asked, or ARSTRO_WEB_PASS=...)
+#   --slot a|b           the server slot to install (default a = port 8080; b = 8081 runs
+#                        next to a, for trying a new version - ADM-06)
 #   --test               run the on-Pi test suites afterwards (the input test opens a small
 #                        window on the Pi screen for ~5 s; the recorder tests use a test
 #                        pattern, not the HDMI input)
@@ -34,7 +36,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TARGET="" PASS="${ARSTRO_PASS:-}" PORT=22 AUTOLOGIN=0 REBOOT=0 RUN_TESTS=0 NO_DEPS=0 NO_KEY=0
+TARGET="" PASS="${ARSTRO_PASS:-}" PORT=22 AUTOLOGIN=0 REBOOT=0 RUN_TESTS=0 NO_DEPS=0 NO_KEY=0 SLOT="${ARSTRO_SLOT:-a}"
 APK=0 APK_SERIAL="" WEB_PASS_SET=0 WEB_PASS="${ARSTRO_WEB_PASS:-}"
 [ -n "$WEB_PASS" ] && WEB_PASS_SET=1
 
@@ -52,12 +54,16 @@ while [ $# -gt 0 ]; do
         --apk-serial) APK=1; APK_SERIAL="$2"; shift 2 ;;
         --no-deps) NO_DEPS=1; shift ;;
         --no-key) NO_KEY=1; shift ;;
+        --slot) SLOT="$2"; shift 2 ;;
         -h|--help) usage 0 ;;
         -*) echo "unknown option $1" >&2; usage 2 ;;
         *) TARGET="$1"; shift ;;
     esac
 done
 [ -n "$TARGET" ] || { echo "error: give the Pi as [user@]HOST" >&2; usage 2; }
+[[ "$SLOT" =~ ^[a-z]$ ]] || { echo "error: --slot must be one letter (a, b)" >&2; exit 2; }
+WEB_PORT=$(( 8080 + $(printf '%d' "'$SLOT") - 97 ))
+CLI="~/.local/bin/arstro-remote-$SLOT"
 c_ok()   { printf '\033[32m%s\033[0m\n' "$*"; }
 c_warn() { printf '\033[33m%s\033[0m\n' "$*"; }
 c_err()  { printf '\033[31m%s\033[0m\n' "$*" >&2; }
@@ -274,22 +280,24 @@ fi
 step "Copying server/ and running install.sh"
 COPYFILE_DISABLE=1 tar -C "$ROOT/server" --exclude='__pycache__' --exclude='*.pyc' --exclude='node_modules' -czf - . | \
     remote 'rm -rf ~/arstro-remote-src && mkdir -p ~/arstro-remote-src && tar -xzf - -C ~/arstro-remote-src'
-remote 'cd ~/arstro-remote-src && ./install.sh' | sed 's/^/  /'
+# IO Control needs udev rules and groups (root): done here with the Pi's sudo password
+rsudo "bash ~$PI_USER/arstro-remote-src/scripts/setup_io_perms.sh $PI_USER" | sed 's/^/  /' || c_warn "IO device permissions not set up"
+remote "cd ~/arstro-remote-src && ./install.sh --slot $SLOT --yes --no-deps --no-perms" | sed 's/^/  /'
 
-# the newest APK, offered at http://<pi>:8080/app.apk for phones without a cable (SET-04)
+# the newest APK, offered at http://<pi>:<port>/app.apk for phones without a cable (SET-04)
 apk=$(ls -t "$ROOT"/release/arstro-remote-v*.apk 2>/dev/null | head -1 || true)
 if [ -n "$apk" ]; then
     ver=$(basename "$apk" .apk | sed 's/^arstro-remote-v//')
     remote 'd=${XDG_DATA_HOME:-$HOME/.local/share}/arstro-remote/app; mkdir -p "$d" && cat > "$d/arstro-remote.apk.part" && mv -f "$d/arstro-remote.apk.part" "$d/arstro-remote.apk"' <"$apk"
     printf '%s\n' "$ver" | remote 'd=${XDG_DATA_HOME:-$HOME/.local/share}/arstro-remote/app; cat > "$d/version"'
-    c_ok "app v$ver uploaded: phones on the same network can install it from http://${TARGET#*@}:8080/app.apk"
+    c_ok "app v$ver uploaded: phones on the same network can install it from http://${TARGET#*@}:$WEB_PORT/app.apk"
 fi
 
 # ------------------------------------------------------------------ 5. start / verify
 wait_status() {  # $1 = seconds
     local end=$(( $(date +%s) + $1 ))
     while [ "$(date +%s)" -lt "$end" ]; do
-        if remote '~/.local/bin/arstro-remote status' >"$STATUS_FILE" 2>/dev/null; then return 0; fi
+        if remote "$CLI status" >"$STATUS_FILE" 2>/dev/null; then return 0; fi
         sleep 3
     done
     return 1
@@ -327,7 +335,7 @@ if [ "$WEB_PASS_SET" = 1 ]; then
             ask WEB_PASS "Web / remote-CLI password (8+ characters): " silent || { c_err "no terminal to ask - set ARSTRO_WEB_PASS"; exit 1; }
         fi
         step "Setting the web password"
-        printf '%s\n' "$WEB_PASS" | remote '~/.local/bin/arstro-remote web --set-password -' | sed 's/^/  /'
+        printf '%s\n' "$WEB_PASS" | remote "$CLI web --set-password -" | sed 's/^/  /'
     else
         c_warn "cannot set the web password yet: the service is not running (run again after a reboot)"
     fi
@@ -355,8 +363,8 @@ fi
 step "Done"
 cat <<EOF
   Pi:        $TARGET  (key login: $([ "$KEY_OK" = 1 ] && echo yes || echo no))
-  Manage:    ssh $([ "$PORT" = 22 ] || echo "-p $PORT ")$TARGET '~/.local/bin/arstro-remote status'   (pair | unpair ADDR | rec | gallery | web)
-  Web:       http://${TARGET#*@}:8080/   (password: 'arstro-remote web --show' on the Pi)
+  Manage:    ssh $([ "$PORT" = 22 ] || echo "-p $PORT ")$TARGET '$CLI status'   (pair | unpair ADDR | rec | gallery | web)
+  Web:       http://${TARGET#*@}:$WEB_PORT/   (slot ${SLOT^^}; password: 'arstro-remote-$SLOT web --show' on the Pi)
   Phone:     install release/*.apk, open Arstro Remote, Scan, pick "Arstro-<hostname>".
              New phones can pair during the first 10 min after boot or after 'arstro-remote pair'.
 EOF

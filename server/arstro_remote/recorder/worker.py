@@ -79,7 +79,10 @@ class Worker:
         self.encode_json, self.encode_video = encode_json, encode_video
         self.v4l2 = v4l2
         self.loop = GLib.MainLoop()
-        self.sim = v4l2.SimulatedSignal(args.simulate) if args.simulate else None
+        if args.camera:
+            self.sim = v4l2.V4l2Camera(args.camera)
+        else:
+            self.sim = v4l2.SimulatedSignal(args.simulate) if args.simulate else None
         self.dev = None if self.sim else (args.device or v4l2.find_hdmirx_device())
         self.audio_card = None if self.sim else v4l2.find_hdmiin_audio()
         self.cap = Capture(self.dev, self, audio_card=self.audio_card, simulate=self.sim)
@@ -222,6 +225,8 @@ class Worker:
             ok = True
             if self.dev and cmd.get("value") in self.v4l2.EDID_TYPES:
                 ok = self.v4l2.set_edid(self.dev, cmd["value"])
+                if ok:
+                    self.v4l2.remember_edid(self.dev, cmd["value"])
             self._reply(cmd, error=None if ok else "could not set the EDID")
         elif c == "status":
             self._status(force=True)
@@ -326,13 +331,15 @@ class Worker:
         f = self.Gst.ElementFactory.find
         return {"vpu_h265": bool(f("mpph265enc")), "vpu_h264": bool(f("mpph264enc")),
                 "x265": bool(f("x265enc")), "ffv1": bool(f("avenc_ffv1")), "gpu_ffv1": gpu.available(),
-                "audio": bool(self.audio_card) or bool(self.sim), "device": self.dev,
-                "simulate": bool(self.sim)}
+                "audio": bool(self.audio_card) or (bool(self.sim) and not getattr(self.sim, "device", None)),
+                "device": self.dev or getattr(self.sim, "device", None),
+                "simulate": bool(self.sim) and not getattr(self.sim, "device", None),
+                "camera": getattr(self.sim, "device", None)}
 
     def run(self):
         self.emit(ev="caps", **self.capabilities())
         if self.dev and os.environ.get("ARSTRO_EDID") in self.v4l2.EDID_TYPES:
-            self.v4l2.set_edid(self.dev, os.environ["ARSTRO_EDID"])
+            self.v4l2.ensure_edid(self.dev, os.environ["ARSTRO_EDID"])
         for sig in (signal.SIGTERM, signal.SIGINT):
             self.GLib.unix_signal_add(self.GLib.PRIORITY_HIGH, sig, lambda: self.quit() or False)
         threading.Thread(target=self._stdin_reader, daemon=True).start()
@@ -347,6 +354,7 @@ def main():
     ap = argparse.ArgumentParser(prog="arstro_remote.recorder.worker")
     ap.add_argument("--simulate", help="test pattern instead of HDMI RX, e.g. 1920x1080@30")
     ap.add_argument("--device", help="V4L2 device (default: auto-detect hdmirx)")
+    ap.add_argument("--camera", help="a V4L2 camera instead of HDMI RX: /dev/videoN[@MJPG 1280x720@30]")
     args = ap.parse_args()
     os.environ["GST_MPP_NO_RGA"] = "0"      # RGA scaling for the zero-copy preview
     import gi

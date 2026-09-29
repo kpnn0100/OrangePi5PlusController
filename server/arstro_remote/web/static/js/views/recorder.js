@@ -102,7 +102,10 @@ export default {
       } else if (st === "unsupported") {
         ic = "alert"; title = "Can't play here"; detail = pState.detail;
       } else if (!sig.present) {
-        ic = "no-signal"; title = "No HDMI signal"; detail = sig.why || "Connect a source to the HDMI input.";
+        ic = "no-signal";
+        title = rec.camera ? "No camera picture" : "No HDMI signal";
+        detail = rec.camera ? `${rec.camera.split("@")[0]} is not connected or not sending.`
+                            : sig.why || "Connect a source to the HDMI input.";
       } else if (st === "no-signal") {
         ic = "no-signal"; title = "Signal lost"; detail = pState.detail;
       } else {
@@ -246,6 +249,29 @@ export function openSettings() {
                                                                { ok: "Storage folder saved", btn: e.currentTarget }) }, "Save");
     const sim = (store.get("recorder") || {}).simulate;
     const simInput = h("input.input", { value: sim || "1920x1080@30", spellcheck: "false", style: { maxWidth: "160px" } });
+    // CAM-01/02: HDMI input, USB (V4L2) cameras or the test pattern
+    const sourceBox = h("div.set-group", null, row("Input", "Looking for cameras…", h("span.spin")));
+    const loadSources = async () => {
+      let r;
+      try { r = await conn.call("camera.sources"); } catch (e) { return clear(sourceBox, row("Input", errText(e), null)); }
+      const pick = (src, extra) => busy(null, async () => {
+        await conn.call("camera.select", { source: src, ...extra }, 60000);
+        toast("Camera source changed", "ok");
+        loadSources();
+      });
+      clear(sourceBox, r.sources.map((src) => {
+        const on = r.current === src.id || (src.kind === "test" && r.current.startsWith("test")) ||
+                   (src.kind === "v4l2" && r.current.startsWith(src.id));
+        let mode = null;
+        const modeSel = src.modes && src.modes.length ? h("select.input", { style: { width: "auto", maxWidth: "170px" }, onchange: (e) => { mode = e.target.value || null; } },
+          h("option", { value: "" }, "Best mode"), src.modes.map((m) => h("option", { value: m }, m))) : null;
+        return row(src.title, [src.note, on ? "in use" : null].filter(Boolean).join(" · "),
+          h("div.row", null, src.kind === "test" ? simInput : modeSel,
+            h("button.btn.sm", { class: on ? "primary" : "", disabled: !src.available,
+                                 onclick: () => pick(src.id, src.kind === "test" ? { spec: simInput.value } : mode ? { mode } : {}) },
+              on ? "Selected" : "Use")));
+      }));
+    };
 
     clear(body,
       h("div.set-group-title", null, "Format"),
@@ -303,14 +329,8 @@ export function openSettings() {
           h("div.row", null, storage, saveStorage)))),
 
       h("div.set-group-title", null, "Source"),
-      h("div.set-group", null,
-        row("Input", sim ? "Test pattern " + sim : "HDMI RX",
-          seg([["hdmi", "HDMI"], ["test", "Test pattern"]], sim ? "test" : "hdmi", (v) =>
-            busy(null, async () => {
-              await conn.call("recorder.source", { simulate: v === "test" ? simInput.value : null }, 60000);
-              toast(v === "test" ? "Test pattern on" : "HDMI input on", "ok");
-            }))),
-        row("Test pattern size", "Width×height@fps, used by the test source", simInput)));
+      sourceBox);
+    loadSources();
     if (body.parentElement) body.parentElement.scrollTop = scroll;
   };
   const offs = [store.on("recorder.settings", render), store.on("recorder", () => {}, { now: false })];

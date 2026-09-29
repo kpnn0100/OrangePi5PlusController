@@ -94,15 +94,23 @@ function drop(id) {
 export default {
   id: "terminal", title: "Terminal", icon: "terminal",
 
-  mount(root) {
+  /** opts.kind "serial": the serial consoles of IO › UART (opts.onNew opens a port). */
+  mount(root, opts = {}) {
+    const kind = opts.kind || "shell";
+    const serial = kind === "serial";
     const tabs = h("div.term-tabs");
     const box = h("div.term-box");
     const keys = h("div.term-keys");
-    const wrap = h("div.term-wrap", null, tabs, box, keys);
-    root.append(h("div.view-head", null, h("div", null, h("h1", null, "Terminal"),
-                  h("div.sub", null, "Shared shells on the Pi · the app and the CLI see the same ones"))), wrap);
+    const wrap = h("div.term-wrap", { class: serial ? "embedded" : "" }, tabs, box, keys);
+    if (!serial) root.append(h("div.view-head", null, h("div", null, h("h1", null, "Terminal"),
+                  h("div.sub", null, "Shared shells on the Pi · the app and the CLI see the same ones"))));
+    root.append(wrap);
     let ready = false;
-    let list = store.get("terminals") || [];
+    const mine = (v) => (v || []).filter((t) => (t.kind || "shell") === kind);
+    let list = mine(store.get("terminals"));
+    const label = (t) => serial ? `${t.port || "serial"} · ${(t.settings || {}).baud || ""}` : `Shell ${t.term}`;
+    const newLabel = serial ? "Open a port" : "New shell";
+    const newAction = () => (serial ? opts.onNew && opts.onNew() : openShell());
 
     const sendKey = (seq) => { if (mgr.active !== null) { conn.termWrite(mgr.active, seq); mgr.terms.get(mgr.active)?.xterm.focus(); } };
     const renderKeys = () => clear(keys,
@@ -119,15 +127,17 @@ export default {
         list.map((t) => {
           return h("button.term-tab", { class: mgr.active === t.term ? "active" : "", onclick: () => show(t.term),
                                         title: `opened by ${CONTROLLER_NAMES[t.opened_by] || t.opened_by || "?"}` },
-            icon("cmd"), `Shell ${t.term}`,
+            icon(serial ? "plug" : "cmd"), label(t),
             h("span.v", null, t.viewers ? `${t.viewers} viewing` : "idle"),
-            h("span.x", { role: "button", "aria-label": "Close shell", title: "Close shell",
+            h("span.x", { role: "button", "aria-label": serial ? "Close port" : "Close shell", title: serial ? "Close port" : "Close shell",
                           onclick: (e) => { e.stopPropagation(); closeShell(t); } }, icon("x")));
         }),
-        h("button.btn.sm", { onclick: () => openShell() }, icon("plus"), "New shell"));
+        h("button.btn.sm", { onclick: () => newAction() }, icon("plus"), newLabel));
       if (!list.length) {
-        clear(box, h("div.empty", { style: { paddingTop: "80px" } }, icon("terminal"), h("div", null, "No shells open."),
-          h("div", { style: { marginTop: "14px" } }, h("button.btn.primary", { onclick: () => openShell() }, icon("plus"), "Open a shell"))));
+        clear(box, h("div.empty", { style: { paddingTop: "80px" } }, icon(serial ? "plug" : "terminal"),
+          h("div", null, serial ? "No serial console open." : "No shells open."),
+          h("div", { style: { marginTop: "14px" } }, h("button.btn.primary", { onclick: () => newAction() }, icon("plus"),
+            serial ? "Open a serial port" : "Open a shell"))));
       } else if (mgr.active === null || !ids.has(mgr.active)) {
         const first = list.find((t) => mgr.terms.has(t.term)) || list[0];
         if (ready) show(first.term);
@@ -185,8 +195,9 @@ export default {
 
     async function closeShell(t) {
       if (t.viewers > (mgr.terms.has(t.term) ? 1 : 0)) {
-        const ok = await confirmBox({ title: `Close shell ${t.term}?`, ok: "Close", danger: true,
-          text: "Another controller is using this shell. Closing ends its programs for everyone." });
+        const ok = await confirmBox({ title: `Close ${serial ? t.port : "shell " + t.term}?`, ok: "Close", danger: true,
+          text: serial ? "Another controller is watching this port. Closing it ends the console for everyone."
+                       : "Another controller is using this shell. Closing ends its programs for everyone." });
         if (!ok) return;
       }
       conn.call("term.close", { term: t.term }).catch((e) => toast(errText(e), "err"));
@@ -194,14 +205,16 @@ export default {
 
     const ro = new ResizeObserver(() => fitActive());
     ro.observe(box);
-    const offs = [store.on("terminals", (v) => { list = v || []; renderTabs(); })];
+    const offs = [store.on("terminals", (v) => { list = mine(v); renderTabs(); })];
     renderKeys();
     loadXterm().then(() => {
       wire();
       ready = true;
-      if (mgr.active !== null && mgr.terms.has(mgr.active)) show(mgr.active);
+      const want = opts.term !== undefined ? opts.term : mgr.active;
+      if (want !== null && list.some((t) => t.term === want)) show(want);
       else renderTabs();
     }).catch((e) => toast(errText(e), "err"));
+    root.showTerm = (id) => { if (ready) show(id); else opts.term = id; };
 
     return () => {
       offs.forEach((f) => f());

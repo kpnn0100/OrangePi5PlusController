@@ -162,6 +162,7 @@ svg.i { width: 20px; height: 20px; flex: none; stroke: currentColor; fill: none;
   .tab .badge-dot { position: absolute; top: 9px; left: calc(50% + 8px); }
 }
 @media (max-width: 380px) { .tab span { font-size: 9.5px; } }
+.tab span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ----------------------------------------------------------- components */
 .card {
@@ -587,3 +588,77 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .screen-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
 .screen-bar .grow { min-width: 120px; }
 @media (max-width: 899px) { .screen-stage { max-height: calc(100vh - 230px - var(--tab-h)); } }
+
+/* ------------------------------------------------------- group sub-tabs (MOD-04) */
+.subnav { display: flex; gap: 6px; margin: -6px 0 20px; overflow-x: auto; scrollbar-width: none; }
+.subnav::-webkit-scrollbar { display: none; }
+.subnav button {
+  flex: none; height: 34px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--line-2);
+  background: transparent; color: var(--text-2); cursor: pointer; font-size: 13.5px; font-weight: 550;
+  transition: all var(--t) var(--ease);
+}
+.subnav button:hover { color: var(--text); border-color: var(--muted); }
+.subnav button.active { background: var(--accent-soft); color: var(--accent-2); border-color: transparent; }
+@media (max-width: 899px) { .subnav { margin: 0 -16px 14px; padding: 0 16px; } }
+
+.term-wrap.embedded { height: calc(100vh - 330px); min-height: 320px; }
+@media (max-width: 899px) { .term-wrap.embedded { height: calc(100vh - 320px - var(--tab-h)); min-height: 280px; } }
+
+/* ------------------------------------------------------------ IO control */
+.io-note { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; border-radius: var(--r);
+           background: var(--warn-soft); color: var(--warn); font-size: 13px; margin-bottom: 16px; }
+.io-note svg.i { margin-top: 1px; }
+.header-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px 10px; }
+.pin { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 5px 10px; border-radius: var(--r-sm);
+       border: 1px solid var(--line); background: var(--card-2); cursor: default; min-width: 0; }
+.pin.gpio { cursor: pointer; }
+.pin.gpio:hover { border-color: var(--line-2); background: var(--card-3); }
+.pin.odd { flex-direction: row-reverse; text-align: right; }
+.pin .num { width: 26px; height: 26px; flex: none; border-radius: 50%; display: grid; place-items: center;
+            font-size: 11.5px; font-weight: 700; background: var(--card-3); color: var(--text-2); }
+.pin.pwr .num { background: rgba(255, 107, 107, .18); color: var(--err); }
+.pin.gnd .num { background: #000; color: var(--muted); }
+.pin.gpio .num { background: var(--accent-soft); color: var(--accent-2); }
+.pin.held .num { background: var(--accent); color: var(--accent-ink); }
+.pin .pname { font-weight: 600; font-size: 13px; font-family: var(--mono); }
+.pin .palt { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pin .lv { margin-left: auto; font-family: var(--mono); font-size: 12px; font-weight: 700; flex: none; }
+.pin.odd .lv { margin-left: 0; margin-right: auto; }
+.lv.hi { color: var(--ok); } .lv.lo { color: var(--muted); }
+.pin .txt { min-width: 0; display: flex; flex-direction: column; }
+@media (max-width: 560px) { .pin .palt { display: none; } .pin { padding: 4px 7px; gap: 6px; } }
+
+.i2c-grid { display: grid; grid-template-columns: 34px repeat(16, minmax(0, 1fr)); gap: 3px; font-family: var(--mono); font-size: 12px; }
+.i2c-grid > div { height: 28px; display: grid; place-items: center; border-radius: 5px; color: var(--muted); }
+.i2c-grid .hdr { color: var(--text-2); font-weight: 600; }
+.i2c-grid .cell { background: var(--card-2); }
+.i2c-grid .cell.found { background: var(--ok-soft); color: var(--ok); font-weight: 700; cursor: pointer; }
+.i2c-grid .cell.busy { background: var(--warn-soft); color: var(--warn); font-weight: 700; cursor: pointer; }
+.hexdump { font-family: var(--mono); font-size: 12.5px; line-height: 1.6; white-space: pre; overflow-x: auto;
+           background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 10px 12px; margin: 0; }
+.io-form { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; align-items: end; }
+.io-form .field.wide { grid-column: 1 / -1; }
+.io-log { max-height: 260px; overflow-y: auto; font-family: var(--mono); font-size: 12.5px; display: flex; flex-direction: column; gap: 2px; }
+.io-log .t { color: var(--muted); }
+.range-row { display: flex; align-items: center; gap: 10px; }
+.range-row input[type=range] { flex: 1; min-width: 0; }
+
+/* ----------------------------------------------------------------- files */
+.crumbs { display: flex; gap: 2px; align-items: center; flex-wrap: wrap; font-size: 13.5px; min-width: 0; }
+.crumbs button { border: 0; background: transparent; color: var(--accent-2); cursor: pointer; padding: 3px 6px; border-radius: 6px; }
+.crumbs button:hover { background: var(--card-2); }
+.crumbs .sep { color: var(--muted); }
+.dropzone { border: 2px dashed var(--line-2); border-radius: var(--r); padding: 18px; text-align: center; color: var(--muted);
+            font-size: 13px; transition: all var(--t) var(--ease); }
+.dropzone.over { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-2); }
+.upbar { height: 4px; border-radius: 4px; background: var(--card-3); overflow: hidden; margin-top: 6px; }
+.upbar i { display: block; height: 100%; background: var(--accent); width: 0; transition: width 200ms linear; }
+.textview { font-family: var(--mono); font-size: 12.5px; width: 100%; min-height: 50vh; background: var(--bg-2);
+            border: 1px solid var(--line); border-radius: var(--r-sm); padding: 10px 12px; color: var(--text); resize: vertical; }
+
+/* ------------------------------------------------------------------ logs */
+.logview { font-family: var(--mono); font-size: 12px; line-height: 1.55; background: #0c0d10; border: 1px solid var(--line);
+           border-radius: var(--r); padding: 10px 12px; height: calc(100vh - 290px); min-height: 300px; overflow: auto; white-space: pre; }
+@media (max-width: 899px) { .logview { height: calc(100vh - 300px - var(--tab-h)); } }
+.logview .WARNING { color: var(--warn); } .logview .ERROR, .logview .CRITICAL { color: var(--err); }
+.logview .DEBUG { color: var(--muted); }

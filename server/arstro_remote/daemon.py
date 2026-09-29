@@ -18,10 +18,10 @@ import sys
 import threading
 import time
 
-from . import __version__, wifi
+from . import __version__, modules, wifi
 from .hub import Hub
 from .paths import (DEFAULT_CONFIG, cache_dir, config_dir, control_socket_path, load_config,  # noqa: F401
-                    runtime_dir, state_dir)
+                    lock_path, runtime_dir, slot, state_dir)
 from .input_x11 import create_input
 from .session import Session
 from .stats import StatsCollector
@@ -29,25 +29,34 @@ from .terminal import TerminalPool
 
 log = logging.getLogger("arstro")
 
-def setup_logging(debug=False):
+LEVELS = {"debug": logging.DEBUG, "info": logging.INFO, "warning": logging.WARNING, "error": logging.ERROR}
+
+
+def setup_logging(debug=False, level=None):
+    """Rotating log file per instance (LOG-01): <state>/arstro-remote.log, 5 x 5 MB."""
     os.makedirs(state_dir(), exist_ok=True)
-    fmt = logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s")
+    fmt = logging.Formatter("%(asctime)s %(levelname)-7s %(name)s [%(threadName)s]: %(message)s")
     root = logging.getLogger()
-    root.setLevel(logging.DEBUG if debug else logging.INFO)
+    root.setLevel(logging.DEBUG if debug else LEVELS.get(str(level or "info").lower(), logging.INFO))
     fh = logging.handlers.RotatingFileHandler(os.path.join(state_dir(), "arstro-remote.log"),
-                                              maxBytes=2_000_000, backupCount=3)
+                                              maxBytes=5_000_000, backupCount=5)
     fh.setFormatter(fmt)
     root.addHandler(fh)
     if sys.stderr.isatty() or os.environ.get("ARSTRO_LOG_STDERR"):
         sh = logging.StreamHandler(sys.stderr)
         sh.setFormatter(fmt)
         root.addHandler(sh)
+    from .system import install_exception_logging
+    install_exception_logging()
 
 
 class Daemon:
     def __init__(self, config, use_bluetooth=True):
         self.config = config
-        self.use_bluetooth = use_bluetooth
+        self.use_bluetooth = use_bluetooth and bool(config.get("bluetooth_enabled", True))
+        self.modules = modules.enabled(config)
+        self.module_ok = {}                    # module -> False when it failed to start
+        self.exit_code = 0
         self.started = time.time()
         self.hub = Hub()
         self.stats = StatsCollector()
@@ -60,6 +69,10 @@ class Daemon:
         self.web = None
         self.recorder = None
         self.screen = None
+        self.io = None
+        self.files = None
+        self.conn = None
+        self.system = None
         self.loop = None
         self._lock_file = None
 
@@ -150,6 +163,8 @@ class Daemon:
             "hostname": socket.gethostname(),
             "uptime": int(time.time() - self.started),
             "bluetooth": self.bt_status(),
+            "slot": slot(),
+            "modules": self.modules,
             "input": {"backend": self.input.backend, "available": self.input.available},
             "web": self.web.info(include_token=False) if self.web else {"enabled": False},
             "recorder": {"enabled": self.recorder is not None},
@@ -187,11 +202,19 @@ class Daemon:
 
     def _wifi_poller(self):
         interval = max(3, int(self.config.get("wifi_poll_sec", 10)))
+        n = 0
         while True:
-            try:
-                self.wifi_refresh()
-            except Exception as e:
-                log.debug("wifi poll: %s", e)
+            if "connection" in self.modules:
+                try:
+                    self.wifi_refresh()
+                except Exception as e:
+                    log.debug("wifi poll: %s", e)
+                if self.conn and n % 3 == 0:
+                    try:
+                        self.conn.refresh()
+                    except Exception as e:
+                        log.debug("net poll: %s", e)
+            n += 1
             if self.bt:
                 bt = self.hub.get("pairing") or {}
                 if bt.get("pairing_open") or not bt:
@@ -218,33 +241,70 @@ class Daemon:
 
     # ------------------------------------------------------------------ run
     def _single_instance(self):
-        path = os.path.join(runtime_dir(), "arstro-remote.lock")
-        self._lock_file = open(path, "w")
+        path = lock_path()
+        self._lock_file = open(path, "a+")
         try:
             fcntl.flock(self._lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            log.error("another arstro-remote daemon is already running")
+            log.error("another %s daemon is already running (%s)", "slot " + slot() if slot() else "arstro-remote", path)
             sys.exit(2)
+        self._lock_file.seek(0)
+        self._lock_file.truncate()
         self._lock_file.write(str(os.getpid()))
         self._lock_file.flush()
 
+    def request_stop(self, exit_code=0):
+        """Stop the main loop from any thread (restart: the launcher starts us again)."""
+        self.exit_code = exit_code
+        if self.loop is None:
+            os._exit(exit_code)
+        from gi.repository import GLib
+        GLib.idle_add(lambda: self.loop.quit() or False)
+
+    def _start(self, module, attr, factory, what):
+        if module not in self.modules:
+            return
+        try:
+            svc = factory(self)
+            setattr(self, attr, svc)
+            svc.start()
+            self.module_ok[module] = self.module_ok.get(module, True)
+        except Exception:
+            log.exception("%s unavailable", what)
+            setattr(self, attr, None)
+            self.module_ok[module] = False
+
     def _start_services(self):
-        if self.config.get("recorder_enabled", True):
-            try:
-                from .recorder.service import RecorderService
-                self.recorder = RecorderService(self)
-                self.recorder.start()
-            except Exception:
-                log.exception("recorder unavailable")
-                self.recorder = None
-        if self.config.get("screen_enabled", True):
-            try:
-                from .screen.service import ScreenService
-                self.screen = ScreenService(self)
-                self.screen.start()
-            except Exception:
-                log.exception("remote screen unavailable")
-                self.screen = None
+        def recorder(ctx):
+            from .recorder.service import RecorderService
+            return RecorderService(ctx)
+
+        def screen(ctx):
+            from .screen.service import ScreenService
+            return ScreenService(ctx)
+
+        def io(ctx):
+            from .hwio.service import IoService
+            return IoService(ctx)
+
+        def files(ctx):
+            from .files import FilesService
+            return FilesService(ctx)
+
+        def conn(ctx):
+            from .netconf import ConnectionService
+            return ConnectionService(ctx)
+
+        def system(ctx):
+            from .system import SystemService
+            return SystemService(ctx)
+
+        self._start("system", "system", system, "system module")
+        self._start("camera", "recorder", recorder, "camera (recorder)")
+        self._start("screen", "screen", screen, "remote screen")
+        self._start("io", "io", io, "IO control")
+        self._start("files", "files", files, "files")
+        self._start("connection", "conn", conn, "connection")
         if self.config.get("web_enabled", True):
             try:
                 from .web.server import WebServer
@@ -253,11 +313,15 @@ class Daemon:
             except Exception:
                 log.exception("web server unavailable")
                 self.web = None
+        log.info("modules: %s%s", ", ".join(self.modules),
+                 " (failed: %s)" % ", ".join(m for m, ok in self.module_ok.items() if not ok)
+                 if not all(self.module_ok.values()) else "")
 
     def run(self):
         self._single_instance()
-        log.info("Arstro Remote %s starting (pid %d, input backend %s, DISPLAY=%s)", __version__,
-                 os.getpid(), self.input.backend, os.environ.get("DISPLAY"))
+        log.info("Arstro Remote %s starting: slot %s, pid %d, port %s, bluetooth %s, input %s, DISPLAY=%s",
+                 __version__, slot() or "-", os.getpid(), self.config.get("web_port"),
+                 "on" if self.use_bluetooth else "off", self.input.backend, os.environ.get("DISPLAY"))
 
         import dbus
         import dbus.mainloop.glib
@@ -312,16 +376,13 @@ class Daemon:
                 sessions = list(self.sessions)
             for s in sessions:
                 s.close("server stopping")
-            if self.recorder:
-                try:
-                    self.recorder.shutdown()
-                except Exception:
-                    log.exception("recorder shutdown")
-            if self.screen:
-                try:
-                    self.screen.shutdown()
-                except Exception:
-                    log.exception("screen shutdown")
+            for name in ("recorder", "screen", "io", "files", "conn", "system"):
+                svc = getattr(self, name)
+                if svc:
+                    try:
+                        svc.shutdown()
+                    except Exception:
+                        log.exception("%s shutdown", name)
             if self.web:
                 self.web.stop()
             self.terms.close_all()
@@ -334,4 +395,5 @@ class Daemon:
                 os.unlink(control_socket_path())
             except OSError:
                 pass
-            log.info("stopped")
+            log.info("stopped (exit code %d)", self.exit_code)
+        return self.exit_code

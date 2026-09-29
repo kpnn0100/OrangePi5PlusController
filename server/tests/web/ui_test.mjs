@@ -109,12 +109,29 @@ test("login_wrong_then_right_password_and_cookie", ["CON-03", "SEC-03"], async (
   await page.waitForSelector(".view", { timeout: 15000 });           // cookie remembered
   check(!(await page.$(".login-card")), "login asked again after reload");
   const cookies = await page.cookies();
-  const c = cookies.find((x) => x.name === "arstro_token");
+  const c = cookies.find((x) => x.name.startsWith("arstro_token"));
   check(c && c.httpOnly && c.sameSite === "Strict", "cookie must be HttpOnly + SameSite=Strict");
   await ctx.close();
 });
 
-const VIEWS = ["recorder", "gallery", "screen", "monitor", "wifi", "terminal", "remote", "system"];
+const VIEWS = ["recorder", "gallery", "screen", "monitor", "wifi", "network", "bluetooth", "terminal", "remote",
+               "pins", "i2c", "spi", "uart", "pwm", "adc", "files", "system", "logs"];
+
+test("pages_are_grouped_by_the_servers_modules", ["MOD-04", "CAM-03", "ADM-07"], async () => {
+  const page = await newPage();
+  const hello = await page.evaluate(async () => (await (await fetch("/api/ping")).json()));
+  const groups = await page.$$eval(".side .nav-item span", (els) => els.map((e) => e.textContent));
+  check(groups.includes("System") && groups.length <= 8, "groups: " + groups.join(", "));
+  await go(page, "gallery");                                            // an old link still works
+  const subs = await page.$$eval(".subnav button", (els) => els.map((e) => e.textContent));
+  check(subs.join("/") === "Live/Gallery", "camera sub-tabs: " + subs.join("/"));
+  check(await page.$eval(".view", (e) => e.dataset.group) === "camera", "gallery is not in the Camera group");
+  if (hello.slot) {
+    const host = await page.$eval(".side .brand-host", (e) => e.textContent);
+    check(host.endsWith(hello.slot.toUpperCase()), "slot not shown: " + host);
+  }
+  await page.close();
+});
 test("every_view_fits_small_to_large_screens", ["UX-03", "UX-01"], async () => {
   for (const [w, h, mobile] of [[360, 640, true], [412, 915, true], [1280, 800, false], [1920, 1080, false]]) {
     const page = await newPage(BASE, { width: w, height: h, mobile });

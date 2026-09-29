@@ -1,19 +1,52 @@
 # OrangePi5PlusController
 
-Control an Orange Pi 5 Plus from an **Android app**, a **web page** or the **command line**:
-system monitor, Wi-Fi, shared terminals, mouse & keyboard, a **remote screen** (watch and control
-the Pi's desktop, like TeamViewer), and an **HDMI-RX recorder** with a live H.264 preview,
-recording (H.265 or RAW) and a gallery with conversion and verified-lossless FFV1.
+Control an Orange Pi 5 Plus - or any Linux machine - from an **Android app**, a **web page** or the
+**command line**. Features come in modules you switch on per machine:
+
+| Module | What |
+|---|---|
+| **Monitor** | CPU, memory, temperatures, disks, network, processes |
+| **System** | server info, logs (live tail, level, markers), modules, pairing, web access, restart / reboot |
+| **Camera** | HDMI input, USB (V4L2) camera or test pattern: live H.264 preview, recording (H.265 or RAW), gallery with conversion and verified-lossless FFV1 |
+| **Connection** | Wi-Fi, Ethernet and every NetworkManager profile (DHCP / static), Bluetooth devices |
+| **Terminal** | shared shells |
+| **Screen** | watch and control the desktop (like TeamViewer), remote keyboard and mouse |
+| **IO Control** | GPIO (header view, edges), I2C scan / transfer / dump, SPI, UART consoles, PWM, LEDs, ADC - a bring-up and debugging bench |
+| **Files** | browse, upload, download, edit |
 
 One server runs on the Pi. The three controllers use the same protocol and stay in sync: start
 a recording from the CLI and the record button turns red in the app and on the web page.
 
 | | Android app | Web UI | CLI |
 |---|---|---|---|
-| Reaches the Pi over | Bluetooth (control) + Wi-Fi (video) | the network, `http://<pi>:8080/` | the Pi itself, or `--url` from anywhere |
+| Reaches the Pi over | Bluetooth (control) + Wi-Fi (video) | the network, `http://<pi>:8080/` (slot B: 8081) | the Pi itself, or `--url` from anywhere |
 | Sign-in | pairing (Bluetooth) | password, once per browser | none on the Pi / password remotely |
 
-## Quick start
+## Install the server on a machine (one script)
+
+On the machine itself, as the user the server should run as (the desktop user, not root):
+
+```bash
+git clone <this repository> && cd OrangePi5PlusController
+./install.sh                                   # slot A, port 8080, all modules; asks for the web password (Enter = admin)
+./install.sh --modules monitor,system,terminal,io,files     # only what this machine needs
+./install.sh --slot b                          # a second instance on port 8081 next to A (try a new version)
+./install.sh --help                            # --password, --bluetooth, --boot desktop|systemd|none, --activate, --uninstall ...
+```
+
+It installs the missing packages (sudo), gives the user access to GPIO / I2C / SPI / serial / PWM /
+LEDs (udev rules + groups), installs the code into `~/.local/share/arstro-remote-<slot>`, writes
+the slot's config and password, registers the start at boot (desktop autostart, or a systemd user
+service with `--boot systemd` on machines without a desktop), starts it and checks it answers.
+
+**A/B slots.** Two slots run side by side, each with its own code, config, logs, port and boot entry.
+Install a new version into the slot you are not using (`--slot b`), test it on its port, then make
+it the active one (`./install.sh --slot b --activate`: the plain `arstro-remote` command and the
+app's Bluetooth link move to it). Commands per slot: `arstro-remote-a`, `arstro-remote-b`
+(or `arstro-remote --slot b`). Logs: `arstro-remote-b log -f`, or System › Logs in the web UI,
+or `~/.local/state/arstro-remote-b/`.
+
+## Quick start from a dev PC (server + app)
 
 On a Linux/macOS/WSL machine with this repository:
 
@@ -30,7 +63,7 @@ and installs it on the phone attached with USB debugging. Steps can be skipped
 Only parts of it:
 
 ```bash
-scripts/setup_pi.sh orangepi@<pi-address>     # install / update the Pi side (also --autologin, --reboot, --test)
+scripts/setup_pi.sh orangepi@<pi-address>     # install / update the Pi side (also --slot b, --autologin, --reboot, --test)
 ./build_apk.sh [--install SERIAL]             # build release/arstro-remote-vX.Y.Z.apk
 ```
 
@@ -62,6 +95,12 @@ arstro-remote gallery convert REC_<take>.arh --to h264-vpu --scale 720 --wait
 arstro-remote gallery verify REC_<take>_FFV1.mkv --delete-raw --wait   # prove the FFV1 is lossless, free the RAW
 arstro-remote term run "uptime"                    # one command in a fresh shell
 arstro-remote watch recorder jobs                  # live state changes
+arstro-remote io header                            # the pin header with live GPIO states
+arstro-remote io i2c scan 2                        # i2cdetect-like scan
+arstro-remote io uart open ttyS3 --baud 115200     # serial console (Ctrl+] detaches, shared with the web)
+arstro-remote files put firmware.bin ~/uploads     # upload / download (files get PATH)
+arstro-remote net set <uuid> --method manual --addresses 192.0.2.50/24 --gateway 192.0.2.1
+arstro-remote log -f --grep error                  # follow the server log
 ```
 
 `docs/parity.md` shows how every feature is reached from each controller.
@@ -80,7 +119,8 @@ Tests (all tagged with the requirements they prove):
 
 ```bash
 # on the Pi (server running)
-cd ~/arstro-remote-src/tests && python3 test_daemon.py && python3 test_sync_web.py && python3 test_recorder.py
+cd server/tests && ARSTRO_SLOT=b python3 test_daemon.py && ARSTRO_SLOT=b python3 test_sync_web.py && ARSTRO_SLOT=b python3 test_recorder.py
+python3 server/tests/test_modules.py               # starts its own throwaway instance (modules, IO, files, logs)
 # anywhere
 python3 server/tests/test_repo_policy.py && scripts/check_scripts.sh
 cd app && flutter analyze && flutter test
@@ -92,9 +132,10 @@ and the web port to a USB-attached phone; connect the app to `tcp:127.0.0.1:7788
 The server also runs on a PC with a test pattern (`python3 -m arstro_remote run --no-bluetooth
 --simulate 1280x720@30`): the preview then uses x264 instead of the Pi's VPU.
 
-For agents: the skills in `.claude/skills/arstro.orangepi5plus.implement` and
-`.claude/skills/arstro.orangepi5plus.test` describe the workflow (requirements first, all three
-controllers, tests, commit and push).
+For agents: the skills `.claude/skills/arstro.embedded_server.implement` (workflow: requirements
+first, all controllers, tests, commit and push), `.claude/skills/arstro.embedded_server.test`
+(which suite proves what, how to run it against a slot) and `.claude/skills/arstro.embedded_server.deploy`
+(the A/B procedure: install into the idle slot, verify, switch) describe how to work here.
 
 Nothing machine-specific is committed (addresses, serials, passwords): scripts take arguments,
 environment variables or `local.env` (gitignored); the signing key stays in `app/android/`

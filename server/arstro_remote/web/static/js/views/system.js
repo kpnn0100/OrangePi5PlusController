@@ -19,10 +19,45 @@ export default {
     const ctrlCard = h("div.card");
     const btCard = h("div.card");
     const webCard = h("div.card");
+    const modCard = h("div.card");
+    let sysinfo = null;
     root.append(
-      h("div.view-head", null, h("div", null, h("h1", null, "System"), h("div.sub", null, "Server, controllers and access")),
+      h("div.view-head", null, h("div", null, h("h1", null, "System"), h("div.sub", null, "Server, modules, controllers and access")),
         h("div.actions", null, h("button.btn.sm", { onclick: () => logout() }, icon("logout"), "Sign out"))),
-      h("div.grid.two", null, serverCard, ctrlCard, btCard, webCard));
+      h("div.grid.two", null, serverCard, modCard, ctrlCard, btCard, webCard));
+
+    // MOD-02 / ADM-04..05: choose the modules, restart, reboot
+    function renderModules() {
+      const mods = (sysinfo && sysinfo.modules) || (conn.hello && conn.hello.modules) || [];
+      const want = new Set(mods.filter((m) => m.state !== "disabled").map((m) => m.name));
+      const apply = h("button.btn.sm.primary", { disabled: true, onclick: async (e) => {
+        const ok = await confirmBox({ title: "Restart with these modules?", ok: "Restart",
+          text: "The server restarts (a few seconds); every controller reconnects by itself." });
+        if (ok) run("system.modules.set", { modules: [...want] }, { btn: e.currentTarget, ok: "Restarting…" });
+      } }, "Apply & restart");
+      clear(modCard,
+        h("div.card-title", null, icon("chip"), "Modules"),
+        h("div.list", null, mods.map((m) => h("div.list-item", null,
+          h("div.grow", null, h("div.title", null, m.title, m.state === "failed" ? h("span.tag.warn", { style: { marginLeft: "8px" } }, "failed") : null),
+            h("div.meta", null, m.note || m.description)),
+          toggle(want.has(m.name), (on) => { if (on) want.add(m.name); else want.delete(m.name); apply.disabled = false; },
+                 { disabled: m.name === "system", label: m.title })))),
+        h("div.row.wrap", { style: { marginTop: "12px" } }, apply,
+          h("button.btn.sm", { onclick: async (e) => {
+            const ok = await confirmBox({ title: "Restart the server?", ok: "Restart", text: "Takes a few seconds; controllers reconnect by themselves." });
+            if (ok) run("system.restart", {}, { btn: e.currentTarget, ok: "Restarting…" });
+          } }, icon("refresh"), "Restart server"),
+          h("button.btn.sm.ghost", { onclick: () => power("reboot") }, "Reboot"),
+          h("button.btn.sm.ghost.danger", { onclick: () => power("poweroff") }, icon("power"), "Power off")));
+    }
+
+    async function power(what) {
+      const ok = await confirmBox({ title: what === "reboot" ? "Reboot the machine?" : "Power off the machine?", danger: true,
+        ok: what === "reboot" ? "Reboot" : "Power off",
+        text: what === "reboot" ? "Everything stops for about a minute; recordings in progress are cut."
+                                : "It stays off until someone presses the power button or re-plugs it." });
+      if (ok) run("system." + what, {}, { ok: what === "reboot" ? "Rebooting…" : "Powering off…" });
+    }
 
     function renderServer() {
       const s = status || {};
@@ -32,10 +67,13 @@ export default {
         h("dl.kv", { style: { margin: 0 } },
           h("dt", null, "Name"), h("dd", null, hello.name || "Arstro Remote"),
           h("dt", null, "Version"), h("dd", null, s.version || hello.version || "–"),
+          h("dt", null, "Slot"), h("dd", null, sysinfo && sysinfo.slot ? `${sysinfo.slot.toUpperCase()} · port ${sysinfo.port}` : "–"),
+          h("dt", null, "Board"), h("dd", null, (sysinfo && (sysinfo.board || sysinfo.model)) || "–"),
           h("dt", null, "Host"), h("dd", null, (s.hostname || hello.hostname || "–") + (hello.user ? " · " + hello.user : "")),
           h("dt", null, "Running for"), h("dd", null, s.uptime !== undefined ? fmtUptime(s.uptime) : "–"),
           h("dt", null, "Input"), h("dd", null, hello.input ? (hello.input.available ? hello.input.backend : "unavailable") : "–"),
-          h("dt", null, "Recorder"), h("dd", null, (store.get("recorder") || {}).available ? "running" : "not running")));
+          h("dt", null, "Recorder"), h("dd", null, (store.get("recorder") || {}).available ? "running" : "not running"),
+          h("dt", null, "Logs"), h("dd.mono", { style: { fontSize: "12px", wordBreak: "break-all" } }, (sysinfo && sysinfo.paths.logs) || "–")));
     }
 
     function renderControllers(list) {
@@ -53,6 +91,10 @@ export default {
 
     function renderBt() {
       const p = pairing || {};
+      if (status && status.bluetooth && status.bluetooth.disabled) {
+        return clear(btCard, h("div.card-title", null, icon("bluetooth"), "App link (Bluetooth)"),
+          h("div.muted", null, "Off in this slot - another instance (or nobody) owns the phone link."));
+      }
       const left = Math.max(0, Math.round((p.pairing_remaining || 0) - (performance.now() - pairAt) / 1000));
       const open = p.pairing_open && left > 0;
       clear(btCard,
@@ -141,7 +183,7 @@ export default {
     async function changePassword() {
       const v = await formBox({ title: "Change password", ok: "Save",
         text: "Other browsers and remote CLIs must sign in again. The app picks it up by itself.",
-        fields: [{ name: "pw", label: "New password", type: "password", autocomplete: "new-password", hint: "At least 8 characters" },
+        fields: [{ name: "pw", label: "New password", type: "password", autocomplete: "new-password", hint: "At least 5 characters" },
                  { name: "pw2", label: "Again", type: "password", autocomplete: "new-password" }] });
       if (!v) return;
       if (v.pw !== v.pw2) return toast("The passwords differ", "err");
@@ -155,9 +197,10 @@ export default {
 
     async function load() {
       try {
-        const [s, w] = await Promise.all([conn.call("admin.status"), conn.call("web.info")]);
+        const [s, w, si] = await Promise.all([conn.call("admin.status"), conn.call("web.info"), conn.call("system.info")]);
         status = s;
         web = w;
+        sysinfo = si;
         if (s.bluetooth) { pairing = { ...pairing, ...s.bluetooth }; pairAt = performance.now(); }
       } catch (e) {
         toast(errText(e), "err");
@@ -165,8 +208,10 @@ export default {
       renderServer();
       renderBt();
       renderWeb();
+      renderModules();
     }
 
+    renderModules();
     renderServer();
     renderBt();
     renderWeb();

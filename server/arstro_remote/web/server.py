@@ -10,10 +10,13 @@
   GET  /ws/screen             WebSocket: the Pi's desktop, same messages (see screen/service.py)
   GET  /api/media/<file>      a recording (HTTP Range; ?download=1 for "save as")
   GET  /api/thumb/<clip>      JPEG thumbnail of a take
+  GET  /api/files/download?path=P    a file of the Files module (FILE-03)
+  PUT  /api/files/upload?dir=D&name=N[&overwrite=1]   raw body -> D/N (FILE-02)
   POST /api/op/<op>           REST shim: run any op with a JSON body -> {"ok", "data"|"error"}
 
 Everything except / and /api/ping needs the access password (SEC-03): the login cookie
-`arstro_token` (derived from the password), `Authorization: Bearer <password>` or
+`arstro_token_<port>` (derived from the password; per port, so A/B slots on one host keep
+separate logins), `Authorization: Bearer <password>` or
 `?token=<password>`. In open mode (`web.set_auth required=false`) nothing is needed.
 Requests from other web sites are refused (Origin must match Host), and in open mode the
 Host must be an address or a local name, so a DNS-rebinding page cannot reach the Pi.
@@ -34,14 +37,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import psutil
 
 from .. import __version__
-from ..paths import app_apk
+from ..paths import app_apk, slot
 from ..session import RestSession
 from . import auth, ws
 
 log = logging.getLogger("arstro.web")
 
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
-COOKIE = "arstro_token"
+COOKIE = "arstro_token"          # + "_<port>"
 # The UI has no inline scripts; blob: is for the MSE preview player.
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
        "media-src 'self' blob:; connect-src 'self' ws: wss:; object-src 'none'; base-uri 'none'; "
@@ -179,10 +182,14 @@ class Handler(BaseHTTPRequestHandler):
             return q[0]
         return None
 
+    @property
+    def _cookie_name(self):
+        return "%s_%d" % (COOKIE, self.web.port)
+
     def _cookie(self):
         for part in self.headers.get("Cookie", "").split(";"):
             k, _, v = part.strip().partition("=")
-            if k == COOKIE:
+            if k == self._cookie_name:
                 return urllib.parse.unquote(v)
         return None
 
@@ -243,7 +250,7 @@ class Handler(BaseHTTPRequestHandler):
                 apk, apk_version = app_apk()
                 return self._send_json({"ok": True, "name": "Arstro Remote", "version": __version__,
                                         "hostname": socket.gethostname(), "authorized": self._authorized(),
-                                        "auth": "open" if self.web.open else "password",
+                                        "auth": "open" if self.web.open else "password", "slot": slot(),
                                         "app": {"url": "/app.apk", "version": apk_version} if apk else None})
             if path == "/app.apk":                       # public: the app is not a secret (SET-04)
                 apk, apk_version = app_apk()
@@ -265,6 +272,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._media(urllib.parse.unquote(path[len("/api/media/"):]), head)
             if path.startswith("/api/thumb/"):
                 return self._thumb(urllib.parse.unquote(path[len("/api/thumb/"):]), head)
+            if path == "/api/files/download":
+                return self._download(head)
             self.send_error(HTTPStatus.NOT_FOUND)
         except (BrokenPipeError, ConnectionResetError):
             pass
@@ -281,20 +290,79 @@ class Handler(BaseHTTPRequestHandler):
                     time.sleep(0.8)                       # slow down guessing
                     return self._send_json({"ok": False, "error": "wrong password"}, 401)
                 cookie = "%s=%s; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000" % (
-                    COOKIE, auth.cookie_value(self.web.token))
+                    self._cookie_name, auth.cookie_value(self.web.token))
                 return self._send_json({"ok": True}, extra={"Set-Cookie": cookie})
             if path == "/api/logout":
                 return self._send_json({"ok": True}, extra={
-                    "Set-Cookie": "%s=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0" % COOKIE})
+                    "Set-Cookie": "%s=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0" % self._cookie_name})
             if not self._authorized():
                 return self._deny()
             if path.startswith("/api/op/"):
                 return self._rest(path[len("/api/op/"):])
+            if path == "/api/files/upload":
+                return self._upload()
             self.send_error(HTTPStatus.NOT_FOUND)
         except (BrokenPipeError, ConnectionResetError):
             pass
         except ValueError as e:
             self._send_json({"ok": False, "error": str(e)}, 400)
+
+    def do_PUT(self):
+        try:
+            if not self._origin_ok():
+                return self._forbid()
+            if not self._authorized():
+                return self._deny()
+            if self._url.path == "/api/files/upload":
+                return self._upload()
+            self.send_error(HTTPStatus.NOT_FOUND)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    # --------------------------------------------------------------- files
+    def _files(self):
+        f = self.web.ctx.files
+        if f is None:
+            self._send_json({"ok": False, "error": "the Files module is not enabled"}, 404)
+        return f
+
+    def _download(self, head):
+        files = self._files()
+        if files is None:
+            return
+        from ..session import OpError
+        q = urllib.parse.parse_qs(self._url.query)
+        try:
+            p = files.resolve((q.get("path") or [""])[0])
+        except OpError as e:
+            return self._send_json({"ok": False, "error": str(e)}, 404)
+        if not os.path.isfile(p):
+            return self._send_json({"ok": False, "error": "not a file (folders cannot be downloaded)"}, 400)
+        log.info("download %s by %s", p, self.address_string())
+        self._send_file(p, os.path.basename(p), "inline" not in q, head)
+
+    def _upload(self):
+        files = self._files()
+        if files is None:
+            return
+        from ..session import OpError
+        q = urllib.parse.parse_qs(self._url.query)
+        try:
+            length = int(self.headers.get("Content-Length") or -1)
+        except ValueError:
+            length = -1
+        if length < 0:
+            self.close_connection = True
+            return self._send_json({"ok": False, "error": "Content-Length is required"}, 411)
+        try:
+            target = files.upload_target((q.get("dir") or [""])[0], (q.get("name") or [""])[0],
+                                         (q.get("overwrite") or ["0"])[0] in ("1", "true", "yes"))
+            entry = files.store(self.rfile, length, target, self.address_string())
+        except (OpError, OSError) as e:
+            self.close_connection = True              # the body was not (fully) read
+            log.warning("upload refused: %s", e)
+            return self._send_json({"ok": False, "error": str(e)}, 400)
+        self._send_json({"ok": True, "data": entry})
 
     # -------------------------------------------------------------- static
     def _static(self, rel, head):
