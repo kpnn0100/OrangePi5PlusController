@@ -81,6 +81,23 @@ def ping_static_and_token_required(c):
     check(st == 401, st)
 
 
+@test("SET-04")
+def app_download_is_offered_when_uploaded(c):
+    from arstro_remote.paths import app_apk
+    apk, version = app_apk()
+    st, _, body = http(c, "GET", "/api/ping")
+    app = json.loads(body).get("app")
+    st, h, data = http(c, "GET", "/app.apk")
+    if not apk:
+        check(app is None and st == 404, "no APK uploaded, but /app.apk -> %s" % st)
+        print("      (no APK uploaded on this Pi: run scripts/setup_pi.sh with an APK in release/)")
+        return
+    check(app and app["url"] == "/app.apk" and app["version"] == version, app)
+    check(st == 200 and data[:2] == b"PK", "not an APK (status %s)" % st)
+    check(h.get("Content-Type") == "application/vnd.android.package-archive", h.get("Content-Type"))
+    check(len(data) == os.path.getsize(apk), "size differs")
+
+
 @test("CON-03", "SEC-03")
 def login_sets_httponly_cookie_not_the_password(c):
     st, _, _ = http(c, "POST", "/api/login", body={"password": "nope-nope"})

@@ -1,7 +1,8 @@
 """HTTP + WebSocket server: the web controller, remote CLI and the app's media link.
 
   GET  /                      web UI (static files, no token needed to load)
-  GET  /api/ping              {"name", "version", "authorized"} - reachability check
+  GET  /api/ping              {"name", "version", "authorized", "auth", "app"} - reachability check
+  GET  /app.apk               the Android app, when setup_pi.sh uploaded one (no password)
   POST /api/login             {"token"} -> HttpOnly cookie for the web UI
   POST /api/logout
   GET  /ws                    WebSocket: the full protocol (same ops/events as Bluetooth)
@@ -32,6 +33,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import psutil
 
 from .. import __version__
+from ..paths import app_apk
 from ..session import RestSession
 from . import auth, ws
 
@@ -102,6 +104,8 @@ class WebServer:
     def info(self, include_token=True):
         d = {"enabled": True, "host": self.host, "port": self.port, "auth": "open" if self.open else "password",
              "urls": ["http://%s:%d/" % (a, self.port) for a in local_addresses()]}
+        apk, apk_version = app_apk()
+        d["app"] = {"path": "/app.apk", "version": apk_version} if apk else None
         if include_token:
             d["token"] = self.token
         return d
@@ -235,9 +239,17 @@ class Handler(BaseHTTPRequestHandler):
             if path.startswith("/assets/"):
                 return self._static(path[len("/assets/"):], head)
             if path == "/api/ping":
+                apk, apk_version = app_apk()
                 return self._send_json({"ok": True, "name": "Arstro Remote", "version": __version__,
                                         "hostname": socket.gethostname(), "authorized": self._authorized(),
-                                        "auth": "open" if self.web.open else "password"})
+                                        "auth": "open" if self.web.open else "password",
+                                        "app": {"url": "/app.apk", "version": apk_version} if apk else None})
+            if path == "/app.apk":                       # public: the app is not a secret (SET-04)
+                apk, apk_version = app_apk()
+                if not apk:
+                    return self.send_error(HTTPStatus.NOT_FOUND, "no app uploaded (run scripts/setup_pi.sh)")
+                name = "arstro-remote%s.apk" % ("-v" + apk_version if apk_version else "")
+                return self._send_file(apk, name, True, head, ctype="application/vnd.android.package-archive")
             if not self._origin_ok():
                 return self._forbid()
             if not self._authorized():

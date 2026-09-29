@@ -275,6 +275,15 @@ COPYFILE_DISABLE=1 tar -C "$ROOT/server" --exclude='__pycache__' --exclude='*.py
     remote 'rm -rf ~/arstro-remote-src && mkdir -p ~/arstro-remote-src && tar -xzf - -C ~/arstro-remote-src'
 remote 'cd ~/arstro-remote-src && ./install.sh' | sed 's/^/  /'
 
+# the newest APK, offered at http://<pi>:8080/app.apk for phones without a cable (SET-04)
+apk=$(ls -t "$ROOT"/release/arstro-remote-v*.apk 2>/dev/null | head -1 || true)
+if [ -n "$apk" ]; then
+    ver=$(basename "$apk" .apk | sed 's/^arstro-remote-v//')
+    remote 'd=${XDG_DATA_HOME:-$HOME/.local/share}/arstro-remote/app; mkdir -p "$d" && cat > "$d/arstro-remote.apk.part" && mv -f "$d/arstro-remote.apk.part" "$d/arstro-remote.apk"' <"$apk"
+    printf '%s\n' "$ver" | remote 'd=${XDG_DATA_HOME:-$HOME/.local/share}/arstro-remote/app; cat > "$d/version"'
+    c_ok "app v$ver uploaded: phones on the same network can install it from http://${TARGET#*@}:8080/app.apk"
+fi
+
 # ------------------------------------------------------------------ 5. start / verify
 wait_status() {  # $1 = seconds
     local end=$(( $(date +%s) + $1 ))

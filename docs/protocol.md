@@ -106,7 +106,7 @@ Other events: `stats` `{data}` (after `stats.subscribe`), `term.exit` `{term, co
 | `admin.status` | | `{version, bluetooth, input, web, recorder, sessions}` |
 | `admin.pair` | `seconds` (0 closes) | status |
 | `admin.unpair` | `address` | |
-| `web.info` | | `{enabled, port, urls, auth, token}` - `token` is the password |
+| `web.info` | | `{enabled, port, urls, auth, app, token}` - `token` is the password |
 | `web.set_password` | `password` (8..256 chars) | info; signs out the other web/remote sessions |
 | `web.rotate_token` | | a new random password |
 | `web.set_auth` | `required` (bool) | info; `false` = open mode |
@@ -119,7 +119,8 @@ Take ids are `REC_YYYYMMDD_HHMMSS`; its files are `<take>.arh` (RAW), `<take>_H2
 | Route | |
 |---|---|
 | `GET /` , `/assets/*` | the web UI (no password needed to load) |
-| `GET /api/ping` | `{name, version, hostname, authorized, auth}` |
+| `GET /api/ping` | `{name, version, hostname, authorized, auth, app}` (`app`: `{url, version}` or null) |
+| `GET /app.apk` | the Android app uploaded by `setup_pi.sh` (no password; 404 if none) |
 | `POST /api/login` `{password}` / `POST /api/logout` | sets / clears the HttpOnly `arstro_token` cookie (derived from the password) |
 | `GET /ws` | WebSocket session (the protocol above) |
 | `GET /ws/preview` | live H.264 preview (below) |

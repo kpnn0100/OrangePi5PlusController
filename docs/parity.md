@@ -30,6 +30,7 @@ and all three are updated live by the same state events (ARC-03).
 | Pairing window, forget a phone | ADM-02 | Settings › Bluetooth | `pair [SECONDS]`, `unpair ADDRESS` | System |
 | Web access: URLs, password, open mode | ADM-03 | Settings › Web access | `web [--show] [--set-password] [--rotate] [--open \| --require-password]` | System |
 | Connected controllers | CON-05 | Settings › Connected controllers | `status`, `watch controllers` | System |
+| Install / update the app without a cable | SET-04 | (open `http://<pi>:8080/app.apk` in the phone browser) | `web` prints the link | Login page and System › Android app |
 | Any op (tools, scripts) | ARC-02 | - | `call OP '{json}'` | `POST /api/op/OP` |
 
 ¹ A terminal cannot show video: the CLI saves the live H.264 stream to a file (play it with

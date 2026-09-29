@@ -29,6 +29,8 @@ from .v4l2 import audio_present, find_pulse_hdmiin, lock_timings, query_signal  
 
 POLL_MS = 1000
 STABLE_POLLS = 2                    # identical timing readings required before (re)starting
+IDLE_POLL_EVERY = 3                 # no signal and nothing running: ask the driver every 3rd poll
+                                    # (rk_hdmirx logs "port has no link" for every query)
 AUDIO_CAPS = "audio/x-raw,format=S16LE,rate=48000,channels=2,layout=interleaved"
 AUDIO_META = {"format": "S16LE", "rate": 48000, "channels": 2}
 SOFTWARE = "arstro-remote recorder 2.0"
@@ -137,6 +139,10 @@ class Capture:
     def poll(self):
         if self.paused:
             return True
+        if self.signal is None and not self.pipeline and not self.sim:
+            self._idle_polls = getattr(self, "_idle_polls", 0) + 1
+            if self._idle_polls % IDLE_POLL_EVERY:
+                return True
         timing = self.query()
         if timing != self.signal:
             self.signal = timing

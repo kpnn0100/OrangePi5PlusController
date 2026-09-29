@@ -219,6 +219,9 @@ def cmd_web(ctl, a):
     def human(i):
         print("URLs    : %s" % (", ".join(i.get("urls", [])) or "no network address"))
         print("Access  : %s" % ("OPEN (no password)" if i.get("auth") == "open" else "password"))
+        if i.get("app") and i.get("urls"):
+            print("App     : %s (v%s) - open it on the phone to install" % (
+                i["urls"][0].rstrip("/") + i["app"]["path"], i["app"].get("version") or "?"))
         if a.show or a.set_password is None:
             print("Password: %s" % (i.get("token") if a.show else "(hidden - add --show)"))
         if note:

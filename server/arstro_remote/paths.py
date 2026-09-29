@@ -29,6 +29,24 @@ DEFAULT_CONFIG = {
 }
 
 
+def data_dir():
+    return os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "arstro-remote")
+
+
+def app_apk():
+    """(path, version) of the Android app the Pi offers for download (SET-04), or (None, None)."""
+    d = os.path.join(data_dir(), "app")
+    path = os.path.join(d, "arstro-remote.apk")
+    if not os.path.isfile(path):
+        return None, None
+    try:
+        with open(os.path.join(d, "version")) as f:
+            version = f.read().strip() or None
+    except OSError:
+        version = None
+    return path, version
+
+
 def config_dir():
     return os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "arstro-remote")
 

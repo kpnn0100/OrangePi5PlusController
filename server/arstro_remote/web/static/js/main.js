@@ -57,7 +57,9 @@ function showLogin(info, message) {
       },
     }, user, input, btn, err),
     h("p.hint", { style: { marginTop: "18px" } }, "Forgot it? The app shows it under Settings → Web access, or run ",
-      h("span.mono", null, "arstro-remote web --show"), " on the Pi."));
+      h("span.mono", null, "arstro-remote web --show"), " on the Pi."),
+    info && info.app ? h("p", { style: { marginTop: "18px" } },
+      h("a.btn", { href: info.app.url, download: "" }, icon("phone"), `Get the Android app${info.app.version ? " v" + info.app.version : ""}`)) : null);
   clear(root, h("div.login", null, card));
   setTimeout(() => input.focus(), 60);
 }

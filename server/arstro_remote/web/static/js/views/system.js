@@ -108,6 +108,10 @@ export default {
               h("span.mono.grow.ellipsis", { style: { fontSize: "13px" } }, reveal ? token : token ? "•".repeat(14) : "–"),
               h("button.btn.ghost.icon.sm", { "aria-label": reveal ? "Hide password" : "Show password", onclick: () => { reveal = !reveal; renderWeb(); } }, icon("eye")),
               h("button.btn.ghost.icon.sm", { "aria-label": "Copy password", onclick: () => copyText(token) }, icon("copy")))),
+          w.app ? h("div.row", null,
+            h("div.grow", null, h("b", null, "Android app"), h("div.hint", null,
+              `v${w.app.version || "?"} · open this page on the phone and tap Download to install or update`)),
+            h("a.btn.sm", { href: w.app.path, download: "" }, icon("download"), "Download")) : null,
           h("div.hint", null, "Remote CLI: ", h("span.mono", null,
             `arstro-remote --url ${(w.urls || ["http://<pi>:" + (w.port || 8080) + "/"])[0]}` + (open ? "" : " --token …"))),
           open ? null : h("div.row", null, h("button.btn.sm", { onclick: () => changePassword() }, icon("key"), "Change password"))));
