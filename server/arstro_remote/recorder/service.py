@@ -59,6 +59,7 @@ class RecorderService:
         self._gallery_version = 0
         self._gallery_wake = threading.Event()
         self._planned = {}
+        self._raw_to_delete = {}       # RAW path -> job whose FFV1 copy was verified (GAL-08)
 
     # ------------------------------------------------------------ lifecycle
     @property
@@ -284,10 +285,11 @@ class RecorderService:
             codec = "h265-x265" if r["hq_engine"] == "x265" or not caps.get("vpu_h265") else "h265-vpu"
             out.append((codec, {"quality": r["hq_quality"], "preset": r["x265_preset"],
                                 "chroma": r["hq_chroma"]}))
+        replace = {"verify": bool(r.get("ffv1_replace_raw")), "replace_raw": bool(r.get("ffv1_replace_raw"))}
         if r["ffv1"] and r.get("ffv1_engine") == "gpu" and caps.get("gpu_ffv1"):
-            out.append(("ffv1-gpu", {}))
+            out.append(("ffv1-gpu", dict(replace)))
         elif r["ffv1"] and caps.get("ffv1"):
-            out.append(("ffv1", {}))
+            out.append(("ffv1", dict(replace)))
         return out
 
     # -------------------------------------------------------------- gallery
@@ -347,6 +349,14 @@ class RecorderService:
         except OpError:
             return None
 
+    @staticmethod
+    def _remove_sidecars(path):
+        for suffix in (jobs_mod.VERIFIED_SUFFIX, ".verify.log"):
+            try:
+                os.remove(path + suffix)
+            except OSError:
+                pass
+
     def _check_deletable(self, path):
         if self.recording_path and os.path.abspath(path) == os.path.abspath(self.recording_path):
             raise OpError("%s is being recorded" % os.path.basename(path))
@@ -355,9 +365,36 @@ class RecorderService:
 
     # ------------------------------------------------------------------ jobs
     def _on_job(self, job):
+        if job is not None and job.finished and (job.verify or {}).get("ok") and job.opts.get("replace_raw"):
+            self._raw_to_delete[job.src] = job
+        self._delete_verified_raws()
         self.hub.publish("jobs", [j.describe() for j in self.jobs.jobs])
-        if job is None or job.finished or job.state == "running":
+        if job is None or job.finished or job.state in ("running", "verifying"):
             self._gallery_wake.set()
+
+    def _delete_verified_raws(self):
+        """GAL-08: a RAW whose FFV1 copy was proven identical goes - once nothing else needs it."""
+        for src, job in list(self._raw_to_delete.items()):
+            others = [j for j in self.jobs.jobs if j is not job and not j.finished and j.src == src]
+            if others or (self.recording_path and os.path.abspath(src) == os.path.abspath(self.recording_path)):
+                continue                                  # another job still reads it: later
+            del self._raw_to_delete[src]
+            if not os.path.exists(job.output) or not os.path.exists(job.output + jobs_mod.VERIFIED_SUFFIX):
+                log.warning("not deleting %s: its verified copy %s is gone", src, job.output)
+                continue
+            try:
+                os.remove(src)
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                log.warning("could not delete %s: %s", src, e)
+                job.verify["raw_error"] = str(e)
+                continue
+            self.library.forget(src)
+            thumbs.drop(library.clip_id(os.path.basename(src)))
+            job.verify["raw_deleted"] = True
+            log.info("deleted RAW %s: %s is a verified lossless copy (%s)", os.path.basename(src),
+                     os.path.basename(job.output), job.verify.get("detail"))
 
     # ------------------------------------------------------------------- ops
     def handle(self, session, op, msg):
@@ -498,6 +535,10 @@ class RecorderService:
         if msg.get("bitrate"):
             opts["bitrate"] = float(msg["bitrate"])
             opts["rc"] = msg.get("rc") or "vbr"
+        if target in ("ffv1", "ffv1-gpu") and path.lower().endswith(".arh"):
+            replace = msg.get("replace_raw")
+            replace = self.settings["raw"].get("ffv1_replace_raw") if replace is None else bool(replace)
+            opts["verify"] = opts["replace_raw"] = bool(replace)
         out = jobs_mod.output_path(path, target, opts["scale"])
         if os.path.abspath(out) == os.path.abspath(path):
             raise OpError("the file already is in that format")
@@ -506,10 +547,29 @@ class RecorderService:
                  session.num, session.controller)
         return job.describe()
 
+    def op_gallery_verify(self, session, msg):
+        """Check a take's FFV1 copy against its RAW byte for byte; optionally delete the RAW."""
+        path = self._file_path(msg.get("file"))
+        take = self._take(library.clip_id(os.path.basename(path)))
+        items = take["items"]
+        raw = next((i for i in items if i["kind"] == "RAW"), None)
+        ffv1 = next((i for i in items if i["kind"] == "FFV1"), None)
+        if not raw or not ffv1:
+            raise OpError("this take needs both a RAW and an FFV1 file to compare")
+        if raw.get("recording") or ffv1.get("busy") or raw.get("busy"):
+            raise OpError("wait until the recording / conversion of this take has finished")
+        delete = bool(msg.get("delete_raw"))
+        job = self._main(self.jobs.add, os.path.join(self.storage, raw["id"]), "verify",
+                         {"verify": True, "replace_raw": delete}, False, os.path.join(self.storage, ffv1["id"]))
+        log.info("lossless check of %s against %s requested by session %d (%s)%s", ffv1["id"], raw["id"],
+                 session.num, session.controller, ", then delete the RAW" if delete else "")
+        return job.describe()
+
     def op_gallery_delete(self, session, msg):
         path = self._file_path(msg.get("file"))
         self._check_deletable(path)
         os.remove(path)
+        self._remove_sidecars(path)
         self.library.forget(path)
         thumbs.drop(library.clip_id(os.path.basename(path)))
         log.info("deleted %s (session %d, %s)", path, session.num, session.controller)
@@ -525,6 +585,7 @@ class RecorderService:
         for p in paths:
             try:
                 os.remove(p)
+                self._remove_sidecars(p)
                 self.library.forget(p)
                 done.append(os.path.basename(p))
             except FileNotFoundError:

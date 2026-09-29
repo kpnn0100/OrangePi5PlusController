@@ -1,6 +1,6 @@
 // Gallery (GAL-01..07): takes and their variants, playback, download, convert, delete, jobs.
 
-import { h, clear, icon, store, conn, run, sheet, confirmBox, toast, fmtBytes, fmtDur, busy, errText } from "../core.js";
+import { h, clear, icon, store, conn, run, sheet, confirmBox, toast, toggle, fmtBytes, fmtDur, busy, errText } from "../core.js";
 
 const KINDS = [["all", "All"], ["RAW", "RAW"], ["H.265", "H.265"], ["H.264", "H.264"], ["FFV1", "FFV1"], ["VIDEO", "Other"]];
 const KIND_TAG = { RAW: "", "H.265": "accent", "H.264": "ok", FFV1: "warn", VIDEO: "" };
@@ -151,23 +151,30 @@ export default {
 export function jobRow(j) {
   const finished = ["done", "failed", "cancelled"].includes(j.state);
   const pct = Math.round((j.progress || 0) * 100);
+  const v = j.verify;
+  const verdict = v ? (v.ok ? h("span.tag.ok", null, v.raw_deleted ? "Verified · RAW deleted" : "Verified")
+                            : h("span.tag.rec", null, "Not identical")) : null;
   const stateTag = { queued: h("span.tag", null, "Queued"), running: h("span.tag.accent", null, pct + "%"),
-                     done: h("span.tag.ok", null, "Done"), failed: h("span.tag.rec", null, "Failed"),
+                     verifying: h("span.tag.accent", null, `Checking ${pct}%`),
+                     done: verdict || h("span.tag.ok", null, "Done"), failed: verdict || h("span.tag.rec", null, "Failed"),
                      cancelled: h("span.tag", null, "Cancelled") }[j.state];
-  const detail = j.state === "running"
-    ? [j.fps ? `${Math.round(j.fps)} fps` : null, j.eta !== null && j.eta !== undefined ? `${fmtDur(j.eta)} left` : null,
+  const detail = j.state === "running" || j.state === "verifying"
+    ? [j.state === "verifying" ? "comparing every frame with the RAW" : null,
+       j.fps ? `${Math.round(j.fps)} fps` : null, j.eta !== null && j.eta !== undefined ? `${fmtDur(j.eta)} left` : null,
        j.live ? "following the recording" : null].filter(Boolean).join(" · ")
+    : v ? (v.ok ? v.detail + (v.raw_deleted ? " · the FFV1 is now the original" : "") : v.detail + " · the RAW is kept")
     : j.error || "";
   return h("div.job", null,
     h("div.top", null,
       h("div.grow", null,
         h("div.ellipsis", { style: { fontWeight: 550, fontSize: "14px" } }, j.output),
-        h("div.muted.ellipsis", { style: { fontSize: "12.5px" } }, `${j.title} · from ${j.source}`)),
+        h("div.muted.ellipsis", { style: { fontSize: "12.5px" } },
+          j.codec === "verify" ? `${j.title} · against ${j.source}` : `${j.title} · from ${j.source}`)),
       stateTag,
       !finished ? h("button.btn.ghost.icon.sm", { title: "Cancel", "aria-label": "Cancel conversion",
                                                   onclick: (e) => run("jobs.cancel", { id: j.id }, { btn: e.currentTarget }) }, icon("x")) : null),
     !finished ? h("div.bar", null, h("i", { style: { width: pct + "%" } })) : null,
-    detail ? h("div", { style: { fontSize: "12.5px", color: j.state === "failed" ? "var(--err)" : "var(--muted)" } }, detail) : null);
+    detail ? h("div", { style: { fontSize: "12.5px", color: j.state === "failed" || (v && !v.ok) ? "var(--err)" : "var(--muted)" } }, detail) : null);
 }
 
 // ---------------------------------------------------------------- take
@@ -222,7 +229,8 @@ export function openTake(takeId) {
           h("div.info", null,
             h("div.name", null, kindTag(i.kind), h("span.ellipsis", null, i.id),
               i.recording ? h("span.tag.rec.live", null, h("span.dot"), "Recording") : null,
-              i.busy && !i.recording ? h("span.tag.accent", null, "Converting") : null),
+              i.busy && !i.recording ? h("span.tag.accent", null, "In use") : null,
+              i.verified ? h("span.tag.ok", { title: `identical to ${i.verified.raw} (${i.verified.frames} frames)` }, "Verified lossless") : null),
             h("div.meta", null, itemMeta(i)),
             i.problem ? h("div.problem", null, i.problem) : null),
           h("div.acts", null,
@@ -231,10 +239,29 @@ export function openTake(takeId) {
             h("a.btn.ghost.icon.sm", { href: mediaUrl(i, true), download: i.id, title: "Download", "aria-label": "Download" }, icon("download")),
             h("button.btn.ghost.icon.sm", { title: "Convert", "aria-label": "Convert", disabled: i.recording,
                                             onclick: () => openConvert(i) }, icon("convert")),
+            i.kind === "FFV1" && take.items.some((x) => x.kind === "RAW") ?
+              h("button.btn.ghost.icon.sm", { title: "Check against the RAW", "aria-label": "Check against the RAW",
+                                              disabled: locked, onclick: () => verifyItem(i) }, icon("check")) : null,
             h("button.btn.ghost.icon.sm.danger", { title: locked ? "In use" : "Delete this file", "aria-label": "Delete",
                                                    disabled: locked, onclick: () => deleteItem(i) }, icon("trash"))));
       }));
     footDel.disabled = take.items.some((i) => i.recording || i.busy);
+  }
+
+  function verifyItem(i) {
+    const raw = take.items.find((x) => x.kind === "RAW");
+    const go = async (deleteRaw, btn) => {
+      const job = await busy(btn, () => conn.call("gallery.verify", { file: i.id, delete_raw: deleteRaw }));
+      if (job) { toast("Checking " + i.id + " against the RAW", "ok"); s2.close(); }
+    };
+    const s2 = sheet({
+      title: "Check the FFV1 copy",
+      body: h("div.stack", null,
+        h("p.dim", { style: { margin: 0 } }, `Every frame and audio sample of ${i.id} is compared byte for byte with ${raw.id}.`),
+        h("p.muted", { style: { margin: 0, fontSize: "13px" } }, `${fmtBytes(raw.size)} could be freed. If anything differs, nothing is deleted.`)),
+      foot: [h("button.btn.ghost", { onclick: (e) => go(false, e.currentTarget) }, "Check only"),
+             h("button.btn.danger.solid", { onclick: (e) => go(true, e.currentTarget) }, "Check, then delete RAW")],
+    });
   }
 
   async function deleteItem(i) {
@@ -266,7 +293,8 @@ export async function openConvert(item, preselect) {
   try { list = await targets(); } catch (e) { toast(errText(e), "err"); return; }
   const caps = new Set(list.filter((t) => t.available).map((t) => t.id));
   let sel = preselect && caps.has(preselect) ? preselect : (list.find((t) => t.available && !sameKind(t.id, item)) || {}).id;
-  const opts = { quality: "high", scale: "source", preset: "fast", bitrate: "" };
+  const rawDefault = ((store.get("recorder.settings") || {}).raw || {}).ffv1_replace_raw;
+  const opts = { quality: "high", scale: "source", preset: "fast", bitrate: "", replaceRaw: rawDefault !== false };
   const box = h("div");
   const startBtn = h("button.btn.primary", { onclick: () => start() }, icon("convert"), "Convert");
   const s = sheet({ title: "Convert", body: box, foot: [h("button.btn.ghost", { onclick: () => s.close() }, "Cancel"), startBtn] });
@@ -293,12 +321,17 @@ export async function openConvert(item, preselect) {
         o.preset ? selectRow("x265 preset", "preset", o.preset.map((v) => [v, v])) : null,
         o.bitrate ? h("div.field", null, h("label", null, "Bitrate (Mb/s)"),
           h("input.input", { type: "number", min: "1", max: "400", placeholder: "auto (quality)", value: opts.bitrate,
-                             oninput: (e) => { opts.bitrate = e.target.value; } })) : null) : null);
+                             oninput: (e) => { opts.bitrate = e.target.value; } })) : null) : null,
+      t && sel.startsWith("ffv1") && item.kind === "RAW" ? h("label.row", { style: { marginTop: "14px", cursor: "pointer" } },
+        toggle(opts.replaceRaw, (on) => { opts.replaceRaw = on; }),
+        h("div", null, h("b", null, "Delete the RAW when the copy is verified"),
+          h("div.hint", null, "Every frame and audio sample is compared byte for byte first"))) : null);
     startBtn.disabled = !t || !t.available;
   }
 
   async function start() {
     const args = { file: item.id, target: sel, quality: opts.quality, scale: opts.scale, preset: opts.preset };
+    if (sel.startsWith("ffv1") && item.kind === "RAW") args.replace_raw = opts.replaceRaw;
     if (opts.bitrate) args.bitrate = Number(opts.bitrate);
     const job = await busy(startBtn, () => conn.call("gallery.convert", args));
     if (job) { toast("Conversion started: " + job.output, "ok"); s.close(); }

@@ -78,6 +78,16 @@ def _probe_media(path, item):
     item["audio"] = any(s.get("codec_type") == "audio" for s in streams)
 
 
+def _verified(path):
+    """For an FFV1 file: the lossless check against its RAW (GAL-08), or None."""
+    try:
+        with open(path + ".verified.json") as f:
+            v = json.load(f)
+        return {"raw": v.get("raw"), "frames": v.get("frames"), "checked": v.get("checked")}
+    except (OSError, ValueError):
+        return None
+
+
 def _title(base):
     m = _STAMP.search(base)
     if m:
@@ -143,6 +153,7 @@ class Library:
                     item["kind"] = RAW if n.lower().endswith(".arh") else H265
             item["recording"] = live
             item["busy"] = live or os.path.abspath(p) in busy
+            item["verified"] = _verified(p) if item["kind"] == FFV1 else None
             if live:
                 item["problem"] = "recording…"
             item["url"] = "/api/media/" + n

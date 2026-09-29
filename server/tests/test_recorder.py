@@ -318,5 +318,110 @@ def delete_one_format_then_the_take(c):
     check(x["ok"] is False, x)
 
 
+def _jobs_for(c, take):
+    return [j for j in c.a.call("jobs.list")["jobs"] if j["source"].startswith(take)]
+
+
+def _record(c, seconds):
+    r = c.a.call("recorder.start", timeout=30)
+    time.sleep(seconds)
+    c.a.call("recorder.stop", timeout=60)
+    return r["file"].rsplit(".", 1)[0]
+
+
+@test("GAL-08", "REC-04", "ARC-03")
+def raw_is_deleted_only_after_a_verified_ffv1_copy(c):
+    """Record RAW from a 4:2:2 source (like the real camera) with FFV1 after + delete RAW:
+    the copy is checked byte for byte, then the RAW goes and the FFV1 is marked verified."""
+    caps = c.a.call("recorder.status")["caps"]
+    engines = ["cpu"] + (["gpu"] if caps.get("gpu_ffv1") else [])
+    c.a.call("recorder.source", simulate="1280x720@30:NV16", timeout=60)
+    try:
+        check(wait_until(lambda: c.a.call("recorder.status")["signal"].get("present"), 20), "no test signal")
+        for engine in engines:
+            c.a.call("recorder.settings.set", settings={
+                "mode": "raw", "audio": {"record": True},
+                "raw": {"hq": False, "ffv1": True, "ffv1_engine": engine, "when": "after", "ffv1_replace_raw": True}})
+            take = _record(c, 3)
+            done = wait_until(lambda: [j for j in _jobs_for(c, take) if j["state"] in ("done", "failed", "cancelled")
+                                       and j["codec"].startswith("ffv1")], 240, 1)
+            check(done, "%s FFV1 job did not finish" % engine)
+            j = done[0]
+            check(j["state"] == "done" and j["verify"] and j["verify"]["ok"], "%s: %s" % (engine, j))
+            check(wait_until(lambda: j["verify"].get("raw_deleted") or any(
+                x["verify"] and x["verify"].get("raw_deleted") for x in _jobs_for(c, take)), 10), "RAW not deleted")
+            t = c.a.call("gallery.get", take=take)
+            kinds = [i["kind"] for i in t["items"]]
+            check("RAW" not in kinds and "FFV1" in kinds, kinds)
+            ffv1 = next(i for i in t["items"] if i["kind"] == "FFV1")
+            check(ffv1["verified"] and ffv1["verified"]["raw"] == take + ".arh", ffv1)
+            check(not os.path.exists(os.path.join(c.tmp, take + ".arh")), "RAW file still on disk")
+            print("      %s: %s" % (engine, j["verify"]["detail"]))
+            # the observer controller saw the same job result (ARC-03)
+            check(wait_until(lambda: any((x.get("verify") or {}).get("raw_deleted")
+                                         for x in (c.b.state.get("jobs") or []) if x["id"] == j["id"]), 5),
+                  "second controller did not see the verified job")
+            c.a.call("gallery.delete_take", take=take)
+    finally:
+        c.a.call("recorder.settings.set", settings={"raw": c.orig_settings["raw"], "audio": {"record": False}})
+        c.a.call("recorder.source", simulate=c.source, timeout=60)
+        wait_until(lambda: c.a.call("recorder.status")["signal"].get("present"), 20)
+
+
+@test("GAL-08", "GAL-06")
+def a_changed_pixel_is_caught_and_the_raw_is_kept(c):
+    """One flipped byte in the RAW: the check names the frame/plane/pixel and deletes nothing.
+    The untouched pair passes, and the on-demand check can then delete the RAW."""
+    from arstro_remote.recorder import arh, verify
+    c.a.call("recorder.settings.set", settings={"mode": "raw", "raw": {"hq": False, "ffv1": False}})
+    try:
+        take = _record(c, 2)
+        raw = os.path.join(c.tmp, take + ".arh")
+        job = c.a.call("gallery.convert", file=take + ".arh", target="ffv1", replace_raw=False)
+        check(job["options"].get("replace_raw") is False, job["options"])
+        check(wait_until(lambda: [j for j in _jobs_for(c, take) if j["id"] == job["id"] and j["state"] == "done"],
+                         120, 1), "FFV1 conversion did not finish")
+        check(os.path.exists(raw), "RAW deleted although replace_raw was off")
+        ffv1 = os.path.join(c.tmp, take + "_FFV1.mkv")
+        good = verify.verify(raw, ffv1)
+        check(good["ok"], good)
+        # flip one byte of the 3rd frame, in the chroma plane
+        r = arh.ArhReader(raw)
+        offs = []
+        with open(raw, "rb") as f:
+            pos = arh.HEADER_SIZE
+            while len(offs) < 3:
+                f.seek(pos)
+                ctype, psize, _pts, _seq, _a, _b = arh.CHUNK.unpack(f.read(arh.CHUNK.size))
+                if ctype == arh.VFRM:
+                    offs.append(pos + arh.CHUNK.size)
+                pos += arh.CHUNK.size + psize
+        target = offs[2] + r.video["plane_offsets"][1] + 1000
+        with open(raw, "r+b") as f:
+            f.seek(target)
+            b = f.read(1)
+            f.seek(target)
+            f.write(bytes([b[0] ^ 0x01]))
+        bad = verify.verify(raw, ffv1)
+        check(not bad["ok"] and "frame 2" in bad["detail"] and "plane U" in bad["detail"], bad)
+        job = c.a.call("gallery.verify", file=take + "_FFV1.mkv", delete_raw=True)
+        fin = wait_until(lambda: [j for j in _jobs_for(c, take) if j["id"] == job["id"]
+                                  and j["state"] in ("done", "failed")], 120, 1)
+        check(fin and fin[0]["verify"] and not fin[0]["verify"]["ok"], fin)
+        check(os.path.exists(raw), "RAW deleted although the copy differs!")
+        print("      caught: %s" % fin[0]["verify"]["detail"])
+        # put the byte back: now the on-demand check passes and may delete the RAW
+        with open(raw, "r+b") as f:
+            f.seek(target)
+            f.write(b)
+        job = c.a.call("gallery.verify", file=take + "_FFV1.mkv", delete_raw=True)
+        fin = wait_until(lambda: [j for j in _jobs_for(c, take) if j["id"] == job["id"] and j["state"] == "done"], 120, 1)
+        check(fin and fin[0]["verify"]["ok"], fin)
+        check(wait_until(lambda: not os.path.exists(raw), 10), "verified RAW not deleted")
+        c.a.call("gallery.delete_take", take=take)
+    finally:
+        c.a.call("recorder.settings.set", settings={"raw": c.orig_settings["raw"], "mode": c.orig_settings["mode"]})
+
+
 if __name__ == "__main__":
     raise SystemExit(run(setup, teardown, __doc__))

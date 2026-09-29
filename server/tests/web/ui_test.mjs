@@ -261,6 +261,48 @@ test("gallery_take_convert_play_delete", ["GAL-01", "GAL-02", "GAL-03", "GAL-04"
   await page.close();
 });
 
+test("verified_ffv1_replaces_the_raw", ["GAL-08", "REC-04", "ARC-03"], async () => {
+  const before = await op("recorder.settings.get");
+  const page = await newPage();
+  try {
+    await op("recorder.settings.set", { settings: { mode: "raw", raw: { ffv1: true, ffv1_engine: "cpu", when: "after", hq: false, ffv1_replace_raw: false } } });
+    await go(page, "recorder");
+    await page.click(".mode-card");
+    await page.waitForSelector(".sheet.show");
+    // the switch lives in the sheet; turn it on from the web and see it on the server
+    const on = await page.evaluate(() => {
+      const row = [...document.querySelectorAll(".sheet.show .set-row")].find((r) => r.textContent.includes("Delete RAW after a verified copy"));
+      const input = row && row.querySelector("input[type=checkbox]");
+      if (input) input.click();
+      return !!input;
+    });
+    check(on, "no 'delete RAW after a verified copy' switch in the settings sheet");
+    check(await until(async () => (await op("recorder.settings.get")).raw.ffv1_replace_raw === true, 3000), "setting not saved");
+    await page.keyboard.press("Escape");
+    await op("recorder.start");
+    await sleep(2500);
+    const stop = await op("recorder.stop");
+    const take = stop.file.replace(/\.arh$/, "");
+    const job = await until(async () => (await op("jobs.list")).jobs.find((j) => j.source === take + ".arh" && j.state === "done" && j.verify), 180000, 1000);
+    check(job && job.verify.ok, "copy not verified: " + JSON.stringify(job && job.verify));
+    check(await until(async () => (await op("jobs.list")).jobs.find((j) => j.id === job.id && j.verify.raw_deleted), 10000), "RAW not deleted");
+    await go(page, "gallery");
+    check(await until(() => page.$eval(".view", (e) => e.textContent.includes("Verified · RAW deleted")), 8000), "jobs list does not show the verdict");
+    const card = await until(() => page.evaluateHandle((id) =>
+      [...document.querySelectorAll(".take")].find((c) => c.querySelector("img")?.src.includes(id)) || null, take).then((h) => h.asElement()), 10000);
+    check(card, "take not listed");
+    await card.click();
+    await page.waitForSelector(".sheet.show .variant");
+    const txt = await page.$eval(".sheet.show", (e) => e.textContent);
+    check(txt.includes("Verified lossless") && !txt.includes(".arh"), "take should hold only the verified FFV1: " + txt.slice(0, 200));
+    await shot(page, "verified");
+    await op("gallery.delete_take", { take });
+  } finally {
+    await op("recorder.settings.set", { settings: { mode: before.mode, raw: before.raw } });
+    await page.close();
+  }
+});
+
 test("terminal_shared_between_browsers", ["TERM-01", "TERM-02", "TERM-04", "ARC-03"], async () => {
   const a = await newPage();
   await go(a, "terminal");

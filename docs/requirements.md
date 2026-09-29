@@ -101,6 +101,7 @@ IDs are stable: never renumber, mark removed ones `(withdrawn)`.
 | GAL-05 | Jobs: list with progress, speed and ETA; cancel; clear finished. Pushed live. |
 | GAL-06 | Delete one variant (format) of a take, or the whole take. Refused while that file is being recorded or converted. |
 | GAL-07 | Gallery changes (new recording, finished conversion, deletion – from any controller) are pushed to all controllers. |
+| GAL-08 | **Verified lossless FFV1 replaces the RAW.** When an FFV1 copy of a RAW take is made (after recording or from the gallery) with *delete RAW after a verified copy* on (setting `raw.ffv1_replace_raw`, default on), the server decodes the copy and compares **every frame, plane by plane, byte for byte, and every audio sample** with the RAW. Only if all of it is identical (same frame count, same size, same pixel layout) the RAW is deleted and the FFV1 becomes the take's main source (marked *verified*); otherwise the RAW is kept and the reason is shown (first differing frame / plane / pixel). The RAW is never deleted while it is recorded or used by another job. Any existing RAW + FFV1 pair can be checked on demand, with or without deleting the RAW, from every controller. |
 
 ## ADM – System
 

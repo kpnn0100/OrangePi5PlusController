@@ -591,34 +591,43 @@ def add_transcode_args(sp):
 
 # ---------------------------------------------------------------- job manager (UI side)
 
+VERIFIED_SUFFIX = ".verified.json"      # next to an FFV1 file proven identical to its RAW (GAL-08)
+
+
+def verify_wanted(codec, src, opts):
+    return codec in ("ffv1", "ffv1-gpu", "verify") and src.lower().endswith(".arh") and bool(opts.get("verify"))
+
+
 class Job:
     _next_id = 1
 
-    def __init__(self, src, codec, opts, follow):
+    def __init__(self, src, codec, opts, follow, output=None):
         self.id = Job._next_id
         Job._next_id += 1
         self.src, self.codec, self.opts, self.follow = src, codec, opts, follow
-        self.output = output_path(src, codec, opts.get("scale"))
+        self.output = output or output_path(src, codec, opts.get("scale"))
         self.created = time.time()
-        self.state = "queued"         # queued | running | done | failed | cancelled
+        # queued | running | verifying | done | failed | cancelled
+        self.state = "queued"
+        self.verify = None            # {"ok", "frames", "audio_bytes", "detail", "raw_deleted"?}
         self.frames = self.total = 0
         self.fps = 0.0
         self.live = follow
         self.error = None
         self.proc = None
         self.started = None
-        self.log_path = self.output + ".log"
+        self.log_path = self.output + (".verify.log" if codec == "verify" else ".log")
 
     @property
     def title(self):
-        return CODECS[self.codec][0]
+        return "Lossless check" if self.codec == "verify" else CODECS[self.codec][0]
 
     @property
     def finished(self):
         return self.state in ("done", "failed", "cancelled")
 
     def eta(self):
-        if self.state != "running" or self.fps <= 0 or self.total <= self.frames:
+        if self.state not in ("running", "verifying") or self.fps <= 0 or self.total <= self.frames:
             return None
         return (self.total - self.frames) / self.fps
 
@@ -628,7 +637,8 @@ class Job:
                 "frames": self.frames, "total": self.total, "fps": self.fps, "live": self.live,
                 "progress": round(self.frames / self.total, 4) if self.total else 0.0,
                 "eta": round(self.eta()) if self.eta() is not None else None,
-                "error": self.error, "options": self.opts, "created": int(self.created)}
+                "error": self.error, "options": self.opts, "created": int(self.created),
+                "verify": self.verify}
 
 
 class JobManager:
@@ -650,20 +660,21 @@ class JobManager:
                 out.update((j.src, j.output))
         return out
 
-    def add(self, src, codec, opts, follow=False):
-        if codec not in CODECS:
+    def add(self, src, codec, opts, follow=False, output=None):
+        if codec not in CODECS and codec != "verify":
             raise ValueError("unknown target %s" % codec)
-        out = output_path(src, codec, opts.get("scale"))
+        out = output or output_path(src, codec, opts.get("scale"))
         if any(j.output == out and not j.finished for j in self.jobs):
-            raise RuntimeError("%s is already being made" % os.path.basename(out))
-        job = Job(src, codec, opts, follow)
+            raise RuntimeError("%s is already being %s" % (os.path.basename(out),
+                                                          "checked" if codec == "verify" else "made"))
+        job = Job(src, codec, opts, follow, output=out)
         self.jobs.append(job)
         self._schedule()
         self.on_update(job)
         return job
 
     def running(self):
-        return [j for j in self.jobs if j.state == "running"]
+        return [j for j in self.jobs if j.state in ("running", "verifying")]
 
     def active_count(self):
         return sum(1 for j in self.jobs if not j.finished)
@@ -672,7 +683,8 @@ class JobManager:
         if job.state == "queued":
             job.state = "cancelled"
             self.on_update(job)
-        elif job.state == "running" and job.proc:
+        elif job.state in ("running", "verifying") and job.proc:
+            job.cancelled = True
             job.proc.send_signal(signal.SIGTERM)
 
     def clear_finished(self):
@@ -682,7 +694,7 @@ class JobManager:
     def shutdown(self):
         """Stop all workers (on quit); unfinished outputs are removed."""
         for j in self.jobs:
-            if j.state == "running" and j.proc:
+            if j.state in ("running", "verifying") and j.proc:
                 j.proc.send_signal(signal.SIGTERM)
         deadline = time.monotonic() + 3
         for j in self.jobs:
@@ -692,14 +704,14 @@ class JobManager:
                 except subprocess.TimeoutExpired:
                     j.proc.kill()
                     j.proc.wait()
-            if j.proc and j.state == "running":
+            if j.proc and j.state in ("running", "verifying"):
                 j.state = "cancelled"
                 self._cleanup(j)
 
     @staticmethod
     def _cleanup(job):
         """Remove leftovers: the partial output, and the log unless it explains a failure."""
-        paths = [job.output + ".part"]
+        paths = [] if job.codec == "verify" else [job.output + ".part"]
         if job.state != "failed":
             paths.append(job.log_path)
         else:
@@ -725,6 +737,8 @@ class JobManager:
             busy += 1
 
     def _spawn(self, job):
+        if job.codec == "verify":
+            return self._spawn_verify(job)
         o = job.opts
         cmd = [sys.executable, "-m", "arstro_remote.recorder.transcode", job.src, "--codec", job.codec,
                "--quality", o.get("quality", "high"), "--preset", o.get("preset", "fast"),
@@ -748,6 +762,32 @@ class JobManager:
         GLib.io_add_watch(job.proc.stdout, GLib.PRIORITY_DEFAULT,
                           GLib.IOCondition.IN | GLib.IOCondition.HUP, self._on_output, job)
 
+    def _env(self):
+        pkg_parent = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        env = dict(os.environ, GST_MPP_NO_RGA="0")
+        env["PYTHONPATH"] = pkg_parent + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+        return env
+
+    def _spawn_verify(self, job):
+        """Phase 2 of an FFV1 job (or a standalone check): decode and compare with the RAW."""
+        cmd = [sys.executable, "-m", "arstro_remote.recorder.verify", job.src, job.output]
+        try:
+            log = open(job.output + ".verify.log", "w")
+            # low priority: never disturb a live recording or the preview
+            job.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=log, text=True, env=self._env(),
+                                        preexec_fn=lambda: os.nice(10))
+        except OSError as e:
+            job.state, job.error = "failed", str(e)
+            self.on_update(job)
+            return
+        log.close()
+        job.state, job.frames, job.fps = "verifying", 0, 0.0
+        job.started = job.started or time.monotonic()
+        job.verify_started = time.monotonic()
+        GLib.io_add_watch(job.proc.stdout, GLib.PRIORITY_DEFAULT,
+                          GLib.IOCondition.IN | GLib.IOCondition.HUP, self._on_output, job)
+        self.on_update(job)
+
     def _on_output(self, stream, cond, job):
         line = stream.readline() if cond & GLib.IOCondition.IN else ""
         if line:
@@ -760,16 +800,55 @@ class JobManager:
             job.fps = msg.get("fps", job.fps)
             job.live = msg.get("live", job.live)
             st = msg.get("state")
-            if st in ("done", "failed", "cancelled"):
+            if job.state == "verifying":
+                if "verify" in msg:
+                    job.verify = msg["verify"]
+                elif st == "verifying" and job.frames:
+                    job.fps = round(job.frames / max(0.1, time.monotonic() - job.verify_started), 1)
+            elif st in ("done", "failed", "cancelled"):
                 job.state, job.error = st, msg.get("error")
             self.on_update(job)
             return True
         # worker exited
         code = job.proc.wait()
+        if job.state == "verifying":
+            if getattr(job, "cancelled", False):
+                job.state, job.verify = "cancelled", None
+            else:
+                job.verify = job.verify or {"ok": False, "detail": f"the check stopped (code {code}, see {job.output}.verify.log)"}
+                job.state = "done" if job.codec != "verify" or code == 0 else "failed"
+                if job.verify.get("ok"):
+                    self._mark_verified(job)
+            self._finish(job)
+            return False
         if not job.finished:
             job.state = "done" if code == 0 else "failed"
             job.error = job.error or f"worker exited with code {code} (see {job.log_path})"
+        if job.state == "done" and verify_wanted(job.codec, job.src, job.opts):
+            self._cleanup_part(job)
+            self._spawn_verify(job)                  # phase 2: prove it before the RAW may go
+            return False
+        self._finish(job)
+        return False
+
+    def _finish(self, job):
         self._cleanup(job)
         self.on_update(job)
         self._schedule()
-        return False
+
+    @staticmethod
+    def _cleanup_part(job):
+        try:
+            os.remove(job.output + ".part")
+        except OSError:
+            pass
+
+    @staticmethod
+    def _mark_verified(job):
+        v = dict(job.verify, raw=os.path.basename(job.src),
+                 checked=time.strftime("%Y-%m-%dT%H:%M:%S%z"))
+        try:
+            with open(job.output + VERIFIED_SUFFIX, "w") as f:
+                json.dump(v, f)
+        except OSError:
+            pass

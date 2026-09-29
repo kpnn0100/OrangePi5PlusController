@@ -534,8 +534,9 @@ def cmd_gallery(ctl, a):
                 print("%s  %s  %s  %s" % (t["id"], t["title"], fmt_dur(t["duration"]), fmt_size(t["size"])))
                 for i in t["items"]:
                     res = "%dx%d@%s" % (i["width"], i["height"], ("%.2f" % i["fps"]).rstrip("0").rstrip(".")) if i["width"] else ""
-                    print("    %-6s %-40s %-18s %9s%s" % (i["kind"], i["id"], res, fmt_size(i["size"]),
-                                                          "  (%s)" % i["problem"] if i.get("problem") else ""))
+                    print("    %-6s %-40s %-18s %9s%s%s" % (i["kind"], i["id"], res, fmt_size(i["size"]),
+                                                            "  verified lossless" if i.get("verified") else "",
+                                                            "  (%s)" % i["problem"] if i.get("problem") else ""))
         out(a, r, human)
     elif sub == "show":
         out(a, ctl.call("gallery.get", take=a.take), lambda t: print(json.dumps(t, indent=2)))
@@ -547,8 +548,16 @@ def cmd_gallery(ctl, a):
         params = {"file": a.file, "target": a.to, "quality": a.quality, "scale": a.scale, "preset": a.preset}
         if a.bitrate:
             params.update(bitrate=a.bitrate, rc=a.rc)
+        if a.keep_raw:
+            params["replace_raw"] = False
         job = ctl.call("gallery.convert", **params)
         print("job #%d: %s -> %s" % (job["id"], job["source"], job["output"]))
+        if a.wait:
+            wait_job(ctl, job["id"])
+    elif sub == "verify":
+        job = ctl.call("gallery.verify", file=a.file, delete_raw=a.delete_raw)
+        print("job #%d: checking %s against %s byte for byte%s" % (
+            job["id"], job["output"], job["source"], ", then deleting the RAW" if a.delete_raw else ""))
         if a.wait:
             wait_job(ctl, job["id"])
     elif sub == "delete":
@@ -569,14 +578,21 @@ def wait_job(ctl, job_id):
     while True:
         jobs = {j["id"]: j for j in (c.state.get("jobs") or ctl.call("jobs.list")["jobs"])}
         j = jobs.get(job_id)
-        if j and j["state"] != last or (j and j["state"] == "running"):
+        if j and j["state"] != last or (j and j["state"] in ("running", "verifying")):
             sys.stderr.write("\r%s %3d%% %s fps   " % (j["state"], int(j["progress"] * 100), j["fps"]))
             last = j["state"]
         if j and j["state"] in ("done", "failed", "cancelled"):
             sys.stderr.write("\n")
+            v = j.get("verify")
+            if v:
+                print(("verified: %s%s" % (v.get("detail"), " - RAW deleted" if v.get("raw_deleted") else ""))
+                      if v.get("ok") else "NOT identical: %s - the RAW is kept" % v.get("detail"))
             if j["state"] != "done":
-                sys.exit("job %s: %s" % (j["state"], j.get("error")))
-            print("made %s" % j["output"])
+                sys.exit("job %s: %s" % (j["state"], j.get("error") or (v or {}).get("detail")))
+            if j["codec"] != "verify":
+                print("made %s" % j["output"])
+            if v and not v.get("ok"):
+                sys.exit(1)
             return
         time.sleep(1)
 
@@ -609,8 +625,14 @@ def cmd_jobs(ctl, a):
     sub = a.jobs_cmd or "list"
     if sub == "list":
         r = ctl.call("jobs.list")["jobs"]
+        def verdict(j):
+            v = j.get("verify")
+            if not v:
+                return j.get("error") or ""
+            return ("verified%s" % (", RAW deleted" if v.get("raw_deleted") else "")) if v.get("ok") \
+                else "NOT identical: " + str(v.get("detail"))
         out(a, r, lambda js: [print("#%-3d %-9s %-10s %3d%%  %-40s %s" % (
-            j["id"], j["state"], j["codec"], int(j["progress"] * 100), j["output"], j.get("error") or ""))
+            j["id"], j["state"], j["codec"], int(j["progress"] * 100), j["output"], verdict(j)))
             for j in js] or print("no jobs"))
     elif sub == "cancel":
         ctl.call("jobs.cancel", id=a.id)
@@ -749,6 +771,12 @@ def build_parser():
     cv.add_argument("--scale", choices=["source", "1080", "720"], default="source", help="H.264 only")
     cv.add_argument("--preset", default="fast", help="x265 speed preset")
     cv.add_argument("--wait", action="store_true", help="wait and show progress")
+    cv.add_argument("--keep-raw", action="store_true",
+                    help="FFV1 from RAW: keep the RAW (default follows raw.ffv1_replace_raw: check, then delete)")
+    vf = gs.add_parser("verify", help="compare a take's FFV1 with its RAW byte for byte")
+    vf.add_argument("file", help="the FFV1 (or RAW) file of the take")
+    vf.add_argument("--delete-raw", action="store_true", help="delete the RAW if every frame and sample match")
+    vf.add_argument("--wait", action="store_true", help="wait and show progress")
     dl = gs.add_parser("delete", help="delete one file (one format of a take)")
     dl.add_argument("file")
     dt = gs.add_parser("delete-take", help="delete every file of a take")

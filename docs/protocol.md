@@ -52,7 +52,7 @@ Pushed to every session whenever they change (whoever changed them), newest valu
 |---|---|
 | `recorder` | status: `available, caps, signal, capture, recording, preview, disk, mode, mode_text, last, simulate` |
 | `recorder.settings` | the recording settings (see `recorder.settings.set`) |
-| `jobs` | list of conversion jobs `{id, title, codec, state, source, output, progress, fps, eta, live, error, options}` |
+| `jobs` | list of jobs `{id, title, codec, state, source, output, progress, fps, eta, live, error, options, verify}`; `state`: queued, running, **verifying** (FFV1 being compared with its RAW), done, failed, cancelled; `verify`: `{ok, frames, audio_bytes, detail, raw_deleted?}` or null; `codec` `verify` = an on-demand check |
 | `gallery` | summary `{version, takes, files, size, folder}`; fetch `gallery.list` when `version` changes |
 | `wifi` | `{device, enabled, connected, ssid, signal, ip, state, connection}` |
 | `terminals` | shared shells `[{term, cols, rows, viewers, attached, opened_by, ephemeral, age, detached_for}]` |
@@ -99,7 +99,8 @@ Other events: `stats` `{data}` (after `stats.subscribe`), `term.exit` `{term, co
 | `gallery.list` | `kind?` (RAW, H.265, H.264, FFV1, VIDEO) | `{folder, version, takes}` |
 | `gallery.get` | `take` | one take `{id, title, created, size, duration, kinds, recording, items}` |
 | `gallery.targets` | | `{targets: [{id, title, available, description, options}]}` |
-| `gallery.convert` | `file, target, quality?, scale?, preset?, bitrate?, rc?, chroma?` | the new job |
+| `gallery.convert` | `file, target, quality?, scale?, preset?, bitrate?, rc?, chroma?, replace_raw?` | the new job; `replace_raw` (FFV1 from RAW, default = setting `raw.ffv1_replace_raw`): check the copy, then delete the RAW |
+| `gallery.verify` | `file` (the take's FFV1 or RAW), `delete_raw` | a *verify* job: decodes the FFV1 and compares every frame plane and audio sample with the RAW byte for byte; with `delete_raw` the RAW is deleted only if all of it is identical (GAL-08) |
 | `gallery.delete` | `file` | refused while it is recorded or converted |
 | `gallery.delete_take` | `take` | |
 | `jobs.list` / `jobs.clear` / `jobs.cancel` | `id` (cancel) | `{jobs}` / job |
@@ -111,6 +112,7 @@ Other events: `stats` `{data}` (after `stats.subscribe`), `term.exit` `{term, co
 | `web.rotate_token` | | a new random password |
 | `web.set_auth` | `required` (bool) | info; `false` = open mode |
 
+Gallery items carry `verified` (`{raw, frames, checked}` for an FFV1 proven identical to its RAW, else null).
 Take ids are `REC_YYYYMMDD_HHMMSS`; its files are `<take>.arh` (RAW), `<take>_H265.mp4|mov|mkv`,
 `<take>_H264[_720p|_1080p].mp4`, `<take>_FFV1.mkv`.
 

@@ -354,17 +354,27 @@ class _JobRow extends StatelessWidget {
     final state = job['state'] as String? ?? '';
     final pct = (((job['progress'] as num?) ?? 0) * 100).round();
     final done = JobsCard.finished(job);
-    final detail = state == 'running'
+    final v = asMap(job['verify']);
+    final verdict = v.isEmpty
+        ? null
+        : v['ok'] == true
+            ? Tag(v['raw_deleted'] == true ? 'Verified · RAW deleted' : 'Verified', color: kOk)
+            : const Tag('Not identical', color: kRec);
+    final detail = state == 'running' || state == 'verifying'
         ? [
+            if (state == 'verifying') 'comparing every frame with the RAW',
             if ((job['fps'] as num? ?? 0) > 0) '${(job['fps'] as num).round()} fps',
             if (job['eta'] != null) '${clock(job['eta'] as num)} left',
             if (job['live'] == true) 'following the recording',
           ].join(' · ')
-        : (job['error'] as String? ?? '');
+        : v.isNotEmpty
+            ? '${v['detail']}${v['ok'] == true ? (v['raw_deleted'] == true ? ' · the FFV1 is now the original' : '') : ' · the RAW is kept'}'
+            : (job['error'] as String? ?? '');
     final tag = switch (state) {
       'running' => Tag('$pct%', color: const Color(0xFF9DB4FF)),
-      'done' => const Tag('Done', color: kOk),
-      'failed' => const Tag('Failed', color: kRec),
+      'verifying' => Tag('Checking $pct%', color: const Color(0xFF9DB4FF)),
+      'done' => verdict ?? const Tag('Done', color: kOk),
+      'failed' => verdict ?? const Tag('Failed', color: kRec),
       'cancelled' => const Tag('Cancelled'),
       _ => const Tag('Queued'),
     };
@@ -376,7 +386,8 @@ class _JobRow extends StatelessWidget {
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text(job['output'] as String? ?? '', maxLines: 1, overflow: TextOverflow.ellipsis,
                   style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w500)),
-              Text('${job['title']} · from ${job['source']}', maxLines: 1, overflow: TextOverflow.ellipsis,
+              Text('${job['title']} · ${job['codec'] == 'verify' ? 'against' : 'from'} ${job['source']}',
+                  maxLines: 1, overflow: TextOverflow.ellipsis,
                   style: theme.textTheme.bodySmall),
             ]),
           ),
@@ -405,7 +416,9 @@ class _JobRow extends StatelessWidget {
         if (detail.isNotEmpty)
           Padding(
             padding: const EdgeInsets.only(top: 4),
-            child: Text(detail, style: theme.textTheme.bodySmall?.copyWith(color: state == 'failed' ? kRec : null)),
+            child: Text(detail,
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: state == 'failed' || (v.isNotEmpty && v['ok'] != true) ? kRec : null)),
           ),
       ]),
     );
@@ -635,6 +648,30 @@ class _TakeSheetState extends State<_TakeSheet> {
     ]);
   }
 
+  Future<void> _verify(Map<String, dynamic> i) async {
+    final raw = asList(_take?['items']).firstWhere((x) => x['kind'] == 'RAW');
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('Check the FFV1 copy'),
+        content: Text('Every frame and audio sample of ${i['id']} is compared byte for byte with ${raw['id']}. '
+            '${size(raw['size'] as num?)} could be freed. If anything differs, nothing is deleted.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(c), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.pop(c, 'check'), child: const Text('Check only')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: kRec, foregroundColor: Colors.white),
+            onPressed: () => Navigator.pop(c, 'delete'),
+            child: const Text('Check, then delete RAW'),
+          ),
+        ],
+      ),
+    );
+    if (choice == null || !mounted) return;
+    await runOp(context, client, 'gallery.verify', {'file': i['id'], 'delete_raw': choice == 'delete'},
+        'Checking ${i['id']} against the RAW');
+  }
+
   Widget _variant(Map<String, dynamic> i, MediaLink media) {
     final theme = Theme.of(context);
     final locked = i['recording'] == true || i['busy'] == true;
@@ -660,7 +697,9 @@ class _TakeSheetState extends State<_TakeSheet> {
             Text(meta, style: theme.textTheme.bodySmall),
             if (i['recording'] == true) const Padding(padding: EdgeInsets.only(top: 4), child: Tag('Recording', color: kRec, dot: true)),
             if (i['busy'] == true && i['recording'] != true)
-              const Padding(padding: EdgeInsets.only(top: 4), child: Tag('Converting', color: Color(0xFF9DB4FF))),
+              const Padding(padding: EdgeInsets.only(top: 4), child: Tag('In use', color: Color(0xFF9DB4FF))),
+            if (i['verified'] != null)
+              const Padding(padding: EdgeInsets.only(top: 4), child: Tag('Verified lossless', color: kOk)),
             if (i['problem'] != null)
               Text(i['problem'] as String, style: theme.textTheme.bodySmall?.copyWith(color: kWarn)),
           ]),
@@ -684,6 +723,8 @@ class _TakeSheetState extends State<_TakeSheet> {
                 }
               case 'convert':
                 showConvert(context, client, i);
+              case 'verify':
+                _verify(i);
               case 'delete':
                 final others = asList(_take?['items']).length - 1;
                 if (!await confirm(context, 'Delete this file?',
@@ -700,6 +741,8 @@ class _TakeSheetState extends State<_TakeSheet> {
             if (playable(i) && media.ready) const PopupMenuItem(value: 'play', child: Text('Play')),
             if (media.ready) const PopupMenuItem(value: 'download', child: Text('Download to phone')),
             if (i['recording'] != true) const PopupMenuItem(value: 'convert', child: Text('Convert…')),
+            if (i['kind'] == 'FFV1' && asList(_take?['items']).any((x) => x['kind'] == 'RAW'))
+              PopupMenuItem(value: 'verify', enabled: !locked, child: const Text('Check against the RAW…')),
             PopupMenuItem(value: 'delete', enabled: !locked, child: Text(locked ? 'Delete (in use)' : 'Delete this file')),
           ],
         ),
@@ -744,6 +787,7 @@ class _ConvertSheet extends StatefulWidget {
 class _ConvertSheetState extends State<_ConvertSheet> {
   late String? _sel;
   String _quality = 'high', _scale = 'source', _preset = 'fast';
+  late bool _replaceRaw = asMap(asMap(widget.client.topic('recorder.settings').value)['raw'])['ffv1_replace_raw'] != false;
   final _bitrate = TextEditingController();
   bool _busy = false;
 
@@ -804,6 +848,14 @@ class _ConvertSheetState extends State<_ConvertSheet> {
               ),
           ]),
         ],
+        if (t != null && '$_sel'.startsWith('ffv1') && widget.item['kind'] == 'RAW')
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Delete the RAW when the copy is verified'),
+            subtitle: const Text('Every frame and audio sample is compared byte for byte first'),
+            value: _replaceRaw,
+            onChanged: (v) => setState(() => _replaceRaw = v),
+          ),
         const SizedBox(height: 18),
         FilledButton.icon(
           onPressed: t == null || t['available'] != true || _busy
@@ -817,6 +869,7 @@ class _ConvertSheetState extends State<_ConvertSheet> {
                     'scale': _scale,
                     'preset': _preset,
                     if (double.tryParse(_bitrate.text) != null) 'bitrate': double.parse(_bitrate.text),
+                    if ('$_sel'.startsWith('ffv1') && widget.item['kind'] == 'RAW') 'replace_raw': _replaceRaw,
                   };
                   final job = await runOp(context, widget.client, 'gallery.convert', args);
                   if (!context.mounted) return;

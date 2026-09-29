@@ -283,6 +283,9 @@ export function openSettings() {
           raw.ffv1 ? row("FFV1 engine", "GPU is slower but leaves the CPU free",
             seg([["cpu", "CPU"], ["gpu", "GPU"]], raw.ffv1_engine, (v) => set({ raw: { ffv1_engine: v } }),
                 { disabled: { cpu: !caps.ffv1, gpu: !caps.gpu_ffv1 } })) : null,
+          raw.ffv1 ? row("Delete RAW after a verified copy",
+            "Every frame and audio sample is compared byte for byte first; if anything differs the RAW stays",
+            toggle(raw.ffv1_replace_raw, (v) => set({ raw: { ffv1_replace_raw: v } }))) : null,
           (raw.hq || raw.ffv1) ? row("Make copies", "During recording needs more CPU/VPU",
             seg([["during", "During"], ["after", "After"]], raw.when, (v) => set({ raw: { when: v } }))) : null)),
 

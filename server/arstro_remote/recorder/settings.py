@@ -29,6 +29,7 @@ DEFAULTS = {
         "ffv1": False,              # also make a lossless FFV1 file
         "ffv1_engine": "cpu",       # cpu (faster) | gpu (Vulkan: slower, ~0 CPU)
         "when": "during",           # during | after : when the encodes start
+        "ffv1_replace_raw": True,   # check the FFV1 copy byte for byte, then delete the RAW (GAL-08)
     },
     "audio": {"record": True},
     "storage": "~/Videos/HDMI-Recorder",
@@ -51,6 +52,7 @@ SCHEMA = {
     ("raw", "ffv1"): (bool,),
     ("raw", "ffv1_engine"): ("cpu", "gpu"),
     ("raw", "when"): ("during", "after"),
+    ("raw", "ffv1_replace_raw"): (bool,),
     ("audio", "record"): (bool,),
     ("storage",): (str,),
     ("edid",): ("4k60", "4k30", "1080p", "keep"),

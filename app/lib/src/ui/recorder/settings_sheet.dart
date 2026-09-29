@@ -134,6 +134,12 @@ class _SettingsBodyState extends State<_SettingsBody> {
                       _seg<String>({'cpu': 'CPU', 'gpu': 'GPU'}, raw['ffv1_engine'] as String?,
                           (v) => _set({'raw': {'ffv1_engine': v}}),
                           disabled: {if (caps['ffv1'] != true) 'cpu', if (caps['gpu_ffv1'] != true) 'gpu'})),
+                if (raw['ffv1'] == true)
+                  _SwitchRow(
+                      'Delete RAW after a verified copy',
+                      'Every frame and audio sample is compared byte for byte first; if anything differs the RAW stays',
+                      raw['ffv1_replace_raw'] != false,
+                      (v) => _set({'raw': {'ffv1_replace_raw': v}})),
                 if (raw['hq'] == true || raw['ffv1'] == true)
                   _Row('Make copies', 'During recording needs more CPU/VPU',
                       _seg<String>({'during': 'During', 'after': 'After'}, raw['when'] as String?,
