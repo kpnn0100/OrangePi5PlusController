@@ -8,9 +8,10 @@ import monitor from "./views/monitor.js";
 import wifi from "./views/wifi.js";
 import terminal from "./views/terminal.js";
 import remote from "./views/remote.js";
+import screen from "./views/screen.js";
 import system from "./views/system.js";
 
-const VIEWS = [recorder, gallery, monitor, wifi, terminal, remote, system];
+const VIEWS = [recorder, gallery, screen, monitor, wifi, terminal, remote, system];
 const root = document.getElementById("root");
 let current = null;          // {view, cleanup, el}
 let shell = null;

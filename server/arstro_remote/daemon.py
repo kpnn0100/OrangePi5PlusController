@@ -59,6 +59,7 @@ class Daemon:
         self.bt = None
         self.web = None
         self.recorder = None
+        self.screen = None
         self.loop = None
         self._lock_file = None
 
@@ -236,6 +237,14 @@ class Daemon:
             except Exception:
                 log.exception("recorder unavailable")
                 self.recorder = None
+        if self.config.get("screen_enabled", True):
+            try:
+                from .screen.service import ScreenService
+                self.screen = ScreenService(self)
+                self.screen.start()
+            except Exception:
+                log.exception("remote screen unavailable")
+                self.screen = None
         if self.config.get("web_enabled", True):
             try:
                 from .web.server import WebServer
@@ -308,6 +317,11 @@ class Daemon:
                     self.recorder.shutdown()
                 except Exception:
                     log.exception("recorder shutdown")
+            if self.screen:
+                try:
+                    self.screen.shutdown()
+                except Exception:
+                    log.exception("screen shutdown")
             if self.web:
                 self.web.stop()
             self.terms.close_all()

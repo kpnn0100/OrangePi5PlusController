@@ -48,7 +48,8 @@ class Viewer:
 
 
 class Preview:
-    def __init__(self, on_viewers, request_keyframe):
+    def __init__(self, on_viewers, request_keyframe, name="preview"):
+        self.name = name                          # for the log: "preview" (HDMI) / "screen"
         self.on_viewers = on_viewers              # (count) -> start/stop the encoder
         self.request_keyframe = request_keyframe
         self.viewers = set()
@@ -125,7 +126,7 @@ class Preview:
             if self._stop_timer:
                 self._stop_timer.cancel()
                 self._stop_timer = None
-        log.info("preview viewer %s joined (%d watching)", peer, n)
+        log.info("%s viewer %s joined (%d watching)", self.name, peer, n)
         if self.config:
             v.push(("text", json.dumps(self.config)))
         v.push(("text", json.dumps(self.state)))
@@ -151,8 +152,8 @@ class Preview:
             with self.lock:
                 self.viewers.discard(v)
                 n = len(self.viewers)
-            log.info("preview viewer %s left after %d frames (%d dropped bursts, %d watching)",
-                     peer, v.sent, v.dropped, n)
+            log.info("%s viewer %s left after %d frames (%d dropped bursts, %d watching)",
+                     self.name, peer, v.sent, v.dropped, n)
             if n == 0:
                 self._schedule_stop()
             else:

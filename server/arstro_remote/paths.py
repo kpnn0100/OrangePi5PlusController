@@ -23,6 +23,7 @@ DEFAULT_CONFIG = {
     "web_port": 8080,
     # HDMI RX recorder; recorder_simulate = "1920x1080@30" uses a test pattern (REC-08)
     "recorder_enabled": True,
+    "screen_enabled": True,
     "recorder_simulate": None,
     # Poll Wi-Fi status this often so changes made outside the server are pushed too
     "wifi_poll_sec": 10,

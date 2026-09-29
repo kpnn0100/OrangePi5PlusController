@@ -132,7 +132,7 @@ class Worker:
         if st.path == "zero-copy":
             print("[warn] zero-copy preview failed, falling back to CPU scaling")
             self.zero_copy = False
-        self.GLib.timeout_add(500, lambda: (self._start_stream() if self.preview_on else None) and False)
+        self.GLib.timeout_add(500, lambda: (self._start_stream(force=True) if self.preview_on else None) and False)
 
     def on_recording_stopped(self, rec, reason):
         if getattr(rec, "_reported", False):
@@ -153,8 +153,14 @@ class Worker:
     def _update_wanted(self):
         self.cap.set_wanted(self.preview_on or bool(self.cap.recording) or bool(self.pending_record))
 
-    def _start_stream(self):
+    def _start_stream(self, force=False):
+        """(Re)build the preview branch. A running branch at the wanted quality is kept:
+        several triggers (viewer joined, capture started, retries) must not rebuild the
+        encoder again - each rebuild sends viewers a new config and keyframe."""
         if not self.cap.pipeline:
+            return
+        st = self.cap.stream
+        if st is not None and st.bin is not None and st.quality == self.quality and not force:
             return
         try:
             st = self.cap.start_stream(self.quality, self._on_au, zero_copy=self.zero_copy)
@@ -165,14 +171,14 @@ class Worker:
             print(f"[warn] preview could not start: {e}")
             if self.zero_copy:
                 self.zero_copy = False
-                self.GLib.timeout_add(300, lambda: (self._start_stream() if self.preview_on else None) and False)
+                self.GLib.timeout_add(300, lambda: (self._start_stream(force=True) if self.preview_on else None) and False)
 
     def _check_zero_copy(self, st):
         """The RGA path gave no picture in 3 s (a format/size it cannot do): use the CPU path."""
         if self.cap.stream is st and st.frames == 0 and self.cap.pipeline and self.preview_on:
             print(f"[warn] zero-copy preview produced nothing for {self.cap.format}; using the CPU path")
             self.zero_copy = False
-            self._start_stream()
+            self._start_stream(force=True)
 
     def handle(self, cmd):
         c = cmd.get("cmd")
@@ -182,9 +188,9 @@ class Worker:
             self.quality = q
             if on and (not self.preview_on or changed or not self.cap.stream):
                 self.preview_on = True
-                self._update_wanted()
+                self._update_wanted()          # may start the capture -> on_capture starts the stream
                 if self.cap.pipeline:
-                    self._start_stream()
+                    self._start_stream(force=changed)
             elif not on and self.preview_on:
                 self.preview_on = False
                 self.cap.stop_stream()

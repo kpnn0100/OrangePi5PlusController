@@ -54,7 +54,7 @@ Future<RemoteClient> connectedClient() async {
   }
   client.stats.value = stats;
   final rec = jsonDecode(File('test/fixtures/recorder.json').readAsStringSync()) as Map<String, dynamic>;
-  for (final t in ['recorder', 'recorder.settings', 'jobs', 'gallery', 'pairing', 'controllers']) {
+  for (final t in ['recorder', 'recorder.settings', 'jobs', 'gallery', 'pairing', 'controllers', 'screen']) {
     client.topic(t).value = rec[t];
   }
   client.requestOverride = (op, params) async {
@@ -131,7 +131,7 @@ void main() {
       log.done();
     });
 
-    // covers: UX-03, UX-01, STAT-01, INP-04, WIFI-01, TERM-01
+    // covers: UX-03, UX-01, STAT-01, INP-04, WIFI-01, TERM-01, SCR-04
     testWidgets('all tabs fit on ${entry.key}', (tester) async {
       await setSize(tester, entry.value);
       final log = ErrorLog();
@@ -152,6 +152,13 @@ void main() {
       log.found(find.text('Left'), 'left button');
       log.found(find.text('Right'), 'right button');
       log.found(find.text('Drag to move · two fingers to scroll'), 'touchpad');
+      // Remote › Screen (SCR-04)
+      await tester.tap(find.text('Screen').last);
+      await tester.pump(const Duration(milliseconds: 400));
+      log.found(find.text('1024×768'), 'remote screen size');
+      log.check('remote screen');
+      await tester.tap(find.text('Touchpad').last);
+      await tester.pump(const Duration(milliseconds: 300));
       // let pending request timeouts (no transport in tests) run out
       await tester.pump(const Duration(seconds: 70));
       log.check('after timeouts');

@@ -5,15 +5,23 @@ import 'package:flutter/services.dart';
 
 import '../app_scope.dart';
 import '../remote_client.dart';
+import 'screen_view.dart';
 
 /// Mouse + keyboard for the Pi desktop.
 ///
 /// The pad only moves the pointer (and scrolls with two fingers); clicks are
 /// separate press-and-hold buttons, so you can drag by holding Left with one
 /// finger while moving on the pad with another.
-class RemotePage extends StatelessWidget {
+class RemotePage extends StatefulWidget {
   const RemotePage({super.key, required this.active});
   final bool active;
+
+  @override
+  State<RemotePage> createState() => _RemotePageState();
+}
+
+class _RemotePageState extends State<RemotePage> {
+  bool _screen = false;           // Touchpad | Screen (SCR-04)
 
   @override
   Widget build(BuildContext context) {
@@ -25,12 +33,15 @@ class RemotePage extends StatelessWidget {
             ? 'The Pi desktop (X11) is not reachable, so mouse and keyboard input will fail.'
             : null;
         return LayoutBuilder(builder: (context, box) {
-          final wide = box.maxWidth >= 900;
-          final mouse = Column(children: [
-            const Expanded(child: _Touchpad()),
-            const SizedBox(height: 12),
-            const SizedBox(height: 96, child: _MouseButtons()),
-          ]);
+          // side by side on large screens and on phones held sideways
+          final wide = box.maxWidth >= 900 || box.maxWidth > box.maxHeight * 1.6;
+          final mouse = _screen
+              ? ScreenView(client: client, active: widget.active)
+              : Column(children: [
+                  const Expanded(child: _Touchpad()),
+                  const SizedBox(height: 12),
+                  const SizedBox(height: 96, child: _MouseButtons()),
+                ]);
           return Column(children: [
             if (warning != null)
               MaterialBanner(
@@ -38,6 +49,21 @@ class RemotePage extends StatelessWidget {
                 leading: const Icon(Icons.warning_amber),
                 actions: const [SizedBox.shrink()],
               ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
+              child: Center(
+                child: SegmentedButton<bool>(
+                  showSelectedIcon: false,
+                  style: const ButtonStyle(visualDensity: VisualDensity.compact),
+                  segments: const [
+                    ButtonSegment(value: false, icon: Icon(Icons.touch_app_outlined), label: Text('Touchpad')),
+                    ButtonSegment(value: true, icon: Icon(Icons.desktop_windows_outlined), label: Text('Screen')),
+                  ],
+                  selected: {_screen},
+                  onSelectionChanged: (v) => setState(() => _screen = v.first),
+                ),
+              ),
+            ),
             Expanded(
               child: Padding(
                 padding: const EdgeInsets.all(12),
@@ -45,7 +71,9 @@ class RemotePage extends StatelessWidget {
                     ? Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
                         Expanded(child: mouse),
                         const SizedBox(width: 12),
-                        SizedBox(width: min(520, box.maxWidth * 0.38), child: const _KeyboardPanel()),
+                        SizedBox(
+                            width: min(520, max(340, box.maxWidth * 0.38)),
+                            child: _KeyboardPanel(compact: box.maxWidth < 900)),
                       ])
                     : Column(children: [
                         Expanded(child: mouse),
@@ -509,12 +537,17 @@ class _KeyboardPanelState extends State<_KeyboardPanel> {
                 onLongPress: () => _lockMod(m),
                 child: SizedBox(
                   height: 44,
-                  child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-                    if (locked) Icon(Icons.lock, size: 12, color: scheme.onPrimary),
-                    Text(label,
-                        style: TextStyle(
-                            fontWeight: FontWeight.w700, color: on ? scheme.onPrimary : scheme.onSecondaryContainer)),
-                  ]),
+                  child: Center(
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Row(mainAxisSize: MainAxisSize.min, children: [
+                        if (locked) Icon(Icons.lock, size: 12, color: scheme.onPrimary),
+                        Text(label,
+                            style: TextStyle(
+                                fontWeight: FontWeight.w700, color: on ? scheme.onPrimary : scheme.onSecondaryContainer)),
+                      ]),
+                    ),
+                  ),
                 ),
               ),
             ),

@@ -11,6 +11,7 @@ and all three are updated live by the same state events (ARC-03).
 | Wi-Fi status, scan, connect (saved/new/hidden) | WIFI-01..03 | Wi-Fi tab | `wifi status / scan / saved / connect SSID [--ask] [--hidden]` | Wi-Fi |
 | Wi-Fi disconnect, forget, radio | WIFI-04..06 | Wi-Fi tab | `wifi disconnect / forget NAME / radio on\|off` | Wi-Fi |
 | Shared shells: list, open, attach, close | TERM-01..04 | Terminal tab | `term list / open [--ephemeral] / attach ID / close ID`, `term run "cmd"` | Terminal |
+| Remote screen: watch the Pi desktop live, control it from the picture | SCR-01..04 | Remote › Screen (tap = click, long press = right click, drag, two-finger scroll; keyboard panel types) | `screen status`, `screen quality low\|medium\|high`, `screen save FILE [--seconds N]` ¹ | Screen tab (mouse, wheel, keyboard, Keys, Type text, full screen) |
 | Mouse + keyboard | INP-01..04 | Remote tab (touchpad, buttons, drag lock, scroll strip, keys) | `input move X Y [--absolute] / click / down / up [BUTTON] / scroll DY [DX] / key K [--mods ctrl,alt] / type TEXT / pointer` | Remote (pad, buttons, keys, capture mode) |
 | Recorder status + signal diagnosis | REC-01 | Recorder › Live | `rec status`, `watch recorder` | Recorder |
 | Live preview | REC-02 | Recorder › Live (native H.264 decoder) | `rec preview FILE [--seconds N]` saves the stream ¹ | Recorder (WebCodecs / MSE) |

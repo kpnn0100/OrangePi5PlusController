@@ -492,11 +492,11 @@ def _deep_merge(a, b):
             a[k] = v
 
 
-def save_preview(ctl, path, seconds):
-    """Write `seconds` of the live preview to an .h264 file (play it with ffplay/VLC)."""
+def save_preview(ctl, path, seconds, stream="/ws/preview"):
+    """Write `seconds` of a live stream (HDMI preview or /ws/screen) to an .h264 file."""
     from .web import ws as wsmod
     base, token = ctl.http_base()
-    url = base.replace("https://", "wss://") + "/ws/preview"
+    url = base.replace("https://", "wss://") + stream
     conn = wsmod.connect(url, {"Authorization": "Bearer %s" % token} if token else {})
     frames, keyed, t0, size = 0, False, time.monotonic(), 0
     with open(path, "wb") as f:
@@ -506,7 +506,8 @@ def save_preview(ctl, path, seconds):
                 if op == wsmod.OP_TEXT:
                     msg = json.loads(data)
                     if msg.get("type") == "state" and msg.get("state") == "no-signal":
-                        sys.exit("no HDMI signal: %s" % (msg.get("detail") or ""))
+                        sys.exit("%s: %s" % ("no HDMI signal" if stream == "/ws/preview" else "no picture",
+                                             msg.get("detail") or ""))
                     continue
                 _v, flags, _pts = struct.unpack_from(">BBQ", data, 0)
                 if not keyed and not flags & 1:
@@ -518,7 +519,8 @@ def save_preview(ctl, path, seconds):
         except wsmod.WSClosed:
             pass
     conn.close()
-    print("saved %d frames (%s) of live preview to %s" % (frames, fmt_size(size), path))
+    print("saved %d frames (%s) of the live %s to %s" % (
+        frames, fmt_size(size), "preview" if stream == "/ws/preview" else "screen", path))
 
 
 # -------------------------------------------------------------------- gallery
@@ -642,6 +644,28 @@ def cmd_jobs(ctl, a):
         print("cleared finished jobs")
 
 
+def cmd_screen(ctl, a):
+    sub = a.screen_cmd or "status"
+    if sub == "status":
+        st = ctl.call("screen.status")
+
+        def human(st):
+            scr = st.get("screen")
+            print("Desktop : %s%s" % (st.get("display") or "none", "  %dx%d" % tuple(scr) if scr else ""))
+            print("State   : %s%s" % (st["state"], " - %s" % st["error"] if st.get("error") else ""))
+            print("Viewers : %d · quality %s" % (st["viewers"], st["quality"]))
+            if st.get("stream"):
+                s = st["stream"]
+                print("Stream  : %sx%s@%s %s kbit/s" % (s["width"], s["height"], s["fps"], s["bitrate"] // 1000))
+            print("Watch   : the web UI's Screen tab, or the app's Remote › Screen")
+        out(a, st, human)
+    elif sub == "quality":
+        ctl.call("screen.settings.set", settings={"quality": a.value})
+        print("screen quality: %s" % a.value)
+    elif sub == "save":
+        save_preview(ctl, a.file, a.seconds, "/ws/screen")
+
+
 def cmd_call(ctl, a):
     resp = ctl.client.request(a.op, **json.loads(a.params))
     print(json.dumps(resp, indent=2))
@@ -755,6 +779,14 @@ def build_parser():
     pv.add_argument("file")
     pv.add_argument("--seconds", type=float, default=5)
 
+    sc_ = sub.add_parser("screen", help="remote screen: the Pi's desktop")
+    scs = sc_.add_subparsers(dest="screen_cmd")
+    scs.add_parser("status")
+    sq = scs.add_parser("quality", help="stream quality (shared)")
+    sq.add_argument("value", choices=["low", "medium", "high"])
+    sv = scs.add_parser("save", help="save the live desktop to an .h264 file")
+    sv.add_argument("file")
+    sv.add_argument("--seconds", type=float, default=5)
     g = sub.add_parser("gallery", help="recordings")
     gs = g.add_subparsers(dest="gal_cmd")
     gl = gs.add_parser("list")
@@ -825,7 +857,7 @@ def main(argv=None):
         return 0
     ctl = Ctl(a)
     handlers = {"status": cmd_status, "watch": cmd_watch, "pair": cmd_pair, "unpair": cmd_unpair,
-                "web": cmd_web, "stats": cmd_stats, "wifi": cmd_wifi, "term": cmd_term, "input": cmd_input,
+                "web": cmd_web, "screen": cmd_screen, "stats": cmd_stats, "wifi": cmd_wifi, "term": cmd_term, "input": cmd_input,
                 "rec": cmd_rec, "gallery": cmd_gallery, "jobs": cmd_jobs, "call": cmd_call}
     try:
         return handlers[a.cmd](ctl, a) or 0

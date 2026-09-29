@@ -577,3 +577,13 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important;
                            transition-duration: 1ms !important; }
 }
+
+/* ----------------------------------------------------------- remote screen */
+.screen-stage { aspect-ratio: auto; width: 100%; max-height: calc(100vh - 190px); min-height: 200px; outline: none;
+                touch-action: none; cursor: default; }
+.screen-stage.control { cursor: crosshair; }
+.screen-stage:focus-visible, .screen-stage.focused { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.screen-stage:fullscreen { max-height: none; }
+.screen-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.screen-bar .grow { min-width: 120px; }
+@media (max-width: 899px) { .screen-stage { max-height: calc(100vh - 230px - var(--tab-h)); } }

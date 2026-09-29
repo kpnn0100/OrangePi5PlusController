@@ -103,6 +103,15 @@ IDs are stable: never renumber, mark removed ones `(withdrawn)`.
 | GAL-07 | Gallery changes (new recording, finished conversion, deletion – from any controller) are pushed to all controllers. |
 | GAL-08 | **Verified lossless FFV1 replaces the RAW.** When an FFV1 copy of a RAW take is made (after recording or from the gallery) with *delete RAW after a verified copy* on (setting `raw.ffv1_replace_raw`, default on), the server decodes the copy and compares **every frame, plane by plane, byte for byte, and every audio sample** with the RAW. Only if all of it is identical (same frame count, same size, same pixel layout) the RAW is deleted and the FFV1 becomes the take's main source (marked *verified*); otherwise the RAW is kept and the reason is shown (first differing frame / plane / pixel). The RAW is never deleted while it is recorded or used by another job. Any existing RAW + FFV1 pair can be checked on demand, with or without deleting the RAW, from every controller. |
 
+## SCR – Remote screen (screen cast + control, like TeamViewer / UltraViewer)
+
+| ID | Requirement |
+|---|---|
+| SCR-01 | **Remote screen.** The Pi's desktop (X display, with its mouse pointer) is streamed live as H.264 over WebSocket to any number of viewers from one shared encoder - smooth and live first: ≥ 20 fps and < 0.5 s behind; a late viewer skips ahead. The capture runs in a helper process (ARC-06) and only while someone watches (stops ~5 s after the last viewer). |
+| SCR-02 | **Control from the picture.** A viewer can take control: the mouse maps to the same point of the Pi's screen (move, left/middle/right press and release, drag, wheel), the keyboard types into the Pi (keys with modifiers, text), and local text can be sent as typing. *View only* switches control off. |
+| SCR-03 | Quality presets (low ≤ 960 px wide at 15 fps, medium ≤ 1280 px at 30 fps, high native at 30 fps) are a shared, saved setting; the view shows the Pi's screen size and follows a change of it. When there is no desktop the view says why. |
+| SCR-04 | All controllers: Web (Screen tab, mouse + keyboard), GUI (Remote › Screen, touch: tap = click, long press = right click, drag, two-finger scroll), CLI (`screen status / quality / save`). |
+
 ## ADM – System
 
 | ID | Requirement |

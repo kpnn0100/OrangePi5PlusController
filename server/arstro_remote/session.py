@@ -22,11 +22,11 @@ from .protocol import (PROTO_VERSION, T_JSON, T_TERM, FrameDecoder, ProtocolErro
 
 log = logging.getLogger("arstro.session")
 
-FEATURES = ["stats", "wifi", "terminal", "input", "recorder", "gallery", "sync", "web"]
+FEATURES = ["stats", "wifi", "terminal", "input", "recorder", "gallery", "sync", "web", "screen"]
 
 # Ops that may block for seconds run on a worker pool so input and terminal traffic
 # from the same controller never waits behind them.
-SLOW_PREFIXES = ("wifi.", "stats.get", "recorder.", "gallery.", "jobs.", "admin.", "web.")
+SLOW_PREFIXES = ("wifi.", "stats.get", "recorder.", "gallery.", "jobs.", "admin.", "web.", "screen.")
 RESPONDED = object()  # handler already sent its own response
 
 # Input ops run on one dedicated thread so their order is preserved (typed text must
@@ -262,7 +262,7 @@ class Session:
         """Run one op and return its result (raises on error)."""
         op = msg.get("op") or ""
         for prefix, service in (("recorder.", "recorder"), ("gallery.", "recorder"),
-                                ("jobs.", "recorder"), ("web.", "web")):
+                                ("jobs.", "recorder"), ("web.", "web"), ("screen.", "screen")):
             if op.startswith(prefix):
                 svc = getattr(self.ctx, service, None)
                 if svc is None:

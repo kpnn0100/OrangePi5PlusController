@@ -1,8 +1,9 @@
 # OrangePi5PlusController
 
 Control an Orange Pi 5 Plus from an **Android app**, a **web page** or the **command line**:
-system monitor, Wi-Fi, shared terminals, mouse & keyboard, and an **HDMI-RX recorder** with a
-live H.264 preview, recording (H.265 or RAW) and a gallery with conversion.
+system monitor, Wi-Fi, shared terminals, mouse & keyboard, a **remote screen** (watch and control
+the Pi's desktop, like TeamViewer), and an **HDMI-RX recorder** with a live H.264 preview,
+recording (H.265 or RAW) and a gallery with conversion and verified-lossless FFV1.
 
 One server runs on the Pi. The three controllers use the same protocol and stay in sync: start
 a recording from the CLI and the record button turns red in the app and on the web page.

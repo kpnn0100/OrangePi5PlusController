@@ -59,6 +59,7 @@ Pushed to every session whenever they change (whoever changed them), newest valu
 | `pairing` | Bluetooth `{ready, alias, address, pairing_open, pairing_remaining, paired_devices}` |
 | `controllers` | connected controllers `[{session, controller, kind, peer, since}]` |
 | `web` | `{enabled, port, urls, auth: "password" \| "open"}` (never the password) |
+| `screen` | remote screen `{available, display, state: stopped\|starting\|live\|error, viewers, screen: [w, h], stream: {width, height, fps, bitrate, quality}, quality, error}` |
 
 Other events: `stats` `{data}` (after `stats.subscribe`), `term.exit` `{term, code, reason?}`.
 
@@ -104,6 +105,8 @@ Other events: `stats` `{data}` (after `stats.subscribe`), `term.exit` `{term, co
 | `gallery.delete` | `file` | refused while it is recorded or converted |
 | `gallery.delete_take` | `take` | |
 | `jobs.list` / `jobs.clear` / `jobs.cancel` | `id` (cancel) | `{jobs}` / job |
+| `screen.status` | | the `screen` topic |
+| `screen.settings.set` | `settings: {quality}` (low ≤ 960 px 15 fps, medium ≤ 1280 px 30 fps, high native 30 fps) | saved, shared; a running capture restarts at the new size |
 | `admin.status` | | `{version, bluetooth, input, web, recorder, sessions}` |
 | `admin.pair` | `seconds` (0 closes) | status |
 | `admin.unpair` | `address` | |
@@ -126,6 +129,7 @@ Take ids are `REC_YYYYMMDD_HHMMSS`; its files are `<take>.arh` (RAW), `<take>_H2
 | `POST /api/login` `{password}` / `POST /api/logout` | sets / clears the HttpOnly `arstro_token` cookie (derived from the password) |
 | `GET /ws` | WebSocket session (the protocol above) |
 | `GET /ws/preview` | live H.264 preview (below) |
+| `GET /ws/screen` | the Pi's desktop, same messages as `/ws/preview`; control it with `in.move_to` (absolute desktop pixels), `in.btn`, `in.scroll`, `in.key`, `in.text` |
 | `GET /api/media/<file>` | a recording, HTTP Range; `?download=1` |
 | `GET /api/thumb/<take>` | JPEG thumbnail |
 | `POST /api/op/<op>` | one op, JSON body → `{ok, data \| error}` |

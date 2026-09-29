@@ -26,9 +26,10 @@ function avcCodec(au) {
 
 export class PreviewPlayer {
   /** box: the .preview element. cb: {onState(state, detail), onConfig(cfg), onPlaying(bool)} */
-  constructor(box, cb = {}) {
+  constructor(box, cb = {}, path = "/ws/preview") {
     this.box = box;
     this.cb = cb;
+    this.path = path;                 // /ws/preview (HDMI) or /ws/screen (the Pi desktop)
     this.mode = previewSupport();
     this.canvas = h("canvas");
     this.video = h("video", { muted: true, autoplay: true, playsInline: true, disablePictureInPicture: true });
@@ -41,10 +42,18 @@ export class PreviewPlayer {
     this.config = null;
     this.stats = { frames: 0, bytes: 0, since: performance.now() };
     this.video.addEventListener("playing", () => this.setPlaying(true));
+    this.events = [];                 // last events, for bug reports (window.arstroPreview)
+    window.arstroPreview = this;
+  }
+
+  note(what) {
+    this.events.push(`${(performance.now() / 1000).toFixed(2)} ${what}`);
+    if (this.events.length > 40) this.events.shift();
   }
 
   start() {
     this.wanted = true;
+    if (this.mode === "mse") this.loadMse();
     if (!this.mode) {
       this.cb.onState?.("unsupported", "This browser can't decode the live stream. Use a current Chrome, Edge, Firefox or Safari, or the app.");
       return;
@@ -66,7 +75,7 @@ export class PreviewPlayer {
   }
 
   connect() {
-    const url = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws/preview";
+    const url = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + this.path;
     const ws = new WebSocket(url);
     ws.binaryType = "arraybuffer";
     this.ws = ws;
@@ -87,6 +96,7 @@ export class PreviewPlayer {
   }
 
   onText(msg) {
+    this.note(msg.type + " " + (msg.state || `${msg.width}x${msg.height}`));
     if (msg.type === "config") {
       const changed = !this.config || this.config.width !== msg.width || this.config.height !== msg.height;
       this.config = msg;
@@ -156,21 +166,31 @@ export class PreviewPlayer {
   }
 
   // ----------------------------------------------------------------- MSE
-  async decodeMse(key, pts, au) {
+  loadMse() {
+    if (!this.loading) this.loading = loadScript("/assets/vendor/jmuxer.min.js").catch(() => null);
+    return this.loading;
+  }
+
+  decodeMse(key, pts, au) {
+    // Synchronous on purpose: frames must reach the muxer in order, starting with a
+    // keyframe. jmuxer also needs its MediaSource *open* before the first frame (else it
+    // builds the init segment into nothing and never recovers): create it, wait for
+    // onReady, and start at the next keyframe (every 0.5 s).
     if (!this.jmuxer) {
       if (!key) return;
       if (!window.JMuxer) {
-        if (!this.loading) this.loading = loadScript("/assets/vendor/jmuxer.min.js").catch(() => null);
-        await this.loading;
-        if (!window.JMuxer) return;
-        if (!this.ws) return;
+        this.loadMse();
+        this.needKey = true;
+        return;
       }
-      if (this.jmuxer) return;
+      this.note("mse start");
       this.jmuxer = new window.JMuxer({
         node: this.video, mode: "video", flushingTime: 0, maxDelay: 250, clearBuffer: true, live: true,
         fps: (this.config && this.config.fps) || 30, debug: false,
-        onError: () => { this.teardown(true); },
+        onReady: () => { this.mseOpen = true; this.note("mse open"); },
+        onError: (e) => { this.note("jmuxer error " + (e && (e.message || e.type || e))); this.teardown(true); },
       });
+      this.mseOpen = false;
       this.video.classList.add("on");
       this.lastPts = null;
       // MSE buffers; keep the picture at the live edge (smooth and current beats complete)
@@ -179,12 +199,23 @@ export class PreviewPlayer {
         const v = this.video;
         if (!v.buffered.length) return;
         const end = v.buffered.end(v.buffered.length - 1);
+        if (v.readyState < 2) {                         // not started yet: start at the live edge
+          if (end > 0.2 && v.currentTime < end - 0.3) v.currentTime = end - 0.05;
+          if (v.paused) v.play().catch(() => {});
+          return;
+        }
         const behind = end - v.currentTime;
         if (behind > 0.3) v.currentTime = end - 0.03;
         else v.playbackRate = behind > 0.12 ? 1.08 : 1;
         if (v.paused) v.play().catch(() => {});
+        else if (v.currentTime > 0) this.setPlaying(true);   // frames are moving
       }, 200);
     }
+    if (!this.mseOpen) {               // not open yet: wait for the next keyframe
+      this.needKey = true;
+      return;
+    }
+    if (this.needKey && !key) return;
     const fps = (this.config && this.config.fps) || 30;
     let dur = 1000 / fps;
     if (this.lastPts !== null && pts > this.lastPts) dur = Math.min(200, Math.max(1, (pts - this.lastPts) / 1000));
@@ -197,6 +228,7 @@ export class PreviewPlayer {
   teardown(keepSocket = false) {
     this.resetDecoder();
     clearInterval(this.chase);
+    this.mseOpen = false;
     if (this.jmuxer) { try { this.jmuxer.destroy(); } catch (e) { /* gone */ } this.jmuxer = null; }
     this.video.removeAttribute("src");
     this.canvas.classList.remove("on");
@@ -208,6 +240,7 @@ export class PreviewPlayer {
 
   setPlaying(on) {
     if (this.playing === on) return;
+    this.note("playing " + on);
     this.playing = on;
     this.box.classList.toggle("playing", on);
     this.cb.onPlaying?.(on);

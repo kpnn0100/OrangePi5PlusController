@@ -36,6 +36,7 @@ web UI are thin controllers: they send ops and render the state events the serve
 | `recorder.worker` | HDMI RX capture pipeline: tee → preview branch (H.264), recording branch (H.265 / RAW `.arh`) | the service ends the recording with a reason, keeps the file, restarts the worker with back-off |
 | `recorder.transcode` | one per conversion job | the job is marked failed; nothing else notices |
 | `input_x11 --serve` | mouse/keyboard via XTEST | respawned on the next input op |
+| `screen.worker` | remote screen: X desktop (`ximagesrc`, with the pointer) → x264 → the daemon; only while someone watches | the service retries with back-off and tells the viewers why |
 | `arstro-remote-launcher` | supervisor started by the desktop autostart entry | - (it is the session's child) |
 
 The daemon never loads GStreamer: capture and encoding live in the worker, and the gallery

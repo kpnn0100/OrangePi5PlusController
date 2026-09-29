@@ -453,5 +453,25 @@
    "http://10.0.0.42:8080/"
   ],
   "token": "example-password"
+ },
+ "screen": {
+  "available": true,
+  "display": ":0",
+  "state": "live",
+  "viewers": 1,
+  "screen": [
+   1024,
+   768
+  ],
+  "stream": {
+   "width": 1024,
+   "height": 768,
+   "fps": 30,
+   "bitrate": 2133333,
+   "quality": "medium"
+  },
+  "quality": "medium",
+  "error": null,
+  "path": "/ws/screen"
  }
 }

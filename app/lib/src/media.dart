@@ -126,11 +126,13 @@ class MediaLink extends ChangeNotifier {
 /// Live H.264 preview (REC-02): the WebSocket `/ws/preview` feeds access units to the
 /// native MediaCodec decoder, which draws into a Flutter texture.
 class PreviewController extends ChangeNotifier {
-  PreviewController(this.link) {
+  /// [path]: `ws/preview` (HDMI input) or `ws/screen` (the Pi's desktop, SCR-01).
+  PreviewController(this.link, {this.path = 'ws/preview'}) {
     _method.setMethodCallHandler(_onNative);
   }
 
   final MediaLink link;
+  final String path;
   static const _method = MethodChannel('arstro/preview');
   static const _frames = BasicMessageChannel<ByteData>('arstro/preview/frames', BinaryCodec());
 
@@ -169,7 +171,7 @@ class PreviewController extends ChangeNotifier {
       _set('no-link', link.error ?? '');
       return;
     }
-    final url = '${link.base!.replaceFirst(RegExp('^http'), 'ws')}ws/preview';
+    final url = '${link.base!.replaceFirst(RegExp('^http'), 'ws')}$path';
     try {
       final ws = await WebSocket.connect(url, headers: link.headers).timeout(const Duration(seconds: 6));
       if (!_wanted || epoch != _epoch) {

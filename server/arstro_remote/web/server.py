@@ -7,6 +7,7 @@
   POST /api/logout
   GET  /ws                    WebSocket: the full protocol (same ops/events as Bluetooth)
   GET  /ws/preview            WebSocket: live H.264 preview (see recorder/preview.py)
+  GET  /ws/screen             WebSocket: the Pi's desktop, same messages (see screen/service.py)
   GET  /api/media/<file>      a recording (HTTP Range; ?download=1 for "save as")
   GET  /api/thumb/<clip>      JPEG thumbnail of a take
   POST /api/op/<op>           REST shim: run any op with a JSON body -> {"ok", "data"|"error"}
@@ -258,6 +259,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._websocket()
             if path == "/ws/preview":
                 return self._preview()
+            if path == "/ws/screen":
+                return self._screen()
             if path.startswith("/api/media/"):
                 return self._media(urllib.parse.unquote(path[len("/api/media/"):]), head)
             if path.startswith("/api/thumb/"):
@@ -357,6 +360,15 @@ class Handler(BaseHTTPRequestHandler):
         if conn is None:
             return
         rec.preview.serve(conn, "%s:%d" % self.client_address[:2])
+
+    def _screen(self):
+        scr = self.web.ctx.screen
+        if scr is None:
+            return self._send_json({"ok": False, "error": "remote screen not available"}, 503)
+        conn = self._upgrade()
+        if conn is None:
+            return
+        scr.preview.serve(conn, "%s:%d" % self.client_address[:2])
 
     # --------------------------------------------------------------- media
     def _media(self, name, head):

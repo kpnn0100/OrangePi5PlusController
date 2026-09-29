@@ -114,7 +114,7 @@ test("login_wrong_then_right_password_and_cookie", ["CON-03", "SEC-03"], async (
   await ctx.close();
 });
 
-const VIEWS = ["recorder", "gallery", "monitor", "wifi", "terminal", "remote", "system"];
+const VIEWS = ["recorder", "gallery", "screen", "monitor", "wifi", "terminal", "remote", "system"];
 test("every_view_fits_small_to_large_screens", ["UX-03", "UX-01"], async () => {
   for (const [w, h, mobile] of [[360, 640, true], [412, 915, true], [1280, 800, false], [1920, 1080, false]]) {
     const page = await newPage(BASE, { width: w, height: h, mobile });
@@ -135,7 +135,15 @@ test("preview_shows_live_test_pattern", ["REC-02", "REC-08", "REC-06"], async ()
   const page = await newPage();
   await go(page, "recorder");
   const playing = await until(() => page.$(".preview.playing"), 20000);
-  check(playing, "no live picture within 20 s");
+  if (!playing) {
+    const why = await page.evaluate(() => {
+      const p = window.arstroPreview, v = document.querySelector(".preview video");
+      return JSON.stringify({ mode: p && p.mode, events: p && p.events, rs: v && v.readyState, ct: v && v.currentTime,
+                              paused: v && v.paused, err: v && v.error && v.error.message,
+                              buf: v && v.buffered.length ? [v.buffered.start(0), v.buffered.end(v.buffered.length - 1)] : null });
+    });
+    check(false, "no live picture within 20 s: " + why);
+  }
   const moving = await until(() => page.evaluate(() => {
     const v = document.querySelector(".preview video.on");
     const c = document.querySelector(".preview canvas.on");
@@ -331,6 +339,33 @@ test("terminal_shared_between_browsers", ["TERM-01", "TERM-02", "TERM-04", "ARC-
   await op("term.close", { term: id }).catch(() => {});
   await a.close();
   await b.close();
+});
+
+test("remote_screen_is_live_and_the_mouse_lands_on_the_same_spot", ["SCR-01", "SCR-02", "SCR-03"], async () => {
+  const p0 = await op("in.pointer").catch(() => null);
+  const page = await newPage();
+  try {
+    await go(page, "screen");
+    check(await until(() => page.$(".screen-stage.playing"), 20000), "no live picture of the desktop within 20 s");
+    const st = await op("screen.status");
+    check(st.state === "live" && st.viewers >= 1 && st.screen && st.screen[0] > 0, st);
+    const [sw, sh] = st.screen;
+    // hover (no click: nothing on the Pi's desktop is touched) at 30 % / 60 % of the picture
+    const box = await (await page.$(".screen-stage")).boundingBox();
+    const k = Math.min(box.width / sw, box.height / sh);
+    const x0 = box.x + (box.width - sw * k) / 2, y0 = box.y + (box.height - sh * k) / 2;
+    const want = [Math.round(sw * 0.3), Math.round(sh * 0.6)];
+    await page.mouse.move(x0 + sw * k * 0.3, y0 + sh * k * 0.6, { steps: 4 });
+    const got = await until(async () => {
+      const p = await op("in.pointer");
+      return Math.abs(p.x - want[0]) <= 3 && Math.abs(p.y - want[1]) <= 3 && p;
+    }, 3000);
+    check(got, `pointer should be near ${want}, is ${JSON.stringify(await op("in.pointer"))}`);
+    await shot(page, "screen");
+  } finally {
+    await page.close();
+    if (p0) await op("in.move_to", { x: p0.x, y: p0.y }).catch(() => {});
+  }
 });
 
 test("touchpad_moves_the_pointer", ["INP-04", "INP-01"], async () => {
