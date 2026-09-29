@@ -55,10 +55,15 @@ that is where polkit allows `nmcli` Wi-Fi changes and where the X display is.
 
 HDMI RX (`rk_hdmirx`, V4L2) → GStreamer tee in the worker:
 
-* **preview**: scale (RGA zero-copy for NV12 dmabuf, else CPU) → `mpph264enc` CBR, GOP = 1 s
-  (software `x264enc` when there is no Rockchip VPU) → access units over the worker IPC →
-  `Preview` fan-out → `/ws/preview`. Browsers decode with WebCodecs (secure context) or MSE
-  (jmuxer); the app decodes with MediaCodec into a Flutter `SurfaceProducer` texture.
+* **preview** (smooth and live first): leaky 1-frame queue → nearest-neighbour scale (reads only
+  the pixels it keeps - capture memory is uncached) → `x264enc` ultrafast/zerolatency, one slice
+  per frame, keyframe every 0.5 s → access units over the worker IPC → `Preview` fan-out
+  (per-viewer queue of 8 frames and a 64 KB socket buffer; a late viewer skips to the next,
+  immediately requested keyframe) → `/ws/preview`. Measured from a 4K 4:2:2 source: 30 fps at
+  360p/720p, 28 fps at 1080p. (Without x264 the VPU encoder is used in VBR mode; its CBR mode
+  re-encodes frames and manages only ~22 fps.) Browsers decode with WebCodecs (secure context)
+  or MSE (jmuxer, kept at the live edge); the app decodes with MediaCodec into a Flutter
+  `SurfaceProducer` texture.
 * **recording**: `mpph265enc` to MP4/MKV, or RAW `.arh` (uncompressed frames + audio) with
   optional HQ H.265 / FFV1 copies made during or after recording by transcode jobs.
 

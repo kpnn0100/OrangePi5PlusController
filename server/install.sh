@@ -36,6 +36,7 @@ fi
 python3 -c 'import gi; gi.require_version("Gst", "1.0")' 2>/dev/null ||
     echo "WARNING: no GStreamer for Python - the recorder is off (sudo apt install python3-gst-1.0 gir1.2-gst-plugins-base-1.0)"
 command -v ffprobe >/dev/null || echo "WARNING: no ffprobe/ffmpeg - the gallery cannot read recordings (sudo apt install ffmpeg)"
+gst-inspect-1.0 x264enc >/dev/null 2>&1 || echo "WARNING: no x264enc - the live preview falls back to the slower VPU path (sudo apt install gstreamer1.0-plugins-ugly)"
 id -nG | grep -qw bluetooth || echo "WARNING: $(id -un) is not in group 'bluetooth'"
 id -nG | grep -qw netdev || echo "WARNING: $(id -un) is not in group 'netdev' (needed for rfkill)"
 

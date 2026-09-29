@@ -137,6 +137,7 @@ a local name.
 Text messages: `{"type":"config","codec":"h264","width","height","fps","bitrate","quality"}` and
 `{"type":"state","state":"starting|live|no-signal|stopped","detail"}`.
 Binary messages: `[version u8 = 1][flags u8: bit0 keyframe][pts_us u64 BE][Annex-B access unit]`
-- keyframes carry SPS/PPS. One encoder serves every viewer; a new viewer gets a keyframe
-right away; a viewer that falls behind skips to the next keyframe. The encoder stops ~5 s
+- keyframes (every 0.5 s, one slice per picture) carry SPS/PPS. One encoder serves every viewer;
+a new viewer gets a keyframe right away; a viewer more than ~8 frames behind skips to the next
+keyframe (requested at once) - live beats complete. The encoder stops ~5 s
 after the last viewer leaves (REC-06).

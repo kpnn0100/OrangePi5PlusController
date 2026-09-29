@@ -109,6 +109,7 @@ class Worker:
     # ------------------------------------------------------- capture events
     def on_signal(self, text):
         print(f"[info] signal: {text or 'none'}")
+        self.zero_copy = True          # a new signal may be a format the RGA path handles
         self._status(force=True)
 
     def on_capture(self, running):
@@ -158,11 +159,20 @@ class Worker:
         try:
             st = self.cap.start_stream(self.quality, self._on_au, zero_copy=self.zero_copy)
             self.emit(ev="stream", **st.describe())
+            if st.path == "zero-copy":
+                self.GLib.timeout_add(3000, lambda: self._check_zero_copy(st) and False)
         except (RuntimeError, self.GLib.Error) as e:
             print(f"[warn] preview could not start: {e}")
             if self.zero_copy:
                 self.zero_copy = False
                 self.GLib.timeout_add(300, lambda: (self._start_stream() if self.preview_on else None) and False)
+
+    def _check_zero_copy(self, st):
+        """The RGA path gave no picture in 3 s (a format/size it cannot do): use the CPU path."""
+        if self.cap.stream is st and st.frames == 0 and self.cap.pipeline and self.preview_on:
+            print(f"[warn] zero-copy preview produced nothing for {self.cap.format}; using the CPU path")
+            self.zero_copy = False
+            self._start_stream()
 
     def handle(self, cmd):
         c = cmd.get("cmd")

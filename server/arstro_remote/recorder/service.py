@@ -166,8 +166,8 @@ class RecorderService:
             sig = ev.get("signal") or {}
             if not sig.get("present"):
                 self.preview.set_state("no-signal", sig.get("why") or "No HDMI signal")
-            elif self.preview.count and not ev.get("stream"):
-                self.preview.set_state("starting")
+            elif not ev.get("stream"):
+                self.preview.set_state("starting")      # never leave a stale "no-signal" behind
         elif kind == "stream":
             self.preview.set_config({k: ev.get(k) for k in ("width", "height", "fps", "bitrate", "quality")})
         elif kind == "recording_started":

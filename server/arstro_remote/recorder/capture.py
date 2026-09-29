@@ -416,13 +416,20 @@ class Capture:
         return rec
 
 
+# HDMI RX formats that mpph264enc takes as dmabuf and scales on the RGA itself
+# (checked on the board: NV12, NV16 and BGR work; NV24 produces nothing).
+ZERO_COPY_FORMATS = {"NV12", "NV16", "BGR"}
+
+
 class StreamBranch:
     """Live preview: H.264 access units (Annex-B, SPS/PPS before every IDR) to a callback.
 
-    NV12 dmabuf from HDMI RX goes straight into mpph264enc, which scales on the RGA
-    (zero copy, no CPU). Other formats / test patterns are scaled and converted on the
-    CPU first (small frames, cheap) - that also keeps mpp away from plain system memory,
-    which leaks (see gstutil)."""
+    Smooth first, sharp second (REC-02): the picture must keep up with real time.
+    HDMI RX dmabuf frames (NV12 / NV16 / BGR) go straight into mpph264enc, which scales
+    on the RGA - zero copy, no CPU. Anything else (NV24, test patterns in system memory)
+    is scaled on the CPU with nearest-neighbour, which reads only the pixels it keeps:
+    capture memory is uncached, and a bilinear scaler reading every 4K pixel managed only
+    ~4 fps. A leaky one-buffer queue in front drops frames instead of building delay."""
 
     def __init__(self, cap, quality, on_au, zero_copy=True):
         self.cap = cap
@@ -458,27 +465,36 @@ class StreamBranch:
         rate = f"videorate drop-only=true max-rate={fps} ! "
         # rounded framerate for the encoder's rate control (fractional fps confuse mpp)
         fix = f"capssetter caps=\"video/x-raw,framerate={fps}/1\" ! "
-        hw = Gst.ElementFactory.find("mpph264enc") is not None
-        if hw:
-            enc = (f"mpph264enc name=penc rc-mode=cbr bps={bps} gop={fps} header-mode=each-idr "
-                   "profile=main min-force-key-unit-interval=500000000")
-        else:
-            # no Rockchip VPU (a dev PC, another board): software x264, same stream format
+        key = max(1, fps // 2)              # keyframe every 0.5 s: a skipped viewer is back fast
+        x264 = Gst.ElementFactory.find("x264enc") is not None
+        mpp = Gst.ElementFactory.find("mpph264enc") is not None
+        if x264:
+            # Measured on the board from 4K NV16: nearest-neighbour + x264 ultrafast runs at
+            # ~116 fps (360p) / ~76 fps (720p) - far above real time for every HDMI format.
+            # The VPU is slower here: it pays per frame for system-memory input, and its CBR
+            # rate control re-encodes frames (~22 fps even for 360p).
+            # One slice per frame (sliced-threads=false, one thread): the browser's MSE muxer
+            # (jmuxer) and some phone decoders cannot handle several slices per picture.
             enc = (f"x264enc name=penc tune=zerolatency speed-preset=ultrafast bitrate={bps // 1000} "
-                   f"key-int-max={fps} byte-stream=true")
+                   f"vbv-buf-capacity=400 key-int-max={key} byte-stream=true sliced-threads=false threads=1")
+        elif mpp:
+            enc = (f"mpph264enc name=penc rc-mode=vbr bps={bps} bps-max={bps * 3 // 2} gop={key} "
+                   "header-mode=each-idr profile=main min-force-key-unit-interval=500000000")
+        else:
+            raise RuntimeError("no H.264 encoder for the preview (install gstreamer1.0-plugins-ugly)")
         parse = "h264parse config-interval=-1 ! " if Gst.ElementFactory.find("h264parse") else ""
-        direct = hw and self.zero_copy and self.cap.format == "NV12" and not self.cap.sim \
-            and getattr(self.cap, "dmabuf", False)
+        direct = not x264 and mpp and self.zero_copy and self.cap.format in ZERO_COPY_FORMATS \
+            and not self.cap.sim and getattr(self.cap, "dmabuf", False)
         if direct:
             conv = f"{fix}{enc} width={w} height={h}"
         else:
-            conv = (f"videoscale method=bilinear n-threads=2 ! video/x-raw,width={w},height={h} ! "
+            conv = (f"videoscale method=nearest-neighbour n-threads=4 ! video/x-raw,width={w},height={h} ! "
                     f"videoconvert n-threads=2 ! video/x-raw,format=I420 ! {fix}{enc}")
         desc = ("queue name=pq max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! "
                 f"{rate}{conv} ! {parse}"
-                f"video/x-h264,stream-format=byte-stream,alignment=au{'' if hw else ',profile=main'} ! "
-                "appsink name=psink emit-signals=true sync=false async=false max-buffers=8 drop=true")
-        self.path = "zero-copy" if direct else "cpu-scale" if hw else "software x264"
+                f"video/x-h264,stream-format=byte-stream,alignment=au{',profile=main' if x264 else ''} ! "
+                "appsink name=psink emit-signals=true sync=false async=false max-buffers=4 drop=true")
+        self.path = "zero-copy" if direct else "software x264" if x264 else "cpu-scale"
         self.bin = Gst.parse_bin_from_description(desc, False)
         pad = Gst.GhostPad.new("video", self.bin.get_by_name("pq").get_static_pad("sink"))
         self.bin.add_pad(pad)

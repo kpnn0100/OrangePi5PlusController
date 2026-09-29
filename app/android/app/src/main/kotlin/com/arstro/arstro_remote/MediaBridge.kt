@@ -83,7 +83,8 @@ private class Decoder(
     private val emit: (String, Map<String, Any?>) -> Unit,
 ) {
     val id: Long get() = producer.id()
-    private val queue = LinkedBlockingQueue<Frame>(20)
+    // short: when decoding falls behind we skip to the next keyframe instead of lagging
+    private val queue = LinkedBlockingQueue<Frame>(6)
     private val lock = Object()
     @Volatile private var running = true
     @Volatile private var needKey = true

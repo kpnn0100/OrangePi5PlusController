@@ -14,6 +14,7 @@ encoder runs only while there are viewers (+ LINGER seconds, REC-06).
 import collections
 import json
 import logging
+import socket
 import struct
 import threading
 import time
@@ -23,7 +24,10 @@ from ..web.ws import OP_BINARY, WSClosed
 log = logging.getLogger("arstro.preview")
 
 LINGER = 5.0
-MAX_QUEUE = 24
+# Live beats complete: a viewer more than ~0.25 s behind skips to the next keyframe
+# (which is requested at once) instead of watching an ever older picture.
+MAX_QUEUE = 8
+SNDBUF = 64 * 1024              # small socket buffer: a slow link shows up in our queue, not in the kernel
 HEAD = struct.Struct(">BBQ")
 
 
@@ -111,6 +115,10 @@ class Preview:
     def serve(self, conn, peer):
         """Run one viewer until it disconnects (called in the HTTP handler thread)."""
         v = Viewer(conn, peer)
+        try:
+            conn.sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, SNDBUF)
+        except (OSError, AttributeError):
+            pass
         with self.lock:
             self.viewers.add(v)
             n = len(self.viewers)

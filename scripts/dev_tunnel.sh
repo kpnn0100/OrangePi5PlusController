@@ -7,8 +7,9 @@
 #
 # Path: app -> device 127.0.0.1:7788 -(adb reverse)-> this PC 127.0.0.1:7788
 #       -(ssh -L)-> the daemon's control socket /run/user/<uid>/arstro-remote.sock on the Pi.
-# The web port (ARSTRO_WEB_PORT, default 8080) is forwarded the same way, so the app's
-# media link (preview, thumbnails, playback) works through the tunnel too.
+# The web port (ARSTRO_WEB_PORT, default 8080; 0 = don't) is forwarded the same way, so the
+# app's media link works through the tunnel too; if that port is busy on this PC it is skipped
+# and the app uses the Pi's Wi-Fi address instead.
 # Uses an SSH control socket, so "down" never has to pkill by pattern.
 # The same PC port also feeds: ARSTRO_TCP=127.0.0.1:7788 flutter test test/reconnect_live_test.dart
 set -euo pipefail
@@ -22,13 +23,18 @@ ADB=(adb); [ -n "$serial" ] && ADB+=(-s "$serial")
 case "$cmd" in
   up)
     uid=$(ssh -o BatchMode=yes "$pi" id -u)
-    ssh -o BatchMode=yes -o ExitOnForwardFailure=yes -M -S "$CTL" -f -N \
-        -L "127.0.0.1:$PORT:/run/user/$uid/arstro-remote.sock" -L "127.0.0.1:$WEB:127.0.0.1:$WEB" "$pi"
-    if command -v adb >/dev/null && "${ADB[@]}" get-state >/dev/null 2>&1; then
-        "${ADB[@]}" reverse "tcp:$PORT" "tcp:$PORT" >/dev/null && "${ADB[@]}" reverse "tcp:$WEB" "tcp:$WEB" >/dev/null &&
-            echo "adb reverse tcp:$PORT and tcp:$WEB set"
+    fwd=(-L "127.0.0.1:$PORT:/run/user/$uid/arstro-remote.sock")
+    if [ "$WEB" != 0 ] && ss -ltn 2>/dev/null | grep -q "[:.]$WEB "; then
+        echo "port $WEB is busy on this PC: not forwarding the web port (the app uses the Pi's Wi-Fi address)"
+        WEB=0
     fi
-    echo "web UI on this PC: http://127.0.0.1:$WEB/"
+    [ "$WEB" != 0 ] && fwd+=(-L "127.0.0.1:$WEB:127.0.0.1:$WEB")
+    ssh -o BatchMode=yes -o ExitOnForwardFailure=yes -M -S "$CTL" -f -N "${fwd[@]}" "$pi"
+    if command -v adb >/dev/null && "${ADB[@]}" get-state >/dev/null 2>&1; then
+        "${ADB[@]}" reverse "tcp:$PORT" "tcp:$PORT" >/dev/null && echo "adb reverse tcp:$PORT set"
+        [ "$WEB" != 0 ] && "${ADB[@]}" reverse "tcp:$WEB" "tcp:$WEB" >/dev/null && echo "adb reverse tcp:$WEB set"
+    fi
+    [ "$WEB" != 0 ] && echo "web UI on this PC: http://127.0.0.1:$WEB/"
     echo "tunnel up: 127.0.0.1:$PORT -> $pi:/run/user/$uid/arstro-remote.sock"
     echo "in the app: Connect by Bluetooth address…  ->  tcp:127.0.0.1:$PORT" ;;
   down)

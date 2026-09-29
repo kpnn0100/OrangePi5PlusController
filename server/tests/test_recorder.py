@@ -127,6 +127,42 @@ def preview_stream_h264_with_keyframe(c):
     check(ok, "preview/encoder did not stop after the last viewer left (REC-06)")
 
 
+@test("REC-02", "UX-02")
+def preview_keeps_up_with_a_4k_source(c):
+    """Smooth and live: a 4K 4:2:2 source (like a real camera) still gives >= 25 fps with
+    no big gaps, at the low and medium presets."""
+    c.a.call("recorder.source", simulate="3840x2160@30:NV16", timeout=60)
+    try:
+        check(wait_until(lambda: c.a.call("recorder.status")["signal"].get("present"), 20), "no test signal")
+        for quality in ("low", "medium"):
+            c.a.call("recorder.settings.set", settings={"preview": {"quality": quality}})
+            conn = ws.connect("ws://127.0.0.1:%d/ws/preview" % c.port, {"Authorization": "Bearer " + c.token})
+            try:
+                times, t_end = [], None
+                while True:
+                    op, _data = conn.recv_message()
+                    if op != ws.OP_BINARY:
+                        continue
+                    now = time.monotonic()
+                    if t_end is None:
+                        t_end = now + 6
+                    if now > t_end:
+                        break
+                    times.append(now)
+            finally:
+                conn.close()
+            gaps = sorted(b - a for a, b in zip(times, times[1:]))
+            fps = len(times) / 6
+            p95 = gaps[int(len(gaps) * 0.95)] if gaps else 1
+            print("      %s: %.1f fps, 95%% gap %.0f ms" % (quality, fps, p95 * 1000))
+            check(fps >= 25, "%s preview only %.1f fps from a 4K source" % (quality, fps))
+            check(p95 < 0.1, "%s preview stutters: 95%% gap %.0f ms" % (quality, p95 * 1000))
+    finally:
+        c.a.call("recorder.settings.set", settings={"preview": c.orig_settings["preview"]})
+        c.a.call("recorder.source", simulate=c.source, timeout=60)
+        wait_until(lambda: c.a.call("recorder.status")["signal"].get("present"), 20)
+
+
 @test("REC-02")
 def second_viewer_gets_picture_quickly(c):
     a = ws.connect("ws://127.0.0.1:%d/ws/preview" % c.port, {"Authorization": "Bearer " + c.token})

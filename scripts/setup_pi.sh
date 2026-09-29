@@ -191,6 +191,7 @@ python3 -c 'import gi; gi.require_version("Gst", "1.0"); gi.require_version("Gst
 command -v gst-inspect-1.0 >/dev/null || m="$m gstreamer1.0-tools"
 gst-inspect-1.0 capssetter >/dev/null 2>&1 || m="$m gstreamer1.0-plugins-good"
 gst-inspect-1.0 h264parse >/dev/null 2>&1 || m="$m gstreamer1.0-plugins-bad"
+gst-inspect-1.0 x264enc >/dev/null 2>&1 || m="$m gstreamer1.0-plugins-ugly"   # smooth live preview
 gst-inspect-1.0 videoconvert >/dev/null 2>&1 || m="$m gstreamer1.0-plugins-base"
 command -v v4l2-ctl >/dev/null || m="$m v4l-utils"
 command -v ffprobe >/dev/null || m="$m ffmpeg"

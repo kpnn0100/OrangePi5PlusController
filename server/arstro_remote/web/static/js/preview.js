@@ -137,7 +137,7 @@ export class PreviewPlayer {
         return this.decodeMse(key, pts, au);
       }
     }
-    if (this.decoder.decodeQueueSize > 6) {   // falling behind: skip to the next keyframe
+    if (this.decoder.decodeQueueSize > 2) {   // falling behind: skip to the next keyframe (stay live)
       this.needKey = true;
       if (!key) return;
     }
@@ -167,12 +167,23 @@ export class PreviewPlayer {
       }
       if (this.jmuxer) return;
       this.jmuxer = new window.JMuxer({
-        node: this.video, mode: "video", flushingTime: 0, maxDelay: 350, clearBuffer: true, live: true,
+        node: this.video, mode: "video", flushingTime: 0, maxDelay: 250, clearBuffer: true, live: true,
         fps: (this.config && this.config.fps) || 30, debug: false,
         onError: () => { this.teardown(true); },
       });
       this.video.classList.add("on");
       this.lastPts = null;
+      // MSE buffers; keep the picture at the live edge (smooth and current beats complete)
+      clearInterval(this.chase);
+      this.chase = setInterval(() => {
+        const v = this.video;
+        if (!v.buffered.length) return;
+        const end = v.buffered.end(v.buffered.length - 1);
+        const behind = end - v.currentTime;
+        if (behind > 0.3) v.currentTime = end - 0.03;
+        else v.playbackRate = behind > 0.12 ? 1.08 : 1;
+        if (v.paused) v.play().catch(() => {});
+      }, 200);
     }
     const fps = (this.config && this.config.fps) || 30;
     let dur = 1000 / fps;
@@ -185,6 +196,7 @@ export class PreviewPlayer {
 
   teardown(keepSocket = false) {
     this.resetDecoder();
+    clearInterval(this.chase);
     if (this.jmuxer) { try { this.jmuxer.destroy(); } catch (e) { /* gone */ } this.jmuxer = null; }
     this.video.removeAttribute("src");
     this.canvas.classList.remove("on");

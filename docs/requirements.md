@@ -82,7 +82,7 @@ IDs are stable: never renumber, mark removed ones `(withdrawn)`.
 | ID | Requirement |
 |---|---|
 | REC-01 | Signal status: present or not, resolution, frame rate, pixel format, and a plain-language reason when there is no picture. |
-| REC-02 | **Live preview** as an H.264 stream from the hardware encoder over WebSocket, to any number of viewers from one shared encoder. Quality preset (low 360p / medium 720p / high 1080p) is a shared setting. A new viewer gets a picture within 2 s (keyframe on join). |
+| REC-02 | **Live preview** as an H.264 stream over WebSocket, to any number of viewers from one shared encoder. **Smooth and live beats sharp:** from any HDMI source (up to 4K, any format) the preview reaches the viewer at ≥ 25 fps with no gap over 100 ms (95 %), and a viewer that falls behind skips ahead to the newest picture instead of lagging (players stay < 0.5 s behind real time). Quality preset (low 360p / medium 720p / high 1080p) is a shared setting. A new viewer gets a picture within 2 s (keyframe on join). |
 | REC-03 | Start and stop recording from any controller. Recording state, elapsed time, size, data rate and dropped frames are pushed live (ARC-03). |
 | REC-04 | Recording settings: mode H.265 (bitrate, rate control, keyframe interval, MP4/MKV) or RAW `.arh` with optional extra copies (HQ H.265 on VPU/x265 with quality; FFV1 on CPU/GPU; during or after recording); audio on/off; storage folder; EDID. Settings are validated, persist, and are shared (ARC-03). |
 | REC-05 | Guards: no start without signal or with < 3 GB free; automatic stop below 1.5 GB free; a crashed capture process ends the recording with a clear reason and keeps the file. |
