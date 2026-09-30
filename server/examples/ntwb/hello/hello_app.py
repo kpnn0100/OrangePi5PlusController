@@ -63,6 +63,12 @@ def burst(params, client):
     return {"sent": n}
 
 
+@app.method("session")
+def session(_params, _client):
+    """Which session this process serves - as the host said at launch and in `welcome`."""
+    return {"env": os.environ.get("NTWB_SESSION"), "welcome": app.session}
+
+
 @app.method("quit")
 def quit_(_params, _client):
     app.stop("asked to quit")

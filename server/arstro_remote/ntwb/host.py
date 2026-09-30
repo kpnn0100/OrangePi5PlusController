@@ -1,16 +1,21 @@
-"""AppsService - the NTWB host inside Arstro Remote (APP-01..08, NTWB-03..09).
+"""AppsService - the NTWB host inside Arstro Remote (APP-01..09, NTWB-03..12).
 
-    browser --WS /ws/app/<id>--> WebClient ─┐                 ┌─ AppConn <--unix socket-- app process
-    CLI / agent --apps.call-->  OpClient  ──┼── AppInstance ──┤    (launched by us, or attached)
-                                             │  retained state │
-                                             └─ pending calls ─┘
+    browser --WS /ws/app/<id>?session=--> WebClient ─┐                 ┌─ AppConn <--unix socket-- app process
+    CLI / agent --apps.call-->           OpClient  ──┼── AppInstance ──┤    (launched by us, or attached)
+                                                      │  = one session  │
+                                                      │  retained state │
+                                                      └─ pending calls ─┘
 
-One `AppInstance` per app id (manifests say `single`), shared by every client. The host
-never interprets an app's methods: it validates every message against `spec`, rewrites
-call ids so clients cannot collide, routes results/events/blobs, retains `state`, and
-supervises the process (hello timeout, ping, orderly stop, exit status).
+One `AppInstance` per session of an app: `main` always, and for a manifest that says
+`single: false` up to `spec.LIMITS["SESSIONS_PER_APP"]` more (`s2`, `s3` ...), each its own
+process with its own retained state - its own model (NTWB-11). Every client of a session sees
+every change of that model; clients of different sessions share nothing. The host never
+interprets an app's methods: it validates every message against `spec`, rewrites call ids so
+clients cannot collide, routes results/events/blobs, retains `state`, tells each session's
+clients how many they are (NTWB-12), and supervises the process (hello timeout, ping, orderly
+stop, exit status).
 
-Publishes the hub topic "apps" (the list with each app's run state and client count).
+Publishes the hub topic "apps" (the list with each app's sessions, run state and viewers).
 """
 
 import collections
@@ -33,6 +38,8 @@ from . import registry, spec, wire
 log = logging.getLogger("arstro.apps")
 
 CLIENT_QUEUE_MAX = 2000          # JSON messages queued for one slow client before it is dropped
+MAIN = "main"                    # the default session (spec.SESSIONS)
+NEW = "new"                      # ?session=new / apps.launch session=new: start another one
 
 
 def socket_path():
@@ -50,6 +57,7 @@ class Client:
     live stream (`coalesce`) are replaced by newer ones (a preview), all others are delivered."""
 
     _ids = itertools.count(1)
+    viewer = True                    # counted in a session's `clients` (a one-shot apps.call is not)
 
     def __init__(self, peer, controller):
         self.id = "c%d" % next(Client._ids)
@@ -133,6 +141,8 @@ class WebClient(Client):
 class OpClient(Client):
     """`apps.call` from a protocol session (CLI, app, agent): one call, answered in place."""
 
+    viewer = False
+
     def __init__(self, session):
         super().__init__("session %d" % session.num, session.controller)
         self.result = None
@@ -188,16 +198,17 @@ class AppConn:
 
 
 class AppInstance:
-    """The running (or starting / stopped) instance of one app id."""
+    """One session of an app: its process (running, starting or stopped), its retained state
+    - the session's model - and the clients attached to it."""
 
-    def __init__(self, svc, app):
+    def __init__(self, svc, app, session=MAIN):
         self.svc = svc
         self.app = app
         self.id = app.id
+        self.session = session
         self.proc = None
         self.token = None
         self.conn = None
-        self.session_id = None
         self.state = "stopped"
         self.detail = None
         self.started = None
@@ -209,11 +220,20 @@ class AppInstance:
         self.lock = threading.RLock()
         self.stopping = False
 
+    @property
+    def label(self):
+        """How logs name this session: the app id, plus the session unless it is `main`."""
+        return self.id if self.session == MAIN else "%s[%s]" % (self.id, self.session)
+
     # -- clients -------------------------------------------------------------------------
+    def viewers(self):
+        with self.lock:
+            return len([c for c in self.clients.values() if c.viewer])
+
     def attach(self, client):
         with self.lock:
             self.clients[client.id] = client
-            client.put_json({"t": "status", "state": self.state, **({"detail": self.detail} if self.detail else {})})
+            self.broadcast_status(publish=False)          # the newcomer's first status; presence for the rest
             if self.conn:
                 client.put_json(self._ready(client))
                 self.conn.send({"t": "client.open", "client": client.id, "info": client.info()})
@@ -228,21 +248,30 @@ class AppInstance:
                     del self.pending[hid]
             if self.conn:
                 self.conn.send({"t": "client.close", "client": client.id})
+            self.broadcast_status(publish=False)          # NTWB-12: the others learn one left
         client.close()
+        self.svc.forget_if_done(self)
         self.svc.publish()
 
     def _ready(self, client):
         return {"t": "ready", "ntwb": spec.VERSION, "client": client.id,
                 "app": {"id": self.id, "name": self.app.m["name"], "version": self.app_version or self.app.m["version"]},
-                "state": dict(self.retained)}
+                "state": dict(self.retained), "session": self.session}
 
-    def broadcast_status(self):
-        msg = {"t": "status", "state": self.state}
+    def status_message(self):
+        msg = {"t": "status", "state": self.state, "session": self.session, "clients": self.viewers()}
         if self.detail:
             msg["detail"] = self.detail
-        for c in list(self.clients.values()):
+        return msg
+
+    def broadcast_status(self, publish=True):
+        with self.lock:
+            msg = self.status_message()
+            targets = list(self.clients.values())
+        for c in targets:
             c.put_json(msg)
-        self.svc.publish()
+        if publish:
+            self.svc.publish()
 
     # -- client -> app ---------------------------------------------------------------------
     def from_client(self, client, msg):
@@ -286,12 +315,13 @@ class AppInstance:
         elif t == "log":
             level = {"debug": logging.DEBUG, "info": logging.INFO, "warning": logging.WARNING,
                      "error": logging.ERROR}[msg["level"]]
-            logging.getLogger("arstro.app.%s" % self.id).log(level, "%s", msg["msg"])
-            self.svc.app_log_line(self.id, "%s %s" % (msg["level"].upper(), msg["msg"]))
+            logging.getLogger("arstro.app.%s" % self.id).log(level, "%s%s", "" if self.session == MAIN else
+                                                             "[%s] " % self.session, msg["msg"])
+            self.svc.app_log_line(self, "%s %s" % (msg["level"].upper(), msg["msg"]))
         elif t == "pong":
             pass
         elif t == "bye":
-            log.info("app %s says bye: %s", self.id, msg.get("reason") or "")
+            log.info("app %s says bye: %s", self.label, msg.get("reason") or "")
             self.stopping = True
         else:                                                  # hello twice
             raise spec.SpecError("message %r is not expected now" % t)
@@ -311,15 +341,14 @@ class AppInstance:
     def connected(self, conn, hello):
         with self.lock:
             self.conn = conn
-            self.session_id = secrets.token_hex(6)
             self.app_version = hello.get("version")
             self.state = "running"
             self.detail = None
-            conn.send({"t": "welcome", "ntwb": spec.VERSION, "session": self.session_id,
+            conn.send({"t": "welcome", "ntwb": spec.VERSION, "session": self.session,
                        "host": {"name": "arstro-remote", "version": __version__}, "clients": list(self.clients)})
             for c in self.clients.values():
                 conn.send({"t": "client.open", "client": c.id, "info": c.info()})
-        log.info("app %s connected (version %s, pid %s)", self.id, hello.get("version"), hello.get("pid"))
+        log.info("app %s connected (version %s, pid %s)", self.label, hello.get("version"), hello.get("pid"))
         self.broadcast_status()
         with self.lock:
             for c in self.clients.values():
@@ -337,14 +366,19 @@ class AppInstance:
                 self.state, self.detail = "stopped", why
         for hid, (client, cid) in pending.items():
             client.put_json({"t": "result", "id": cid, "ok": False, "error": "the app disconnected: %s" % why})
-        log.info("app %s disconnected: %s", self.id, why)
+        log.info("app %s disconnected: %s", self.label, why)
         self.broadcast_status()
+
+    def describe_session(self):
+        """This session alone: what `apps.sessions` lists and each `apps.list` entry carries."""
+        return {"session": self.session, "state": self.state, "detail": self.detail,
+                "pid": self.proc.pid if self.proc and self.proc.poll() is None else None,
+                "clients": self.viewers(), "started": int(self.started) if self.started else None,
+                "running_version": self.app_version}
 
     def describe(self):
         d = self.app.describe()
-        d.update(state=self.state, detail=self.detail, pid=self.proc.pid if self.proc and self.proc.poll() is None else None,
-                 clients=len([c for c in self.clients.values() if isinstance(c, WebClient)]),
-                 started=int(self.started) if self.started else None, running_version=self.app_version)
+        d.update(self.describe_session())
         return d
 
 
@@ -353,7 +387,8 @@ class AppsService:
     def __init__(self, ctx):
         self.ctx = ctx
         self.apps = {}                # id -> registry.App (last scan)
-        self.instances = {}           # id -> AppInstance
+        self.instances = {}           # id -> {session id -> AppInstance}; `main` first
+        self._next_session = {}       # id -> the next session number (ids are never reused)
         self.lock = threading.RLock()
         self._listener = None
         self._stop = threading.Event()
@@ -381,13 +416,11 @@ class AppsService:
 
     def shutdown(self):
         self._stop.set()
-        with self.lock:
-            insts = list(self.instances.values())
-        for inst in insts:
+        for inst in self.all_instances():
             try:
-                self.stop_app(inst.id, "server stopping", wait=True)
+                self.stop_session(inst, "server stopping", wait=True)
             except Exception:
-                log.exception("stopping app %s", inst.id)
+                log.exception("stopping app %s", inst.label)
         if self._listener:
             try:
                 self._listener.close()
@@ -405,7 +438,8 @@ class AppsService:
             self.apps = apps
             for key, a in apps.items():
                 if a.valid and key in self.instances:
-                    self.instances[key].app = a
+                    for inst in self.instances[key].values():
+                        inst.app = a
         self.publish()
         return apps
 
@@ -416,9 +450,18 @@ class AppsService:
         with self.lock:
             out = []
             for key, a in self.apps.items():
-                inst = self.instances.get(key)
-                out.append(inst.describe() if inst else dict(a.describe(), state="stopped", detail=None, pid=None,
-                                                               clients=0, started=None, running_version=None))
+                sessions = list(self.instances.get(key, {}).values())
+                main = sessions[0] if sessions else None
+                d = main.describe() if main else dict(a.describe(), session=MAIN, state="stopped", detail=None,
+                                                      pid=None, clients=0, started=None, running_version=None)
+                # The entry is the app plus its `main` session (1.0 shape), with every session listed and
+                # `clients` counting the viewers of all of them.
+                d["sessions"] = [s.describe_session() for s in sessions] or [
+                    {"session": MAIN, "state": "stopped", "detail": None, "pid": None, "clients": 0,
+                     "started": None, "running_version": None}]
+                d["clients"] = sum(s["clients"] for s in d["sessions"])
+                d["single"] = bool(a.m.get("single", True)) if a.valid else True
+                out.append(d)
             return sorted(out, key=lambda d: (d["problem"] is not None, str(d["name"]).lower()))
 
     def get_app(self, app_id):
@@ -432,17 +475,63 @@ class AppsService:
             raise OpError("the app %s cannot run: %s" % (app_id, a.problem))
         return a
 
-    def instance(self, app_id):
+    # -- sessions (APP-04, APP-09) ---------------------------------------------------------------
+    def all_instances(self):
         with self.lock:
-            inst = self.instances.get(app_id)
+            return [inst for sessions in self.instances.values() for inst in sessions.values()]
+
+    def sessions(self, app_id):
+        with self.lock:
+            return list(self.instances.get(app_id, {}).values())
+
+    def instance(self, app_id, session=MAIN):
+        """The session `session` of the app. `main` always exists (it is created on first use);
+        any other id must name a session that was started and not yet forgotten."""
+        session = session or MAIN
+        with self.lock:
+            byid = self.instances.setdefault(app_id, {})
+            inst = byid.get(session)
             if inst is None:
-                inst = AppInstance(self, self.get_app(app_id))
-                self.instances[app_id] = inst
+                if session != MAIN:
+                    raise OpError("the app %s has no session %s" % (app_id, session))
+                inst = AppInstance(self, self.get_app(app_id), MAIN)
+                byid[MAIN] = inst
             return inst
 
+    def new_session(self, app_id, who="?"):
+        """Start another session of an app that allows it (manifest `single: false`)."""
+        app = self.get_app(app_id)
+        if app.m.get("single", True):
+            raise OpError("the app %s runs one session that every client shares" % app_id)
+        limit = spec.LIMITS["SESSIONS_PER_APP"]
+        with self.lock:
+            self.instance(app_id)                                  # `main` exists before any other
+            live = [i for i in self.sessions(app_id) if i.state in ("starting", "running")]
+            if len(live) >= limit:
+                raise OpError("the app %s already runs %d sessions (at most %d)" % (app_id, len(live), limit))
+            n = self._next_session.get(app_id, 2)
+            self._next_session[app_id] = n + 1
+            inst = AppInstance(self, app, "s%d" % n)
+            self.instances[app_id][inst.session] = inst
+        log.info("app %s: new session %s by %s", app_id, inst.session, who)
+        self.launch(app_id, inst.session, who=who)
+        return inst
+
+    def forget_if_done(self, inst):
+        """A stopped session other than `main` that nobody watches is gone - its id is never reused."""
+        if inst.session == MAIN:
+            return
+        with self.lock:
+            with inst.lock:
+                done = inst.state in ("stopped", "failed") and inst.proc is None and inst.conn is None \
+                    and not inst.clients
+            if done and self.instances.get(inst.id, {}).get(inst.session) is inst:
+                del self.instances[inst.id][inst.session]
+                log.info("app %s: session %s forgotten", inst.id, inst.session)
+
     # -- launching ----------------------------------------------------------------------------
-    def launch(self, app_id, who="?"):
-        inst = self.instance(app_id)
+    def launch(self, app_id, session=MAIN, who="?"):
+        inst = self.instance(app_id, session)
         with inst.lock:
             if inst.state in ("starting", "running"):
                 return inst
@@ -454,25 +543,30 @@ class AppsService:
             env = dict(os.environ)
             env.update(app.m.get("env") or {})
             env.update(NTWB_SOCKET=socket_path(), NTWB_TOKEN=inst.token, NTWB_APP_ID=app_id,
-                       NTWB_VERSION=spec.VERSION, NTWB_HOST="arstro-remote", NTWB_DATA_DIR=data_dir)
+                       NTWB_SESSION=inst.session, NTWB_VERSION=spec.VERSION, NTWB_HOST="arstro-remote",
+                       NTWB_DATA_DIR=data_dir)
             for k in ("ARSTRO_SLOT", "ARSTRO_SOCKET"):
                 env.pop(k, None)
             logf = self._open_app_log(app_id)
+            failed = None
             try:
                 inst.proc = subprocess.Popen(app.argv, cwd=app.cwd, env=env, stdin=subprocess.DEVNULL,
                                              stdout=logf, stderr=subprocess.STDOUT, start_new_session=True)
             except OSError as e:
                 inst.state, inst.detail, inst.proc = "failed", "could not start: %s" % e, None
-                inst.broadcast_status()
-                raise OpError("could not start %s: %s" % (app_id, e))
+                failed = e
             finally:
                 logf.close()
-            inst.state, inst.detail, inst.started = "starting", None, time.time()
-            proc = inst.proc
-        log.info("app %s launched by %s (pid %d): %s", app_id, who, proc.pid, " ".join(app.argv))
-        self.app_log_line(app_id, "--- launched by %s (pid %d)" % (who, proc.pid))
+            if failed is None:
+                inst.state, inst.detail, inst.started = "starting", None, time.time()
+                proc = inst.proc
+        if failed is not None:
+            inst.broadcast_status()
+            raise OpError("could not start %s: %s" % (inst.label, failed))
+        log.info("app %s launched by %s (pid %d): %s", inst.label, who, proc.pid, " ".join(app.argv))
+        self.app_log_line(inst, "--- launched by %s (pid %d)" % (who, proc.pid))
         inst.broadcast_status()
-        threading.Thread(target=self._watch_proc, args=(inst, proc), name="ntwb-%s-wait" % app_id,
+        threading.Thread(target=self._watch_proc, args=(inst, proc), name="ntwb-%s-wait" % inst.label,
                          daemon=True).start()
         return inst
 
@@ -480,7 +574,7 @@ class AppsService:
         deadline = time.monotonic() + spec.TIMINGS["HELLO_TIMEOUT_S"]
         while proc.poll() is None:
             if inst.state == "starting" and time.monotonic() > deadline and inst.proc is proc:
-                log.warning("app %s sent no hello within %ds - stopping it", inst.id, spec.TIMINGS["HELLO_TIMEOUT_S"])
+                log.warning("app %s sent no hello within %ds - stopping it", inst.label, spec.TIMINGS["HELLO_TIMEOUT_S"])
                 inst.detail = "no hello within %d s" % spec.TIMINGS["HELLO_TIMEOUT_S"]
                 self._terminate(proc)
             time.sleep(0.2)
@@ -493,10 +587,12 @@ class AppsService:
             timeout_detail = inst.detail if inst.detail and "hello" in inst.detail else None
             inst.state = "stopped" if ok and not timeout_detail else "failed"
             inst.detail = timeout_detail or ("exited with code %d" % code if code >= 0 else "killed by signal %d" % -code)
-        self.app_log_line(inst.id, "--- exited (%s)" % inst.detail)
-        log.info("app %s %s (%s)", inst.id, inst.state, inst.detail)
+        self.app_log_line(inst, "--- exited (%s)" % inst.detail)
+        log.info("app %s %s (%s)", inst.label, inst.state, inst.detail)
         inst.disconnected(inst.detail)
         inst.broadcast_status()
+        self.forget_if_done(inst)
+        self.publish()
 
     def _terminate(self, proc):
         for sig in (signal.SIGTERM, signal.SIGKILL):
@@ -510,12 +606,17 @@ class AppsService:
             except subprocess.TimeoutExpired:
                 continue
 
-    def stop_app(self, app_id, reason="stopped", wait=False, who="?"):
-        with self.lock:
-            inst = self.instances.get(app_id)
-        if inst is None or inst.state in ("stopped", "failed"):
+    def stop_app(self, app_id, reason="stopped", wait=False, who="?", session=None):
+        """Stop one session of the app, or (session None) every session of it."""
+        targets = self.sessions(app_id) if session is None else [self.instance(app_id, session)]
+        for inst in targets:
+            self.stop_session(inst, reason, wait=wait, who=who)
+
+    def stop_session(self, inst, reason="stopped", wait=False, who="?"):
+        if inst.state in ("stopped", "failed"):
+            self.forget_if_done(inst)
             return
-        log.info("app %s stop requested by %s (%s)", app_id, who, reason)
+        log.info("app %s stop requested by %s (%s)", inst.label, who, reason)
         inst.stopping = True
         with inst.lock:
             proc, conn = inst.proc, inst.conn
@@ -530,6 +631,8 @@ class AppsService:
                     self._terminate(proc)
             else:
                 inst.disconnected(reason)
+                self.forget_if_done(inst)
+                self.publish()
         if wait:
             finish()
         else:
@@ -546,10 +649,13 @@ class AppsService:
             pass
         return open(p, "ab")
 
-    def app_log_line(self, app_id, line):
+    def app_log_line(self, inst, line):
+        """One line in the app's log (shared by all its sessions; a line of another session than
+        `main` is tagged with it)."""
+        tag = "" if inst.session == MAIN else "[%s] " % inst.session
         try:
-            with open(app_log_path(app_id), "a") as f:
-                f.write("%s %s\n" % (time.strftime("%F %T"), line))
+            with open(app_log_path(inst.id), "a") as f:
+                f.write("%s %s%s\n" % (time.strftime("%F %T"), tag, line))
         except OSError:
             pass
 
@@ -599,32 +705,38 @@ class AppsService:
             log.warning("app connection refused: %s", e)
             why = str(e)
         except wire.WireError as e:
-            log.warning("app %s sent a broken frame: %s", inst.id if inst else "?", e)
+            log.warning("app %s sent a broken frame: %s", inst.label if inst else "?", e)
             why = "broken frame: %s" % e
         except OSError as e:
             why = str(e)
         finally:
             if inst is not None and inst.conn is conn:
                 inst.disconnected(why)
+                self.forget_if_done(inst)
             conn.close()
 
     def _accept_hello(self, hello):
+        """The session a connecting app belongs to: the one whose launch token it presents, or -
+        attaching by hand - `main`."""
         app_id = hello["app"]
+        tok = hello.get("token")
         try:
-            inst = self.instance(app_id)
+            if tok is not None:
+                inst = next((i for i in self.sessions(app_id) if i.token is not None and i.token == tok), None)
+                if inst is None:
+                    raise spec.SpecError("wrong token")
+            else:
+                inst = self.instance(app_id)
         except OpError as e:
             raise spec.SpecError(str(e))
         with inst.lock:
             if inst.conn is not None:
-                raise spec.SpecError("the app %s is already connected" % app_id)
-            tok = hello.get("token")
-            if tok is not None:
-                if tok != inst.token:
-                    raise spec.SpecError("wrong token")
-            elif "attach" not in (inst.app.m.get("capabilities") or []):
-                raise spec.SpecError("the app %s must be launched by the host (no token)" % app_id)
-            elif inst.proc is not None:
-                raise spec.SpecError("the app %s is being launched by the host" % app_id)
+                raise spec.SpecError("the app %s is already connected" % inst.label)
+            if tok is None:
+                if "attach" not in (inst.app.m.get("capabilities") or []):
+                    raise spec.SpecError("the app %s must be launched by the host (no token)" % app_id)
+                if inst.proc is not None:
+                    raise spec.SpecError("the app %s is being launched by the host" % app_id)
             inst.token = None
         return inst
 
@@ -640,43 +752,45 @@ class AppsService:
                     inst.blob_from_app(header, data)
             except spec.SpecError as e:
                 about = body.get("t") if kind == "json" and isinstance(body, dict) else "blob"
-                log.warning("app %s: %s", inst.id, e)
-                self.app_log_line(inst.id, "PROTOCOL %s" % e)
+                log.warning("app %s: %s", inst.label, e)
+                self.app_log_line(inst, "PROTOCOL %s" % e)
                 conn.send({"t": "error", "error": str(e), "about": str(about)})
 
     def _pinger(self):
         n = 0
         while not self._stop.wait(spec.TIMINGS["PING_INTERVAL_S"]):
             n += 1
-            with self.lock:
-                insts = list(self.instances.values())
-            for inst in insts:
+            for inst in self.all_instances():
                 conn = inst.conn
                 if conn is None:
                     continue
                 if time.monotonic() - conn.last_rx > spec.TIMINGS["PONG_TIMEOUT_S"]:
-                    log.warning("app %s did not answer ping - dropping its connection", inst.id)
+                    log.warning("app %s did not answer ping - dropping its connection", inst.label)
                     conn.close()
                     continue
                 conn.send({"t": "ping", "n": n})
 
     # -- the client side (web) ----------------------------------------------------------------
-    def serve_web(self, conn, app_id, peer):
-        """Run one browser WebSocket until it closes (called on the HTTP handler thread)."""
+    def serve_web(self, conn, app_id, peer, session=None):
+        """Run one browser WebSocket until it closes (called on the HTTP handler thread).
+        `session`: None / "main" joins the default session, an id joins that one, "new" starts one."""
         from ..web import ws
         client = WebClient(conn, peer)
         try:
-            inst = self.instance(app_id)
+            if session == NEW:
+                inst = self.new_session(app_id, who="web %s" % peer)
+            else:
+                inst = self.instance(app_id, session)
         except OpError as e:
             client.put_json({"t": "error", "error": str(e)})
             time.sleep(0.5)
             client.close()
             return
         inst.attach(client)
-        log.info("client %s (%s) opened app %s", client.id, peer, app_id)
+        log.info("client %s (%s) opened app %s", client.id, peer, inst.label)
         if inst.state in ("stopped", "failed"):
             try:
-                self.launch(app_id, who="web %s" % peer)
+                self.launch(app_id, inst.session, who="web %s" % peer)
             except OpError as e:
                 client.put_json({"t": "error", "error": str(e)})
         try:
@@ -703,7 +817,7 @@ class AppsService:
             pass
         finally:
             inst.detach(client)
-            log.info("client %s left app %s", client.id, app_id)
+            log.info("client %s left app %s", client.id, inst.label)
 
     # -- ops ------------------------------------------------------------------------------------
     def handle(self, session, op, msg):
@@ -723,12 +837,18 @@ class AppsService:
         return {"apps": self.list(), "ntwb": spec.VERSION, "socket": socket_path(),
                 "search": registry.search_dirs(), "registered": self._registered()}
 
+    def op_apps_sessions(self, _s, msg):
+        app = self.get_app(msg.get("app"))
+        self.instance(app.id)                                   # `main` is always there
+        return {"app": app.id, "single": bool(app.m.get("single", True)), "limit": spec.LIMITS["SESSIONS_PER_APP"],
+                "sessions": [s.describe_session() for s in self.sessions(app.id)]}
+
     def op_apps_info(self, _s, msg):
         app = self.get_app(msg.get("app"))
-        inst = self.instances.get(app.id)
-        d = inst.describe() if inst else dict(app.describe(), state="stopped")
+        inst = self.instance(app.id, msg.get("session"))
+        d = inst.describe()
         d.update(manifest_data=app.m, web_dir=app.web_dir, argv=app.argv, log=app_log_path(app.id),
-                 state_keys=sorted(inst.retained) if inst else [])
+                 state_keys=sorted(inst.retained), sessions=[s.describe_session() for s in self.sessions(app.id)])
         return d
 
     def op_apps_api(self, _s, msg):
@@ -736,7 +856,11 @@ class AppsService:
         return app.api or {"ntwb": spec.VERSION, "app": app.id, "methods": {}, "note": "the app ships no API description"}
 
     def op_apps_launch(self, session, msg):
-        inst = self.launch(msg.get("app"), who=self._who(session))
+        app_id = msg.get("app")
+        if msg.get("session") == NEW:
+            inst = self.new_session(app_id, who=self._who(session))
+        else:
+            inst = self.launch(app_id, msg.get("session") or MAIN, who=self._who(session))
         if msg.get("wait", True):
             end = time.monotonic() + spec.TIMINGS["HELLO_TIMEOUT_S"] + 2
             while inst.state == "starting" and time.monotonic() < end:
@@ -747,12 +871,15 @@ class AppsService:
         app_id = msg.get("app")
         self.get_app(app_id)
         wait = bool(msg.get("wait", True))
-        self.stop_app(app_id, "stopped by %s" % session.controller, wait=wait, who=self._who(session))
-        inst = self.instances.get(app_id)
+        which = msg.get("session")
+        targets = self.sessions(app_id) if which is None else [self.instance(app_id, which)]
+        for inst in targets:
+            self.stop_session(inst, "stopped by %s" % session.controller, wait=wait, who=self._who(session))
         end = time.monotonic() + 3
-        while wait and inst and inst.state in ("starting", "running") and time.monotonic() < end:
+        while wait and any(i.state in ("starting", "running") for i in targets) and time.monotonic() < end:
             time.sleep(0.05)
-        return self.instances[app_id].describe() if app_id in self.instances else {}
+        main = targets[0] if targets else None
+        return main.describe() if main else {}
 
     def op_apps_register(self, session, msg):
         path = os.path.abspath(os.path.expanduser(str(msg.get("path") or "")))
@@ -783,14 +910,15 @@ class AppsService:
 
     def op_apps_state(self, _s, msg):
         app = self.get_app(msg.get("app"))
-        inst = self.instances.get(app.id)
-        state = dict(inst.retained) if inst else {}
+        inst = self.instance(app.id, msg.get("session"))
+        with inst.lock:
+            state = dict(inst.retained)
         key = msg.get("key")
         if key is not None:
             if key not in state:
-                raise OpError("the app %s has no state %r" % (app.id, key))
+                raise OpError("the app %s has no state %r" % (inst.label, key))
             return {"key": key, "data": state[key]}
-        return {"state": state}
+        return {"state": state, "session": inst.session}
 
     def op_apps_call(self, session, msg):
         """Call an app method from a protocol session (CLI, scripts, agents) - the same
@@ -798,9 +926,9 @@ class AppsService:
         app_id = msg.get("app")
         call = {"t": "call", "id": "op", "method": msg.get("method"), "params": msg.get("params") or {}}
         spec.validate(call, "c2h")
-        inst = self.instance(app_id)
+        inst = self.instance(app_id, msg.get("session"))
         if inst.state in ("stopped", "failed"):
-            self.launch(app_id, who=self._who(session))
+            self.launch(app_id, inst.session, who=self._who(session))
         end = time.monotonic() + spec.TIMINGS["HELLO_TIMEOUT_S"] + 2
         while inst.state == "starting" and time.monotonic() < end:
             time.sleep(0.05)
@@ -812,7 +940,7 @@ class AppsService:
             if err:
                 raise OpError(err)
             if not client.done.wait(float(msg.get("timeout", 60))):
-                raise OpError("the app %s did not answer %s within %ss" % (app_id, call["method"], msg.get("timeout", 60)))
+                raise OpError("the app %s did not answer %s within %ss" % (inst.label, call["method"], msg.get("timeout", 60)))
             r = client.result
             if not r.get("ok"):
                 raise OpError(r.get("error") or "failed")

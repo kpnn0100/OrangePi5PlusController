@@ -4,6 +4,8 @@ const $ = (id) => document.getElementById(id);
 const log = (text) => { const li = document.createElement("li"); li.textContent = text; $("log").prepend(li); };
 
 app.onStatus((s, detail) => { $("status").textContent = s + (detail ? " – " + detail : ""); });
+// NTWB-12: this page's session and how many pages share it - open a second tab to see it move.
+app.onPresence(({ session, clients }) => { $("presence").textContent = `session ${session} · ${clients} open`; });
 app.onState("counter", (n) => { $("count").textContent = n; });
 app.onEvent("added", (d) => log(`${d.by} added ${d.n}`));
 app.onBlob("picture", (blob, h) => { $("img").src = URL.createObjectURL(blob); log(`picture ${h.meta.size}px`); });

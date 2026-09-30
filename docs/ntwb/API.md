@@ -1,4 +1,4 @@
-# NTWB 1.0.0 - API reference
+# NTWB 1.1.0 - API reference
 
 **Generated** from `server/arstro_remote/ntwb/spec.py` - do not edit; run `python3 -m arstro_remote.ntwb.spec --write docs/ntwb` (a test fails when this file drifts).
 The narrative (flow, rationale, examples) is in [NTWB.md](NTWB.md).
@@ -12,13 +12,30 @@ The narrative (flow, rationale, examples) is in [NTWB.md](NTWB.md).
 | json | 1 | one UTF-8 JSON object: a message from MESSAGES |
 | blob | 2 | [header length u16 BE][header: UTF-8 JSON object, see BLOB_HEADER][data bytes] |
 
-Browser <-> host: WebSocket `/ws/app/<id>` - JSON messages as text frames, blobs as binary frames carrying the blob payload.
+Browser <-> host: WebSocket `/ws/app/<id>[?session=<id>|new]` - JSON messages as text frames, blobs as binary frames carrying the blob payload.
 
 ## Roles
 
 - **host** - Arstro Remote: registers apps, launches them, serves their web UI and relays between app and clients
 - **app** - a native program with an NTWB adapter; it keeps its core and state, the host never interprets its methods
-- **client** - a browser page (the app's web UI, with ntwb.js) or any other front end that speaks the WebSocket side
+- **client** - a browser page (the app's web UI, with ntwb.js) or any other front end that speaks the WebSocket side; each client is its own view of one session (see MVVM)
+
+## MVVM - what travels and what does not
+
+- **model** - the app's core, in the app's process, one per session: it changes only through `call`/`notify` and leaves only as `state` (whole values), `event`s (facts) and blobs (pixels). Everything a second view would have to re-derive (catalogues, ranges, unit conversions) is published as data, not re-implemented in the page
+- **viewmodel** - in each client: derives what its view shows from the retained state, holds that view's own state (layout, open panels, scroll, zoom, a drag in flight) and turns the user's intent into calls. Never shared
+- **view** - in each client: laid out for its own screen (a phone and a desktop may look nothing alike) and bound to its view-model. Two clients of one session see every model change; neither sees the other's view state
+- **not** - a stream of the app's window: every client would get the same pixels, sized for no one (a remote screen)
+
+## Sessions
+
+- **main** - the default session: a client that names none joins it; an app whose manifest says `single` (the default) has only this one
+- **id** - a session id, given by the host: `main`, then `s2`, `s3` ... (type `id`); the app learns it from `NTWB_SESSION` and `welcome.session`, a client from `ready.session` / `status.session`
+- **join** - WebSocket `/ws/app/<id>?session=<session id>` joins that session (starting its process if it is stopped); an unknown id is refused with `error`
+- **new** - `?session=new` starts a new session (only when the manifest says `single: false`, at most LIMITS.SESSIONS_PER_APP at once) and joins it; the page should then remember the real id (ntwb.js rewrites its own URL), so a reload rejoins it
+- **presence** - every client of a session is sent `status` again (with `clients`) whenever a client joins or leaves
+- **lifetime** - a session's process runs until it is stopped, exits or the host stops - with or without clients. A stopped session other than `main` is forgotten; `main` is always listed
+- **data** - all sessions of one app share its NTWB_DATA_DIR
 
 ## Types
 
@@ -81,7 +98,7 @@ Directions: host -> app (socket)
 | field | type | required | meaning |
 |---|---|---|---|
 | `ntwb` | `version` | yes | protocol version of the host |
-| `session` | `id` | yes | this app connection |
+| `session` | `id` | yes | the session this process serves (`main`, `s2` ... - see SESSIONS); 1.0 hosts sent an id per connection |
 | `host` | `obj` | yes | {name, version} of the host |
 | `clients` | `list[str]` | yes | clients already waiting for the app; each also gets `client.open` |
 
@@ -97,17 +114,20 @@ Directions: host -> client (WebSocket)
 | `client` | `id` | yes | this client's id (what the app sees in `call.client`) |
 | `app` | `obj` | yes | {id, name, version} of the connected app |
 | `state` | `obj` | yes | every retained state key -> its latest data (see `state`) |
+| `session` | `id` | no | the session this client joined (1.1) |
 
 <a id="msg-status"></a>
 ### `status`
 
-Where the app's process is: sent on connect and on every change.  
+Where the session's process is and who shares it: sent on connect and on every change.  
 Directions: host -> client (WebSocket)
 
 | field | type | required | meaning |
 |---|---|---|---|
 | `state` | `enum:starting\|running\|stopped\|failed` | yes | starting = launched, waiting for `hello` |
 | `detail` | `str` | no | why (exit code, launch error, ...) |
+| `session` | `id` | no | the session this status is about - the client's own (1.1) |
+| `clients` | `int` | no | how many clients share the session, this one included; sent again whenever it changes (1.1, NTWB-12) |
 
 <a id="msg-client-open"></a>
 ### `client.open`
@@ -269,6 +289,7 @@ Directions: app -> host (socket), host -> client (WebSocket)
 | `NTWB_SOCKET` | path of the host's Unix socket to connect to |
 | `NTWB_TOKEN` | one-time token to send in `hello` |
 | `NTWB_APP_ID` | the manifest id the host launched |
+| `NTWB_SESSION` | the session this process serves: `main`, or `s2`, `s3` ... for further sessions (1.1) |
 | `NTWB_VERSION` | the host's protocol version |
 | `NTWB_HOST` | name of the host program (arstro-remote) |
 | `NTWB_DATA_DIR` | a writable directory for the app's own data under the host's state dir |
@@ -291,7 +312,7 @@ Directions: app -> host (socket), host -> client (WebSocket)
 | `web` | `str` | yes | directory with the web UI (index.html), relative to the manifest directory |
 | `api` | `str` | no | path of the app's API description (see APP_API), relative to the manifest directory |
 | `capabilities` | `list[str]` | no | see CAPABILITIES |
-| `single` | `bool` | no | one process for all clients (default true; false is reserved) |
+| `single` | `bool` | no | true (the default): one session, `main`, that every client shares. false: the host may run several sessions side by side, one process each, and a client may start a new one (1.1; see SESSIONS) |
 
 ## App API description (manifest `api`)
 
@@ -314,3 +335,9 @@ When an app ships one, the host refuses calls and notifies to methods it does no
 | `STOP_GRACE_S` | 5 |
 | `PING_INTERVAL_S` | 15 |
 | `PONG_TIMEOUT_S` | 30 |
+
+## Limits
+
+| name | value |
+|---|---|
+| `SESSIONS_PER_APP` | 4 |

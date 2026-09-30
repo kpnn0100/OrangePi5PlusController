@@ -10,10 +10,12 @@
 <main>
   <h1>Hello NTWB</h1>
   <p class="status" id="status">connecting…</p>
+  <p class="status" id="presence"></p>
   <section>
     <div class="count" id="count">–</div>
     <div class="row"><button id="minus">−1</button><button id="plus">+1</button></div>
-    <p class="hint">The counter lives in the native app; every open page sees the same value.</p>
+    <p class="hint">The counter lives in the native app - the model. Every page of this session sees the
+      same value; <a href="?session=new">a new session</a> is another process with its own counter.</p>
   </section>
   <section>
     <button id="pic">Get a picture</button>

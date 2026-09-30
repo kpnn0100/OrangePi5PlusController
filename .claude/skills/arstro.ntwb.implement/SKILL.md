@@ -1,6 +1,6 @@
 ---
 name: arstro.ntwb.implement
-description: Implement or change NTWB, the native-to-web bridge (protocol 1.0.0) between Arstro Remote (the host - Apps page, launcher, relay) and native apps that show their UI in a browser (the first is Cosmo). Covers changing the protocol itself, the host (Apps module), the SDKs (web ntwb.js, Python app SDK, C++ core/Ntwb in the arstro repo), and adapting a new app (manifest, API description, adapter, web UI, install). Its whole point is CONSISTENCY - one definition (spec.py) from which the docs are generated and against which every other representation is tested. Invoke for "add a message/field to NTWB", "the app's web UI needs X from the app", "adapt <app> to Arstro Remote", "why does the host refuse this message", "/arstro.ntwb.implement".
+description: Implement or change NTWB, the native-to-web bridge (protocol 1.1.0: MVVM + sessions) between Arstro Remote (the host - Apps page, launcher, relay) and native apps that show their UI in a browser (the first is Cosmo). Covers changing the protocol itself, the host (Apps module), the SDKs (web ntwb.js, Python app SDK, C++ core/Ntwb in the arstro repo), and adapting a new app (manifest, API description, adapter, web UI, install). Its whole point is CONSISTENCY - one definition (spec.py) from which the docs are generated and against which every other representation is tested. Invoke for "add a message/field to NTWB", "the app's web UI needs X from the app", "adapt <app> to Arstro Remote", "why does the host refuse this message", "/arstro.ntwb.implement".
 ---
 
 # arstro.ntwb.implement
@@ -9,6 +9,15 @@ description: Implement or change NTWB, the native-to-web bridge (protocol 1.0.0)
 (the *host*) lists installed apps, launches them, serves their web UI at `/apps/<id>/` and relays
 JSON messages and binary blobs between the app (Unix socket) and every browser (WebSocket). Read
 `docs/ntwb/NTWB.md` once per session - it is short and it is the why.
+
+**It is MVVM, and that is the design, not a style (NTWB-11).** The app process is the **model**
+of one **session**; every browser is its own **view** with its own **view-model** in the page.
+The model leaves only as `state` (whole values), `event`s and blobs; view state (layout, open
+panel, zoom, scroll, a drag in flight) never leaves the page. That is what lets a phone and a
+desktop open the same session, each laid out for its screen, and see each other's edits. A web
+UI that is a picture of the app's window - a video, a draw-call stream - is a **remote screen**,
+and the user rejected exactly that for Cosmo (2026-09-30: "why it look like i'm remoting a
+screen ... each client view is independent"). Do not build one.
 
 Also load `arstro.embedded_server.implement` (this repo's workflow: requirements first, tests,
 docs, deploy to the idle slot, commit + push). In the arstro repo, `arstro.rule` and the app's own
@@ -69,16 +78,35 @@ generated file or the vendored copy by hand.
    it to agents (`arstro-remote apps api <id>`).
 4. **Install**: the app writes `$XDG_DATA_HOME/ntwb/apps/<id>/{ntwb.json, api.json, web/}` itself
    (`cosmo-cc ntwb install`); `exec` is its adapter's absolute path. No host restart needed.
-5. **Web UI**: static files + `<script src="/ntwb/ntwb.js">`; `NTWB.connect()`, `onState`,
-   `onEvent`, `onBlob`, `call`, `notify`. Presentation only. It must work at 360 px and follow the
-   app's design language (for Cosmo: `arstro.cosmo.design.implement`, R-G-1 - every visible change
-   eases).
+5. **Web UI = a view + a view-model, per client**: static files + `<script src="/ntwb/ntwb.js">`;
+   `NTWB.connect()`, `onState`, `onEvent`, `onBlob`, `call`, `notify`, `onPresence`.
+   * The **view-model** (in the page) derives everything shown from the retained state, keeps
+     the page's own view state, and turns intent into `call`s. It never publishes view state and
+     never computes what the app could publish (rule "data, not copies" above).
+   * The **view** is laid out for the screen it runs on - a phone may get a different shell than a
+     desktop (Cosmo: the desktop App vs the touch PhoneApp) - and follows the app's design
+     language (Cosmo: `arstro.cosmo.design.implement`, R-G-1 - every visible change eases). It
+     must work at 360 px.
+   * **Sessions**: if two users (or one user on two tasks) should be able to hold *different*
+     models, set `"single": false` in the manifest - each session is its own process; the app
+     needs no code for it (it can read `NTWB_SESSION`). Leave it out when one shared model is the
+     point. Show presence (`onPresence` -> "2 viewing") so a user knows edits are shared.
 6. **Verify without a browser first**: `arstro-remote apps call <id> <method> '<json>'`,
    `arstro-remote apps state <id> <key>`, `arstro-remote apps log <id>`; then the page:
    `ARSTRO_TOKEN=... DISPLAY=:0 python3 server/tests/web/page_smoke.py http://127.0.0.1:<port> <dir> [390x844] "/apps/<id>/"`.
 
 ## Gotchas (each cost time)
 
+- **A remote screen is not a web UI.** Streaming the native window (Cosmo's display-list attempt,
+  2026-09-30, archived and discarded) gives every client one layout, one window size and one
+  menu state - the opposite of NTWB-11. Build the view in the page from the model.
+- **Anything per-client that the core must produce** (a zoomed crop, a larger preview for one
+  screen) is a `call` whose blob goes to that client alone (`client` set) - still view state on the
+  page's side, never a shared `state` key that one client's zoom would change for everybody.
+- **Sessions from a shell**: `arstro-remote apps launch <id> --session new` prints the id;
+  `apps call/state <id> --session sN`. In a page, `?session=new` starts one and `ntwb.js`
+  rewrites the URL to the real id - the shell's Apps page starts it through `apps.launch` first so
+  its own URL names the session.
 - **Deploy into the idle slot** - `arstro-remote slots` first; a shell in a web terminal is a child
   of that slot's daemon (`arstro.embedded_server.deploy`, rule zero).
 - `apps.*` ops name the app `app`, never `id` - `id` is the protocol's request id and a clash

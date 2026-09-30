@@ -13,7 +13,7 @@
   GET  /api/files/download?path=P    a file of the Files module (FILE-03)
   PUT  /api/files/upload?dir=D&name=N[&overwrite=1]   raw body -> D/N (FILE-02)
   GET  /apps/<id>/[file]      an NTWB app's web UI (APP-04); /apps/<id>/icon, /apps/<id>/api.json
-  GET  /ws/app/<id>           WebSocket: an NTWB client of the app (docs/ntwb/API.md)
+  GET  /ws/app/<id>[?session=<id>|new]  WebSocket: an NTWB client of one session of the app (docs/ntwb/API.md)
   GET  /ntwb/ntwb.js          the NTWB web SDK the app pages load
   POST /api/op/<op>           REST shim: run any op with a JSON body -> {"ok", "data"|"error"}
 
@@ -452,10 +452,12 @@ class Handler(BaseHTTPRequestHandler):
         apps = self._apps()
         if apps is None:
             return
+        # ?session=<id> joins that session of the app, ?session=new starts one (APP-04, spec.SESSIONS)
+        session = (urllib.parse.parse_qs(self._url.query).get("session") or [None])[0]
         conn = self._upgrade()
         if conn is None:
             return
-        apps.serve_web(conn, app_id, "%s:%d" % self.client_address[:2])
+        apps.serve_web(conn, app_id, "%s:%d" % self.client_address[:2], session)
 
     def _app_file(self, rest, head):
         apps = self._apps()

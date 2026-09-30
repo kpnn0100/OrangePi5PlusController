@@ -18,7 +18,8 @@ the app and the web page is here too (ARC-04), and changes made here show up the
     arstro-remote io info|header|gpio ...|i2c ...|spi ...|uart ...|pwm ...|led ...|adc
     arstro-remote files ls [PATH]|get PATH|put FILE DIR|rm PATH|mkdir PATH|mv PATH NEW
     arstro-remote system info|modules [--set a,b]|restart|reboot|poweroff
-    arstro-remote apps list|info|api|launch|stop|call ID METHOD [JSON]|state ID [KEY]|log ID|register PATH|unregister PATH|spec
+    arstro-remote apps list|sessions ID|info|api|launch|stop|call ID METHOD [JSON]|state ID [KEY]|log ID|register PATH|unregister PATH|spec
+                       [--session ID|new]   (launch/stop/call/state/info: one session of the app, default main)
     arstro-remote slots [--current|--idle]   which A/B slot hosts this session, which one to deploy into
     arstro-remote log [--file NAME] [-n N] [--grep TEXT] [--follow] | log level LEVEL
     arstro-remote stats | pair [SECONDS] | unpair ADDRESS | web [--rotate] | call OP [JSON]
@@ -1039,6 +1040,11 @@ def cmd_log(ctl, a):
         time.sleep(1)
 
 
+def _session(a):
+    s = getattr(a, "session", None)
+    return {"session": s} if s else {}
+
+
 def cmd_apps(ctl, a):
     sub = a.apps_cmd or "list"
     if sub == "spec":                                   # the protocol itself: no server needed
@@ -1057,20 +1063,29 @@ def cmd_apps(ctl, a):
                                                      str(x.get("name"))[:22], "clients %d" % x["clients"] if x.get("clients") else "",
                                                      "  PROBLEM: %s" % x["problem"] if x.get("problem") else ""))
         out(a, r, human)
+    elif sub == "sessions":
+        def human(r):
+            print("%s: %s (at most %d at once)" % (r["app"], "one shared session" if r["single"] else "sessions",
+                                                   r["limit"]))
+            for x in r["sessions"]:
+                print("  %-8s %-9s viewers %-3d %s%s" % (x["session"], x["state"], x["clients"],
+                                                       "pid %s" % x["pid"] if x.get("pid") else "",
+                                                       "  - %s" % x["detail"] if x.get("detail") else ""))
+        out(a, ctl.call("apps.sessions", app=a.id), human)
     elif sub in ("info", "api"):
-        out(a, ctl.call("apps." + sub, app=a.id), lambda r: print(json.dumps(r, indent=2)))
+        out(a, ctl.call("apps." + sub, app=a.id, **_session(a)), lambda r: print(json.dumps(r, indent=2)))
     elif sub == "launch":
-        r = ctl.call("apps.launch", app=a.id, timeout=60)
-        print("%s: %s%s" % (a.id, r["state"], " - %s" % r["detail"] if r.get("detail") else ""))
+        r = ctl.call("apps.launch", app=a.id, timeout=60, **_session(a))
+        print("%s[%s]: %s%s" % (a.id, r.get("session", "main"), r["state"], " - %s" % r["detail"] if r.get("detail") else ""))
     elif sub == "stop":
-        r = ctl.call("apps.stop", app=a.id, timeout=60)
-        print("%s: %s" % (a.id, r.get("state", "stopped")))
+        r = ctl.call("apps.stop", app=a.id, timeout=60, **_session(a))
+        print("%s%s: %s" % (a.id, "[%s]" % a.session if a.session else "", r.get("state", "stopped")))
     elif sub == "call":
         params = json.loads(a.params) if a.params else {}
-        r = ctl.call("apps.call", app=a.id, method=a.method, params=params, timeout=a.timeout + 5)
+        r = ctl.call("apps.call", app=a.id, method=a.method, params=params, timeout=a.timeout + 5, **_session(a))
         print(json.dumps(r, indent=2))
     elif sub == "state":
-        r = ctl.call("apps.state", app=a.id, **({"key": a.key} if a.key else {}))
+        r = ctl.call("apps.state", app=a.id, **({"key": a.key} if a.key else {}), **_session(a))
         print(json.dumps(r, indent=2))
     elif sub == "log":
         for line in ctl.call("apps.log", app=a.id, lines=a.lines)["lines"]:
@@ -1088,9 +1103,13 @@ def add_module_parsers(sub):
     aps = ap_.add_subparsers(dest="apps_cmd")
     aps.add_parser("list")
     aps.add_parser("spec", help="print the NTWB protocol reference (--json: the catalogue)")
+    aps.add_parser("sessions", help="the app's sessions: state and viewers of each").add_argument("id")
     for name in ("info", "api", "launch", "stop", "log", "state", "call"):
         x = aps.add_parser(name)
         x.add_argument("id")
+        if name in ("info", "launch", "stop", "state", "call"):
+            x.add_argument("--session", help="one session of the app (default main; stop: all of them)%s" % (
+                "; `new` starts another" if name == "launch" else ""))
         if name == "log":
             x.add_argument("-n", "--lines", type=int, default=100)
         if name == "state":

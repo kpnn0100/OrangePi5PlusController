@@ -54,6 +54,7 @@ and all three are updated live by the same state events (ARC-03).
 | Which slot hosts this session, which is idle | ADM-08 | - (a phone hosts no shell) | `slots [--current\|--idle]` | - (the browser is not a process on the board) |
 | Apps: list, start, stop, log, register | APP-01/02/05 | ³ | `apps list / launch ID / stop ID / log ID / register PATH / unregister PATH` | Apps |
 | Use an app (its own web UI) | APP-03/04/06 | ³ | `apps call ID METHOD '{json}'`, `apps state ID [KEY]`, `apps api ID` | Apps › Open (inside the shell) or `/apps/<id>/` |
+| App sessions: list, start another, join, stop one; who is viewing | APP-04/09, NTWB-12 | ³ | `apps sessions ID`, `apps launch ID --session new`, `--session S` on `info/stop/call/state` | Apps › the card's sessions (Open / New session / Stop), or `/apps/<id>/?session=S` |
 | The NTWB protocol reference | NTWB-01 | - | `apps spec [--json]` | `docs/ntwb/API.md` |
 | Any op (tools, scripts) | ARC-02 | - | `call OP '{json}'` | `POST /api/op/OP` |
 

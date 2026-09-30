@@ -157,11 +157,13 @@ Other events: `stats` `{data}` (after `stats.subscribe`), `term.exit` `{term, co
 | `files.roots` / `files.list` | `path?, hidden?` (list) | `{roots}` / `{path, parent, root, entries: [{name, path, type, size, mtime, mode, target?}], writable}` |
 | `files.stat` / `files.read` / `files.write` | `path` (+ `max?, tail?` / `text`) | entry / `{text, size, truncated}` / entry |
 | `files.mkdir` / `files.rename` / `files.delete` | `dir + name` or `path` / `path, to` / `path, recursive?` | entry / entry / `{deleted}` |
-| `apps.list` | | `{apps: [{id, name, version, description, icon, origin, problem, state: stopped\|starting\|running\|failed, detail, pid, clients, started, running_version, api, capabilities}], ntwb, socket, search, registered}` (rescans) |
-| `apps.info` / `apps.api` | `app` | the app + manifest, argv, log path, state keys / its API description |
-| `apps.launch` / `apps.stop` | `app`, `wait?` | the app (APP-02) |
-| `apps.call` | `app, method, params?, timeout?` | the method's result - the same route a browser call takes (APP-08) |
-| `apps.state` | `app, key?` | `{state}` or `{key, data}` - the retained NTWB state |
+| `apps.list` | | `{apps: [{id, name, version, description, icon, origin, problem, single, session: "main", state: stopped\|starting\|running\|failed, detail, pid, clients, started, running_version, api, capabilities, sessions: [{session, state, detail, pid, clients, started, running_version}]}], ntwb, socket, search, registered}` (rescans; the entry's own state is `main`'s, `clients` counts the viewers of every session) |
+| `apps.sessions` | `app` | `{app, single, limit, sessions: [{session, state, detail, pid, clients, started, running_version}]}` (APP-09) |
+| `apps.info` / `apps.api` | `app`, `session?` | the app + manifest, argv, log path, state keys, sessions / its API description |
+| `apps.launch` | `app`, `session?` (`new` starts another), `wait?` | the session (APP-02, APP-04) |
+| `apps.stop` | `app`, `session?` (default: every session), `wait?` | the (first) stopped session |
+| `apps.call` | `app, method, params?, session?, timeout?` | the method's result - the same route a browser call takes (APP-08) |
+| `apps.state` | `app, key?, session?` | `{state, session}` or `{key, data}` - the session's retained NTWB state |
 | `apps.log` | `app, lines?, grep?` | `{id, path, lines}` |
 | `apps.register` / `apps.unregister` | `path` (ntwb.json or its dir) | the app / `{registered}` |
 | `files.upload_check` | `dir, name, overwrite?` | `{path, exists}` - call before a big upload |
@@ -186,7 +188,7 @@ Take ids are `REC_YYYYMMDD_HHMMSS`; its files are `<take>.arh` (RAW), `<take>_H2
 | `POST /api/op/<op>` | one op, JSON body → `{ok, data \| error}` |
 | `GET /api/files/download?path=P` | a file of the Files module (HTTP Range); `&inline=1` to show instead of save |
 | `GET /apps/<id>/[file]` | an NTWB app's web UI; `/apps/<id>/icon`, `/apps/<id>/api.json`; unauthenticated → 302 to the login |
-| `GET /ws/app/<id>` | WebSocket: an NTWB client of the app - see [ntwb/NTWB.md](ntwb/NTWB.md), [ntwb/API.md](ntwb/API.md) |
+| `GET /ws/app/<id>[?session=<id>\|new]` | WebSocket: an NTWB client of one session of the app (default `main`; `new` starts one) - see [ntwb/NTWB.md](ntwb/NTWB.md), [ntwb/API.md](ntwb/API.md) |
 | `GET /ntwb/ntwb.js` | the NTWB web SDK |
 | `PUT /api/files/upload?dir=D&name=N[&overwrite=1]` | raw body (Content-Length required) streamed to `D/N` → `{ok, data: entry}` |
 

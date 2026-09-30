@@ -10,6 +10,17 @@
  *   const sum = await app.call("add", {a: 1, b: 2});
  *   app.notify("pointer", {x, y});              // no reply
  *   app.onStatus((s) => ...);                   // "connecting" | "starting" | "running" | "stopped" | "failed" | "offline"
+ *   app.onPresence(({session, clients}) => ...); // which session this page joined, how many share it
+ *
+ * MVVM (NTWB-11): `state` is the app's MODEL - the same for every client of the session. What
+ * this page shows and how (layout, open panels, zoom, a drag in flight) is its own VIEW state:
+ * keep it in the page, never send it as the app's state. Several pages - a phone and a desktop
+ * - then show one session, each laid out for its own screen, and see each other's edits.
+ *
+ * Sessions (APP-04): the page joins the session named by `?session=` in its own URL (or
+ * {session}); none = `main`. `?session=new` starts one (apps whose manifest says
+ * `single: false`); once joined, the page's URL is rewritten to the real id so a reload
+ * rejoins the same session.
  *
  * The message names and the version below are checked against the protocol definition
  * (server/arstro_remote/ntwb/spec.py) by a test - change them there first.
@@ -17,7 +28,7 @@
 (function (global) {
   "use strict";
 
-  const VERSION = "1.0.0";
+  const VERSION = "1.1.0";
   const MESSAGES = {
     c2h: ["call", "notify"],
     h2c: ["ready", "status", "result", "event", "state", "error"],
@@ -29,13 +40,17 @@
       const m = location.pathname.match(/^\/apps\/([^/]+)/);
       this.appId = opts.app || (m && decodeURIComponent(m[1]));
       if (!this.appId) throw new Error("NTWB.connect: no app id (not under /apps/<id>/)");
+      this._wantSession = opts.session || new URLSearchParams(location.search).get("session") || null;
+      this._rewriteUrl = opts.rewriteUrl !== false;
+      this.session = null;              // the session joined (ready / status)
+      this.clients = 0;                 // clients of that session, this one included
       this.status = "connecting";
       this.client = null;
       this.info = null;
       this.state = {};
       this._next = 1;
       this._pending = new Map();
-      this._subs = { event: new Map(), state: new Map(), blob: new Map(), status: new Set(), ready: new Set(), error: new Set() };
+      this._subs = { event: new Map(), state: new Map(), blob: new Map(), status: new Set(), ready: new Set(), error: new Set(), presence: new Set() };
       this._backoff = 500;
       this._closed = false;
       this._open();
@@ -58,6 +73,11 @@
     onStatus(fn) { this._subs.status.add(fn); fn(this.status); return () => this._subs.status.delete(fn); }
     onReady(fn) { this._subs.ready.add(fn); if (this.status === "running" && this.info) fn(this.info); return () => this._subs.ready.delete(fn); }
     onError(fn) { this._subs.error.add(fn); return () => this._subs.error.delete(fn); }
+    onPresence(fn) {
+      this._subs.presence.add(fn);
+      if (this.session) fn({ session: this.session, clients: this.clients });
+      return () => this._subs.presence.delete(fn);
+    }
 
     _emit(set, ...args) {
       for (const fn of [...(set || [])]) {
@@ -92,8 +112,28 @@
     close() { this._closed = true; if (this.ws) this.ws.close(); }
 
     // ------------------------------------------------------------------ transport
+    _presence(session, clients) {
+      if (session === undefined && clients === undefined) return;
+      const changed = (session !== undefined && session !== this.session) || (clients !== undefined && clients !== this.clients);
+      if (session !== undefined) this.session = session;
+      if (clients !== undefined) this.clients = clients;
+      if (session && this._wantSession === "new") this._joined(session);
+      if (changed) this._emit(this._subs.presence, { session: this.session, clients: this.clients });
+    }
+    _joined(session) {
+      // A reconnect must rejoin THIS session, not start yet another one - and so must a reload.
+      this._wantSession = session;
+      if (!this._rewriteUrl) return;
+      const u = new URL(location.href);
+      if (u.searchParams.get("session") === "new") {
+        u.searchParams.set("session", session);
+        history.replaceState(history.state, "", u);
+      }
+    }
+
     _open() {
-      const url = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws/app/" + encodeURIComponent(this.appId);
+      let url = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws/app/" + encodeURIComponent(this.appId);
+      if (this._wantSession) url += "?session=" + encodeURIComponent(this._wantSession);
       const ws = new WebSocket(url);
       ws.binaryType = "arraybuffer";
       this.ws = ws;
@@ -117,11 +157,13 @@
           this.client = msg.client;
           this.info = msg.app;
           this.state = msg.state || {};
+          this._presence(msg.session, undefined);
           this._setStatus("running");
           for (const [key, fns] of this._subs.state) if (key in this.state) this._emit(fns, this.state[key]);
           this._emit(this._subs.ready, msg.app);
           break;
         case "status":
+          this._presence(msg.session, msg.clients);
           this._setStatus(msg.state === "running" && !this.client ? "starting" : msg.state, msg.detail);
           if (msg.state !== "running") this.client = null;
           break;

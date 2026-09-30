@@ -42,9 +42,10 @@ def install_manifest(data_home, app_id, **over):
 class Web:
     """A browser-like client on /ws/app/<id>."""
 
-    def __init__(self, t, app_id):
+    def __init__(self, t, app_id, session=None):
         base = t.base.replace("http://", "ws://")
-        self.conn = ws.connect("%s/ws/app/%s" % (base, app_id), {"Authorization": "Bearer " + t.token})
+        q = "?session=%s" % session if session else ""
+        self.conn = ws.connect("%s/ws/app/%s%s" % (base, app_id, q), {"Authorization": "Bearer " + t.token})
         self.conn.sock.settimeout(20)
         self.n = 0
         self.backlog = []          # received but not yet matched by an until()
@@ -196,6 +197,7 @@ def two_clients_share_one_app(t):
         (_, ra), _ = a.until(jmsg("ready"))
         (_, rb), _ = b.until(jmsg("ready"))
         check(ra["client"] != rb["client"], "clients need distinct ids")
+        check(ra["session"] == rb["session"] == "main", (ra.get("session"), rb.get("session")))
         counter_after_ready(a, ra)
         base = counter_after_ready(b, rb)
         a.send({"t": "call", "id": "same", "method": "add", "params": {"n": 2}})
@@ -243,6 +245,77 @@ def every_blob_arrives_unless_it_is_live(t):
         w.close()
 
 
+def status_with(w, pred):
+    (_, st), _ = w.until(lambda it: jmsg("status")(it) and pred(it[1]))
+    return st
+
+
+@test("APP-04", "APP-09", "NTWB-11", "NTWB-12", "NTWB-03")
+def each_session_is_its_own_model_and_its_clients_see_each_other(t):
+    t.c.call("apps.stop", app="hello")
+    a = Web(t, "hello")                                     # main
+    b = Web(t, "hello", "new")                              # a second session: another process, another model
+    try:
+        (_, ra), _ = a.until(jmsg("ready"))
+        (_, rb), _ = b.until(jmsg("ready"))
+        s2 = rb["session"]
+        check(ra["session"] == "main" and s2 not in ("main", "new"), (ra["session"], s2))
+        check(b.call("session")["data"] == {"env": s2, "welcome": s2}, "NTWB_SESSION / welcome.session")
+        check(a.call("session")["data"] == {"env": "main", "welcome": "main"}, "main's own session")
+        base_a = counter_after_ready(a, ra)
+        counter_after_ready(b, rb)
+        check(b.call("add", {"n": 40})["data"] == 40, "a new session starts from its own model")
+        check(a.call("add", {"n": 1})["data"] == base_a + 1, "main is untouched by the other session")
+        c = Web(t, "hello", s2)                             # join the second session by id
+        try:
+            (_, rc), _ = c.until(jmsg("ready"))
+            check(rc["session"] == s2 and rc["state"]["counter"] == 40, rc)
+            status_with(b, lambda m: m.get("clients") == 2 and m.get("session") == s2)     # b sees c arrive
+            c.call("add", {"n": 2})
+            (_, st), _ = b.until(lambda it: jmsg("state")(it) and it[1]["data"] == 42)   # ... and c's edit
+        finally:
+            c.close()
+        status_with(b, lambda m: m.get("clients") == 1)                               # ... and c leave
+        r = t.c.call("apps.sessions", app="hello")
+        by = {x["session"]: x for x in r["sessions"]}
+        check(r["single"] is False and set(by) == {"main", s2} and by[s2]["clients"] == 1 and by[s2]["pid"], r)
+        check(t.c.call("apps.call", app="hello", session=s2, method="add", params={"n": 8}) == 50, "apps.call session")
+        check(t.c.call("apps.state", app="hello", session=s2, key="counter")["data"] == 50, "apps.state session")
+        check(t.c.call("apps.state", app="hello", key="counter")["data"] == base_a + 1, "apps.state main")
+        lst = {x["id"]: x for x in t.c.call("apps.list")["apps"] if x["id"]}
+        check(len(lst["hello"]["sessions"]) == 2 and lst["hello"]["clients"] == 2, lst["hello"])
+        e = t.c.request("apps.call", app="hello", session="s99", method="add", params={"n": 1})
+        check(e["ok"] is False and "no session s99" in e["error"], e)
+        w = Web(t, "hello", "s99")
+        (_, err), _ = w.until(jmsg("error"))
+        check("no session s99" in err["error"], err)
+        w.close()
+        w = Web(t, "solo", "new")                           # a single-session app cannot start another
+        (_, err), _ = w.until(jmsg("error"))
+        check("one session" in err["error"], err)
+        w.close()
+        extra = []                                          # the cap: SESSIONS_PER_APP at once
+        for _ in range(spec.LIMITS["SESSIONS_PER_APP"] - 2):
+            extra.append(t.c.call("apps.launch", app="hello", session="new")["session"])
+        e = t.c.request("apps.launch", app="hello", session="new")
+        check(e["ok"] is False and "at most %d" % spec.LIMITS["SESSIONS_PER_APP"] in e["error"], e)
+        for sid in extra:
+            t.c.call("apps.stop", app="hello", session=sid)
+        check(wait_until(lambda: {x["session"] for x in t.c.call("apps.sessions", app="hello")["sessions"]} == {"main", s2}, 10),
+              "stopped sessions without clients are forgotten")
+        again = t.c.call("apps.launch", app="hello", session="new")["session"]
+        check(again not in [s2] + extra, "a session id is never reused: %s" % again)
+        t.c.call("apps.stop", app="hello", session=again)
+        code = os.system("cd %s && ARSTRO_SLOT=t XDG_RUNTIME_DIR=%s XDG_CONFIG_HOME=%s %s -m arstro_remote apps sessions hello "
+                         "> %s/cli.out 2>&1" % (SERVER, t.dir + "/run", t.dir + "/cfg", sys.executable, t.dir))
+        out = open(t.dir + "/cli.out").read()
+        check(code == 0 and "main" in out and s2 in out, out)
+    finally:
+        a.close()
+        b.close()
+    t.c.call("apps.stop", app="hello", session=s2)
+
+
 @test("NTWB-06", "APP-07")
 def a_client_cannot_break_the_rules(t):
     w = Web(t, "hello")
@@ -275,7 +348,7 @@ def cli_and_agents_reach_apps_without_a_browser(t):
     r = t.c.request("apps.call", app="hello", method="fail")
     check(r["ok"] is False and r["error"] == "this method always fails", r)
     api = t.c.call("apps.api", app="hello")
-    check(set(api["methods"]) == {"add", "echo", "fail", "picture", "burst", "quit"}, api)
+    check(set(api["methods"]) == {"add", "echo", "fail", "picture", "burst", "session", "quit"}, api)
     code = os.system("cd %s && ARSTRO_SLOT=t XDG_RUNTIME_DIR=%s XDG_CONFIG_HOME=%s %s -m arstro_remote apps call hello echo "
                      "'{\"a\": 1}' > %s/cli.out 2>&1" % (SERVER, t.dir + "/run", t.dir + "/cfg", sys.executable, t.dir))
     check(code == 0 and '"a": 1' in open(t.dir + "/cli.out").read(), open(t.dir + "/cli.out").read())
@@ -368,6 +441,7 @@ def setup():
     t = Instance(["system", "apps"], app="test-ntwb")
     data = os.path.join(t.dir, "data")
     install_manifest(data, "hello")
+    install_manifest(data, "solo", single=True)
     install_manifest(data, "broken", exec=["/nonexistent/bin/app"])
     install_manifest(data, "mute", exec=["/bin/sleep", "60"], api=None, capabilities=[])
     install_manifest(data, "attachable", capabilities=["attach"])

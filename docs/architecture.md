@@ -54,16 +54,22 @@ functions generated from the board's pinctrl groups). Controller names (`i2c2`, 
 A UART opened by `io.uart.open` is a `SerialTerminal` in the shared `TerminalPool`, so every
 controller attaches to it like to a shell.
 
-## Apps: the NTWB host (APP-01..08, NTWB-01..10)
+## Apps: the NTWB host (APP-01..09, NTWB-01..12)
 
 ```
- browser: /apps/<id>/ (the app's own web UI) + /ntwb/ntwb.js ──WS /ws/app/<id>──┐
- CLI / agent: apps.call, apps.state ─────────────────────────────── OpClient ──┤
-                                                                               ▼
- AppsService ── AppInstance(id): clients, retained state, pending calls (host ids) ──┐
-      │  launches manifest.exec with NTWB_SOCKET / NTWB_TOKEN                         │
-      └── $XDG_RUNTIME_DIR/<instance>-ntwb.sock (0600) ◄── hello / result / event / state / blobs ── app process
+ browser: /apps/<id>/?session=S (a view + view-model) + /ntwb/ntwb.js ──WS /ws/app/<id>?session=S──┐
+ CLI / agent: apps.call, apps.state [--session S] ─────────────────────────────────── OpClient ──┤
+                                                                                                  ▼
+ AppsService ── {app id: {session: AppInstance}}: `main`, s2, s3 ... (manifest single: false)
+      │         AppInstance = ONE session = one process = one model: clients, retained state,
+      │         pending calls (host ids), presence (`status.clients` on every join / leave)
+      │  launches manifest.exec with NTWB_SOCKET / NTWB_TOKEN / NTWB_SESSION
+      └── $XDG_RUNTIME_DIR/<instance>-ntwb.sock (0600) ◄── hello (token -> its session) / result / event / state / blobs ── app process(es)
 ```
+
+MVVM (NTWB-11): the app process is the model, every browser builds its own view and view-model
+from the model's `state` / `event`s / blobs, and view state never travels - so a phone and a
+desktop in one session look different and see each other's edits.
 
 The protocol is defined once in `ntwb/spec.py` (validation + generated `docs/ntwb/API.md`,
 `api.json`); `ntwb/wire.py` is the framing, `ntwb/registry.py` the manifests, `ntwb/app.py` the

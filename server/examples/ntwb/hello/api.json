@@ -1,5 +1,5 @@
 {
-  "ntwb": "1.0.0",
+  "ntwb": "1.1.0",
   "app": "hello",
   "methods": {
     "add": {
@@ -54,6 +54,11 @@
         }
       },
       "result": "{sent}"
+    },
+    "session": {
+      "doc": "which session this process serves",
+      "params": {},
+      "result": "{env: NTWB_SESSION, welcome: welcome.session}"
     }
   },
   "events": {

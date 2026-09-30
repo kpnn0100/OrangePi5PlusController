@@ -671,3 +671,5 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .app-frame { display: block; width: 100%; height: calc(100vh - 120px); border: 1px solid var(--line); border-radius: var(--r);
              background: var(--bg-2); }
 @media (max-width: 899px) { .app-frame { height: calc(100vh - 150px - var(--tab-h)); } .app-bar { margin-top: 0; } }
+.app-sessions { display: flex; flex-direction: column; gap: 4px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+.app-session { gap: 8px; min-width: 0; font-size: 13px; }

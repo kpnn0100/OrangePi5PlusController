@@ -1,5 +1,5 @@
 {
-  "ntwb": "1.0.0",
+  "ntwb": "1.1.0",
   "id": "hello",
   "name": "Hello NTWB",
   "version": "1.0.0",
@@ -8,5 +8,6 @@
   "exec": ["hello_app.py"],
   "web": "web",
   "api": "api.json",
-  "capabilities": ["blobs"]
+  "capabilities": ["blobs"],
+  "single": false
 }

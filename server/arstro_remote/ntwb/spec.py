@@ -21,7 +21,7 @@ import json
 import re
 import sys
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 MAJOR = 1
 
 # ------------------------------------------------------------------------------ framing
@@ -31,8 +31,9 @@ MAJOR = 1
 #     | type u8 | length u32 (BE)  | payload (length bytes)        |
 #     +---------+------------------+-------------------------------+
 #
-# Browser <-> host: WebSocket; a JSON message is a text frame, a blob a binary frame whose
-# payload is the blob payload below (no type/length prefix - WebSocket frames already).
+# Browser <-> host: WebSocket `/ws/app/<id>[?session=<id>|new]` (see SESSIONS); a JSON message is
+# a text frame, a blob a binary frame whose payload is the blob payload below (no type/length
+# prefix - WebSocket frames already).
 FRAMES = {
     "json": {"type": 1, "payload": "one UTF-8 JSON object: a message from MESSAGES"},
     "blob": {"type": 2, "payload": "[header length u16 BE][header: UTF-8 JSON object, see BLOB_HEADER][data bytes]"},
@@ -44,7 +45,41 @@ MAX_BLOB_HEADER = 16 << 10    # bytes of the blob's JSON header
 ROLES = {
     "host": "Arstro Remote: registers apps, launches them, serves their web UI and relays between app and clients",
     "app": "a native program with an NTWB adapter; it keeps its core and state, the host never interprets its methods",
-    "client": "a browser page (the app's web UI, with ntwb.js) or any other front end that speaks the WebSocket side",
+    "client": "a browser page (the app's web UI, with ntwb.js) or any other front end that speaks the WebSocket side; "
+              "each client is its own view of one session (see MVVM)",
+}
+
+# ------------------------------------------------------------------------------ MVVM (NTWB-11)
+# What travels and what does not. This is the contract that makes several clients - each laid
+# out for its own screen - show one session: the app publishes its MODEL, every client builds
+# its own VIEW on it. A client never publishes view state, and an app never streams its window.
+MVVM = {
+    "model": "the app's core, in the app's process, one per session: it changes only through `call`/`notify` and leaves "
+             "only as `state` (whole values), `event`s (facts) and blobs (pixels). Everything a second view would have to "
+             "re-derive (catalogues, ranges, unit conversions) is published as data, not re-implemented in the page",
+    "viewmodel": "in each client: derives what its view shows from the retained state, holds that view's own state (layout, "
+                 "open panels, scroll, zoom, a drag in flight) and turns the user's intent into calls. Never shared",
+    "view": "in each client: laid out for its own screen (a phone and a desktop may look nothing alike) and bound to its "
+            "view-model. Two clients of one session see every model change; neither sees the other's view state",
+    "not": "a stream of the app's window: every client would get the same pixels, sized for no one (a remote screen)",
+}
+
+# ------------------------------------------------------------------------------ sessions (APP-04)
+# A session is one running process of an app - one model - and the clients attached to it.
+SESSIONS = {
+    "main": "the default session: a client that names none joins it; an app whose manifest says `single` (the default) "
+            "has only this one",
+    "id": "a session id, given by the host: `main`, then `s2`, `s3` ... (type `id`); the app learns it from "
+          "`NTWB_SESSION` and `welcome.session`, a client from `ready.session` / `status.session`",
+    "join": "WebSocket `/ws/app/<id>?session=<session id>` joins that session (starting its process if it is stopped); "
+            "an unknown id is refused with `error`",
+    "new": "`?session=new` starts a new session (only when the manifest says `single: false`, at most "
+           "LIMITS.SESSIONS_PER_APP at once) and joins it; the page should then remember the real id (ntwb.js rewrites "
+           "its own URL), so a reload rejoins it",
+    "presence": "every client of a session is sent `status` again (with `clients`) whenever a client joins or leaves",
+    "lifetime": "a session's process runs until it is stopped, exits or the host stops - with or without clients. A stopped "
+                "session other than `main` is forgotten; `main` is always listed",
+    "data": "all sessions of one app share its NTWB_DATA_DIR",
 }
 # direction codes used in MESSAGES
 DIRECTIONS = {
@@ -98,7 +133,8 @@ MESSAGES = {
         "doc": "The host accepted `hello`. From here on both sides may send any message of their direction.",
         "fields": {
             "ntwb": F("version", True, "protocol version of the host"),
-            "session": F("id", True, "this app connection"),
+            "session": F("id", True, "the session this process serves (`main`, `s2` ... - see SESSIONS); "
+                                     "1.0 hosts sent an id per connection"),
             "host": F("obj", True, "{name, version} of the host"),
             "clients": F("list[str]", True, "clients already waiting for the app; each also gets `client.open`"),
         },
@@ -111,14 +147,18 @@ MESSAGES = {
             "client": F("id", True, "this client's id (what the app sees in `call.client`)"),
             "app": F("obj", True, "{id, name, version} of the connected app"),
             "state": F("obj", True, "every retained state key -> its latest data (see `state`)"),
+            "session": F("id", False, "the session this client joined (1.1)"),
         },
     },
     "status": {
         "dir": ["h2c"],
-        "doc": "Where the app's process is: sent on connect and on every change.",
+        "doc": "Where the session's process is and who shares it: sent on connect and on every change.",
         "fields": {
             "state": F("enum:starting|running|stopped|failed", True, "starting = launched, waiting for `hello`"),
             "detail": F("str", False, "why (exit code, launch error, ...)"),
+            "session": F("id", False, "the session this status is about - the client's own (1.1)"),
+            "clients": F("int", False, "how many clients share the session, this one included; sent again whenever it "
+                                        "changes (1.1, NTWB-12)"),
         },
     },
     "client.open": {
@@ -245,6 +285,7 @@ ENVIRONMENT = {
     "NTWB_SOCKET": "path of the host's Unix socket to connect to",
     "NTWB_TOKEN": "one-time token to send in `hello`",
     "NTWB_APP_ID": "the manifest id the host launched",
+    "NTWB_SESSION": "the session this process serves: `main`, or `s2`, `s3` ... for further sessions (1.1)",
     "NTWB_VERSION": "the host's protocol version",
     "NTWB_HOST": "name of the host program (arstro-remote)",
     "NTWB_DATA_DIR": "a writable directory for the app's own data under the host's state dir",
@@ -267,7 +308,9 @@ MANIFEST = {
         "web": F("str", True, "directory with the web UI (index.html), relative to the manifest directory"),
         "api": F("str", False, "path of the app's API description (see APP_API), relative to the manifest directory"),
         "capabilities": F("list[str]", False, "see CAPABILITIES"),
-        "single": F("bool", False, "one process for all clients (default true; false is reserved)"),
+        "single": F("bool", False, "true (the default): one session, `main`, that every client shares. false: the host "
+                                   "may run several sessions side by side, one process each, and a client may start a new "
+                                   "one (1.1; see SESSIONS)"),
     },
 }
 
@@ -282,6 +325,11 @@ APP_API = {
         "state": F("obj", False, "state key -> {doc, data: doc}"),
         "streams": F("obj", False, "blob stream -> {doc, mime, meta: doc}"),
     },
+}
+
+# Host-side limits a peer can rely on.
+LIMITS = {
+    "SESSIONS_PER_APP": 4,     # sessions of one app running at once (manifest `single: false`)
 }
 
 # Host-side timings a peer can rely on.
@@ -400,6 +448,8 @@ def catalogue():
         "max_frame": MAX_FRAME,
         "max_blob_header": MAX_BLOB_HEADER,
         "roles": ROLES,
+        "mvvm": MVVM,
+        "sessions": SESSIONS,
         "directions": DIRECTIONS,
         "types": TYPES,
         "messages": MESSAGES,
@@ -409,6 +459,7 @@ def catalogue():
         "manifest": MANIFEST,
         "app_api": APP_API,
         "timings": TIMINGS,
+        "limits": LIMITS,
     }
 
 
@@ -436,9 +487,15 @@ def render_markdown():
          "| frame | type | payload |", "|---|---|---|"]
     for k, v in FRAMES.items():
         L.append("| %s | %d | %s |" % (k, v["type"], v["payload"]))
-    L += ["", "Browser <-> host: WebSocket `/ws/app/<id>` - JSON messages as text frames, blobs as binary frames "
-          "carrying the blob payload.", "", "## Roles", ""]
+    L += ["", "Browser <-> host: WebSocket `/ws/app/<id>[?session=<id>|new]` - JSON messages as text frames, blobs "
+          "as binary frames carrying the blob payload.", "", "## Roles", ""]
     for k, v in ROLES.items():
+        L.append("- **%s** - %s" % (k, v))
+    L += ["", "## MVVM - what travels and what does not", ""]
+    for k, v in MVVM.items():
+        L.append("- **%s** - %s" % (k, v))
+    L += ["", "## Sessions", ""]
+    for k, v in SESSIONS.items():
         L.append("- **%s** - %s" % (k, v))
     L += ["", "## Types", ""]
     for k, v in TYPES.items():
@@ -469,6 +526,9 @@ def render_markdown():
     L += _fields_md(APP_API["fields"])
     L += ["", "## Timings", "", "| name | value |", "|---|---|"]
     for k, v in TIMINGS.items():
+        L.append("| `%s` | %s |" % (k, v))
+    L += ["", "## Limits", "", "| name | value |", "|---|---|"]
+    for k, v in LIMITS.items():
         L.append("| `%s` | %s |" % (k, v))
     return "\n".join(L) + "\n"
 
