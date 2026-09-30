@@ -189,7 +189,7 @@ IDs are stable: never renumber, mark removed ones `(withdrawn)`.
 
 | ID | Requirement |
 |---|---|
-| APP-01 | The server lists the installed NTWB apps: manifests in `<data dir>/ntwb/apps/<id>/ntwb.json` (XDG data dirs) and manifests registered by path (`apps register`). The list is rescanned on every request (installing needs no restart); an app that cannot run is listed with the reason. |
+| APP-01 | The server lists the installed NTWB apps: manifests in `<data dir>/ntwb/apps/<id>/ntwb.json` (XDG data dirs) and manifests registered by path (`apps register`). The list is rescanned on every request and whenever an app session is launched (installing or reinstalling needs no restart: a new process runs the app, its exec, web dir and API description as installed now); an app that cannot run is listed with the reason. |
 | APP-02 | An app is started and stopped from every controller (web Apps page, CLI `apps launch/stop`); its run state (stopped / starting / running / failed with the reason) and the number of open clients are pushed live (topic `apps`). |
 | APP-03 | The app's own web UI is served at `/apps/<id>/` (with `/ntwb/ntwb.js`, the app's icon and API description) and can be opened inside the launcher or in its own tab. |
 | APP-04 | One app process - a **session** - serves every client that joins it; a client that joins late gets the session's full retained state at once. An app whose manifest says `single: false` may run several sessions side by side (at most `SESSIONS_PER_APP`), each its own process with its own state: a client opens the default session `main`, joins another by id, or starts a new one; clients of different sessions share nothing. |

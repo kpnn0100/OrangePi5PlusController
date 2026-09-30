@@ -437,6 +437,29 @@ def a_raw_app_is_checked(t):
     check(wait_until(lambda: t.c.call("apps.info", app="attachable")["state"] == "stopped", 5), "attached app gone")
 
 
+@test("APP-01", "NTWB-07")
+def a_launch_runs_the_app_as_installed_now(t):
+    """Reinstalling an app (a new API description, exec or web dir) takes effect with its next
+    process, without anybody listing the apps first - Cosmo's install added methods and the host
+    refused them as unknown until a rescan."""
+    d = os.path.join(t.dir, "data", "ntwb", "apps", "fresh")
+    os.makedirs(d, exist_ok=True)
+    api_path = os.path.join(d, "api.json")
+    api = json.load(open(os.path.join(HELLO, "api.json")))
+    api["app"] = "fresh"
+    without = dict(api, methods={k: v for k, v in api["methods"].items() if k != "echo"})
+    json.dump(without, open(api_path, "w"))
+    install_manifest(os.path.join(t.dir, "data"), "fresh", api=api_path)
+    t.c.call("apps.list")
+    r = t.c.request("apps.call", app="fresh", method="echo", params={"x": 1})
+    check(r["ok"] is False and "no method named echo" in r["error"], r)
+    t.c.call("apps.stop", app="fresh")
+    json.dump(api, open(api_path, "w"))                    # the "reinstall": echo is in the API now
+    t.c.call("apps.launch", app="fresh")                   # no apps.list in between
+    check(t.c.call("apps.call", app="fresh", method="echo", params={"x": 2}) == {"x": 2}, "new API in force")
+    t.c.call("apps.stop", app="fresh")
+
+
 def setup():
     t = Instance(["system", "apps"], app="test-ntwb")
     data = os.path.join(t.dir, "data")

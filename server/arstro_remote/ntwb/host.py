@@ -535,6 +535,13 @@ class AppsService:
         with inst.lock:
             if inst.state in ("starting", "running"):
                 return inst
+        # A new process runs the app as it is installed NOW: a reinstall since the last scan may
+        # have changed its exec, web dir or API description (APP-01, NTWB-07) - and its new
+        # methods would otherwise be refused as unknown until somebody listed the apps.
+        self.rescan()
+        with inst.lock:
+            if inst.state in ("starting", "running"):
+                return inst
             app = inst.app
             inst.token = secrets.token_urlsafe(16)
             inst.stopping = False

@@ -11,7 +11,8 @@ import zlib
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 from arstro_remote.ntwb.app import App, MethodError  # noqa: E402
 
-app = App("hello", "1.0.0", capabilities=["blobs"])
+# The manifest id the host launched us as (NTWB_APP_ID), so one program can be installed twice.
+app = App(os.environ.get("NTWB_APP_ID", "hello"), "1.0.0", capabilities=["blobs"])
 counter = {"n": 0}
 
 
