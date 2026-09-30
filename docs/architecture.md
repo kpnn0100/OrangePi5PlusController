@@ -45,6 +45,7 @@ and routes the rest to the owning service (`ROUTES`). Every service has `start()
 | screen | `screen.*`, `in.*` | `ScreenService` (`screen`), input helper | X11 (ximagesrc, XTEST) |
 | io | `io.*` | `IoService` (`io`, `hwio/`) | GPIO chardev uAPI v2, i2c-dev, spidev, termios, sysfs PWM / LEDs / IIO |
 | files | `files.*` + `/api/files/*` | `FilesService` (`files`) | the file system, inside `files_roots` |
+| apps | `apps.*` + `/apps/<id>/`, `/ws/app/<id>`, `/ntwb/ntwb.js` | `AppsService` (`apps`, `ntwb/host.py`) | NTWB: Unix socket to app processes, WebSocket to browsers |
 
 Board-specific knowledge is only *information* in `boards/` (detected by the device-tree
 `compatible`): the Orange Pi 5 Plus 40-pin header (pin → GPIO chip/line, alternate
@@ -52,6 +53,23 @@ functions generated from the board's pinctrl groups). Controller names (`i2c2`, 
 `serial9`) come from the device tree's `aliases` / `__symbols__` (`hwio/dt.py`), which is standard.
 A UART opened by `io.uart.open` is a `SerialTerminal` in the shared `TerminalPool`, so every
 controller attaches to it like to a shell.
+
+## Apps: the NTWB host (APP-01..08, NTWB-01..10)
+
+```
+ browser: /apps/<id>/ (the app's own web UI) + /ntwb/ntwb.js ──WS /ws/app/<id>──┐
+ CLI / agent: apps.call, apps.state ─────────────────────────────── OpClient ──┤
+                                                                               ▼
+ AppsService ── AppInstance(id): clients, retained state, pending calls (host ids) ──┐
+      │  launches manifest.exec with NTWB_SOCKET / NTWB_TOKEN                         │
+      └── $XDG_RUNTIME_DIR/<instance>-ntwb.sock (0600) ◄── hello / result / event / state / blobs ── app process
+```
+
+The protocol is defined once in `ntwb/spec.py` (validation + generated `docs/ntwb/API.md`,
+`api.json`); `ntwb/wire.py` is the framing, `ntwb/registry.py` the manifests, `ntwb/app.py` the
+Python SDK for apps, `web/static/ntwb/ntwb.js` the web SDK. The host never interprets an app's
+methods: it validates, rewrites call ids, routes, retains `state`, coalesces blobs per client
+and supervises the process. See [ntwb/NTWB.md](ntwb/NTWB.md).
 
 ## Slots A/B (ADM-06)
 
@@ -140,6 +158,9 @@ The app gets the web addresses and the password over Bluetooth (`web.info`), pro
 | `server/arstro_remote/modules.py`, `system.py`, `files.py`, `netconf.py` | module table, System/Logs, Files, Connection services |
 | `server/arstro_remote/hwio/` | IO Control: `gpio.py`, `i2c.py`, `spi.py`, `uart.py`, `sysfs.py` (PWM, LEDs, ADC), `dt.py`, `service.py` |
 | `server/arstro_remote/boards/` | board modules (pin headers) |
+| `server/arstro_remote/ntwb/` | the NTWB protocol (`spec.py`), framing, manifests, the Apps host, the Python app SDK |
+| `server/examples/ntwb/hello/` | the example NTWB app (Python SDK + web UI), also the test fixture |
+| `docs/ntwb/` | NTWB narrative (`NTWB.md`) and the generated reference (`API.md`, `api.json`) |
 | `server/arstro_remote/recorder/` | recorder service, worker, capture pipeline, jobs, gallery library |
 | `server/arstro_remote/web/` | HTTP/WebSocket server and the web UI (`static/`, no build step) |
 | `server/tests/` | requirement-tagged tests (`harness.py`; `test_modules.py` starts its own throwaway instance), browser tests in `tests/web/` |

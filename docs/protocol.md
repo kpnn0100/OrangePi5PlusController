@@ -66,6 +66,7 @@ Pushed to every session whenever they change (whoever changed them), newest valu
 | `net` | `{devices: [...net.devices], connections: [...net.connections]}` (polled every ~30 s and after every change) |
 | `io.gpio` | `{held: [{chip, line, pin, mode, bias, drive, active_low, edge, debounce_us, value, events}], events: [{chip, line, pin, edge: rising\|falling, t}]}` (latest 20 events) |
 | `io.pwm` | the `io.pwm.list` chips after a change |
+| `apps` | the `apps.list` apps (run state, clients) |
 
 Other events: `stats` `{data}` (after `stats.subscribe`), `term.exit` `{term, code, reason?}`.
 
@@ -156,6 +157,13 @@ Other events: `stats` `{data}` (after `stats.subscribe`), `term.exit` `{term, co
 | `files.roots` / `files.list` | `path?, hidden?` (list) | `{roots}` / `{path, parent, root, entries: [{name, path, type, size, mtime, mode, target?}], writable}` |
 | `files.stat` / `files.read` / `files.write` | `path` (+ `max?, tail?` / `text`) | entry / `{text, size, truncated}` / entry |
 | `files.mkdir` / `files.rename` / `files.delete` | `dir + name` or `path` / `path, to` / `path, recursive?` | entry / entry / `{deleted}` |
+| `apps.list` | | `{apps: [{id, name, version, description, icon, origin, problem, state: stopped\|starting\|running\|failed, detail, pid, clients, started, running_version, api, capabilities}], ntwb, socket, search, registered}` (rescans) |
+| `apps.info` / `apps.api` | `app` | the app + manifest, argv, log path, state keys / its API description |
+| `apps.launch` / `apps.stop` | `app`, `wait?` | the app (APP-02) |
+| `apps.call` | `app, method, params?, timeout?` | the method's result - the same route a browser call takes (APP-08) |
+| `apps.state` | `app, key?` | `{state}` or `{key, data}` - the retained NTWB state |
+| `apps.log` | `app, lines?, grep?` | `{id, path, lines}` |
+| `apps.register` / `apps.unregister` | `path` (ntwb.json or its dir) | the app / `{registered}` |
 | `files.upload_check` | `dir, name, overwrite?` | `{path, exists}` - call before a big upload |
 
 Gallery items carry `verified` (`{raw, frames, checked}` for an FFV1 proven identical to its RAW, else null).
@@ -177,6 +185,9 @@ Take ids are `REC_YYYYMMDD_HHMMSS`; its files are `<take>.arh` (RAW), `<take>_H2
 | `GET /api/thumb/<take>` | JPEG thumbnail |
 | `POST /api/op/<op>` | one op, JSON body → `{ok, data \| error}` |
 | `GET /api/files/download?path=P` | a file of the Files module (HTTP Range); `&inline=1` to show instead of save |
+| `GET /apps/<id>/[file]` | an NTWB app's web UI; `/apps/<id>/icon`, `/apps/<id>/api.json`; unauthenticated → 302 to the login |
+| `GET /ws/app/<id>` | WebSocket: an NTWB client of the app - see [ntwb/NTWB.md](ntwb/NTWB.md), [ntwb/API.md](ntwb/API.md) |
+| `GET /ntwb/ntwb.js` | the NTWB web SDK |
 | `PUT /api/files/upload?dir=D&name=N[&overwrite=1]` | raw body (Content-Length required) streamed to `D/N` → `{ok, data: entry}` |
 
 Credentials: the cookie, `Authorization: Bearer <password>`, or `?token=<password>`. Requests

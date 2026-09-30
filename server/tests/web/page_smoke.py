@@ -96,7 +96,10 @@ try:
         "io/pins", "io/i2c", "io/spi", "io/uart", "io/pwm", "io/adc", "files", "system/system", "system/logs"]
     for r in routes:
         before = len(errors)
-        call("Runtime.evaluate", expression="location.hash = '#/%s'" % r)
+        if r.startswith("/"):                               # a page of its own (an app's web UI)
+            call("Page.navigate", url=base + r)
+        else:
+            call("Runtime.evaluate", expression="location.hash = '#/%s'" % r)
         pump(3.5)
         res = call("Runtime.evaluate", expression="JSON.stringify({view: document.querySelector('.view') && document.querySelector('.view').dataset.view, "
                                                   "w: document.documentElement.scrollWidth, text: (document.querySelector('.content')||document.body).innerText.slice(0,160)})",
@@ -111,7 +114,7 @@ try:
                                              info["text"].replace("\n", " / ")[:110]))
         for e in errors[before:]:
             print("      ", e)
-        if overflow or len(errors) > before or info["view"] is None:
+        if overflow or len(errors) > before or (info["view"] is None and not r.startswith("/")):
             failed += 1
 finally:
     proc.kill()

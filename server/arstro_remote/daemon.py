@@ -73,6 +73,7 @@ class Daemon:
         self.files = None
         self.conn = None
         self.system = None
+        self.apps = None
         self.loop = None
         self._lock_file = None
 
@@ -299,12 +300,17 @@ class Daemon:
             from .system import SystemService
             return SystemService(ctx)
 
+        def apps(ctx):
+            from .ntwb.host import AppsService
+            return AppsService(ctx)
+
         self._start("system", "system", system, "system module")
         self._start("camera", "recorder", recorder, "camera (recorder)")
         self._start("screen", "screen", screen, "remote screen")
         self._start("io", "io", io, "IO control")
         self._start("files", "files", files, "files")
         self._start("connection", "conn", conn, "connection")
+        self._start("apps", "apps", apps, "apps (NTWB host)")
         if self.config.get("web_enabled", True):
             try:
                 from .web.server import WebServer
@@ -376,7 +382,7 @@ class Daemon:
                 sessions = list(self.sessions)
             for s in sessions:
                 s.close("server stopping")
-            for name in ("recorder", "screen", "io", "files", "conn", "system"):
+            for name in ("apps", "recorder", "screen", "io", "files", "conn", "system"):
                 svc = getattr(self, name)
                 if svc:
                     try:

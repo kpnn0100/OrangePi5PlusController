@@ -22,20 +22,41 @@ link and the plain `arstro-remote` command. An old, unslotted install (`arstro-r
 `~/.config/arstro-remote/`, port 8080, `~/.local/bin/arstro-remote-launcher`) counts as slot A
 until it is migrated.
 
-## Rule zero
+## Rule zero - ask which slot hosts THIS session, every time, before any deploy
 
-**Find the slot that serves the running session and never touch it.** If you (or the user)
-work in a web terminal on port 8080, slot A hosts your shell: reinstalling or restarting A kills
-it. Check: `echo $ARSTRO_REMOTE` (set inside server shells), the port in the browser, and
-`ss -ltnp | grep -E ':808[0-9]'` + `/proc/<pid>/environ` (`ARSTRO_SLOT=`). The other slot is
-the idle one - deploy there.
+**Run this first, from the shell you will deploy from:**
+
+```bash
+arstro-remote slots            # or, from the repo:  cd server && python3 -m arstro_remote slots
+#   b       port 8081  running  pid 71117  <- THIS SESSION (do not reinstall/restart)
+#   legacy  port 8080  running  pid 2123
+#   deploy into: a
+arstro-remote slots --idle     # just the answer: the slot to deploy into
+```
+
+It walks this process's parents up to a slot's daemon (its pid is in
+`$XDG_RUNTIME_DIR/arstro-remote-<slot>.lock`): a shell in a web terminal - and the agent or
+`install.sh` started from it - is a child of the slot that serves that terminal, so
+reinstalling or restarting that slot kills the shell mid-deploy. **Deploy only into the slot
+`--idle` names.** The session moves between slots over time (after a switch the user works on
+the other port), so never assume "B is the test slot" - ask every time.
+
+`install.sh` enforces it: started from inside slot X it refuses `--slot X` (and a `legacy`
+host counts as slot A, whose port it owns) unless `--force-own-session` - use that only when
+the user asked for it and knows the terminal will die. `--no-start` into the own slot is
+allowed (files only; the running daemon keeps its code until it restarts).
+
+When the session is not inside any slot (`slots --current` prints `-`: SSH, the desktop's
+own terminal), both slots are safe to touch as far as *you* are concerned - but the **user**
+may be working in one: check which port their browser uses before restarting it.
 
 ## Update (the normal case)
 
 1. **Commit first** (the deploy installs the working tree; the commit is the version).
-2. **Install into the idle slot** - on the machine, from the repository:
+2. **Install into the idle slot** - the one `arstro-remote slots --idle` names - on the machine,
+   from the repository:
    ```bash
-   ./install.sh --slot b --yes          # keeps B's config and password; restarts only B
+   ./install.sh --slot "$(cd server && python3 -m arstro_remote slots --idle)" --yes
    ```
    From a dev PC: `scripts/setup_pi.sh --slot b user@<host>`. The installer swaps the code
    atomically, restarts that slot's daemon through its launcher and waits until it answers.

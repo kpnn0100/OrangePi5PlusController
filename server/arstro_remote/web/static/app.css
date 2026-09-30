@@ -662,3 +662,12 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 @media (max-width: 899px) { .logview { height: calc(100vh - 300px - var(--tab-h)); } }
 .logview .WARNING { color: var(--warn); } .logview .ERROR, .logview .CRITICAL { color: var(--err); }
 .logview .DEBUG { color: var(--muted); }
+
+/* ------------------------------------------------------------------- apps (NTWB) */
+.app-card { display: flex; flex-direction: column; }
+.app-icon { width: 48px; height: 48px; border-radius: 13px; flex: none; object-fit: cover; }
+.app-icon.ph { display: grid; place-items: center; background: var(--card-3); color: var(--muted); }
+.app-bar { display: flex; align-items: center; gap: 8px; margin: -8px 0 10px; min-width: 0; }
+.app-frame { display: block; width: 100%; height: calc(100vh - 120px); border: 1px solid var(--line); border-radius: var(--r);
+             background: var(--bg-2); }
+@media (max-width: 899px) { .app-frame { height: calc(100vh - 150px - var(--tab-h)); } .app-bar { margin-top: 0; } }

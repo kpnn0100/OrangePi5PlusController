@@ -12,6 +12,9 @@
   GET  /api/thumb/<clip>      JPEG thumbnail of a take
   GET  /api/files/download?path=P    a file of the Files module (FILE-03)
   PUT  /api/files/upload?dir=D&name=N[&overwrite=1]   raw body -> D/N (FILE-02)
+  GET  /apps/<id>/[file]      an NTWB app's web UI (APP-04); /apps/<id>/icon, /apps/<id>/api.json
+  GET  /ws/app/<id>           WebSocket: an NTWB client of the app (docs/ntwb/API.md)
+  GET  /ntwb/ntwb.js          the NTWB web SDK the app pages load
   POST /api/op/<op>           REST shim: run any op with a JSON body -> {"ok", "data"|"error"}
 
 Everything except / and /api/ping needs the access password (SEC-03): the login cookie
@@ -49,6 +52,8 @@ COOKIE = "arstro_token"          # + "_<port>"
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
        "media-src 'self' blob:; connect-src 'self' ws: wss:; object-src 'none'; base-uri 'none'; "
        "frame-ancestors 'none'; form-action 'self'")
+
+APP_CSP = CSP.replace("frame-ancestors 'none'", "frame-ancestors 'self'")
 
 MIME = {".arh": "application/octet-stream", ".mkv": "video/x-matroska", ".mov": "video/quicktime",
         ".mp4": "video/mp4", ".js": "text/javascript", ".mjs": "text/javascript",
@@ -261,6 +266,12 @@ class Handler(BaseHTTPRequestHandler):
             if not self._origin_ok():
                 return self._forbid()
             if not self._authorized():
+                if path.startswith("/apps/"):              # a bookmark of an app page: sign in first
+                    self.send_response(HTTPStatus.FOUND)
+                    self.send_header("Location", "/#/apps?open=" + urllib.parse.quote(path[6:].split("/")[0]))
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 return self._deny()
             if path == "/ws":
                 return self._websocket()
@@ -268,6 +279,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._preview()
             if path == "/ws/screen":
                 return self._screen()
+            if path.startswith("/ws/app/"):
+                return self._app_ws(urllib.parse.unquote(path[len("/ws/app/"):]))
+            if path == "/ntwb/ntwb.js":
+                return self._static("ntwb/ntwb.js", head)
+            if path.startswith("/apps/"):
+                return self._app_file(path[len("/apps/"):], head)
             if path.startswith("/api/media/"):
                 return self._media(urllib.parse.unquote(path[len("/api/media/"):]), head)
             if path.startswith("/api/thumb/"):
@@ -365,10 +382,13 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json({"ok": True, "data": entry})
 
     # -------------------------------------------------------------- static
-    def _static(self, rel, head):
-        full = os.path.realpath(os.path.join(STATIC, rel))
-        if not full.startswith(os.path.realpath(STATIC) + os.sep) or not os.path.isfile(full):
-            return self.send_error(HTTPStatus.NOT_FOUND)
+    def _static(self, rel, head, app_page=False):
+        if app_page:                                   # already resolved inside the app's web dir
+            full = rel
+        else:
+            full = os.path.realpath(os.path.join(STATIC, rel))
+            if not full.startswith(os.path.realpath(STATIC) + os.sep) or not os.path.isfile(full):
+                return self.send_error(HTTPStatus.NOT_FOUND)
         st = os.stat(full)
         etag = '"%x-%x"' % (int(st.st_mtime_ns // 1000), st.st_size)
         ext = os.path.splitext(full)[1].lower()
@@ -389,8 +409,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("ETag", etag)
         self.send_header("X-Content-Type-Options", "nosniff")
         if ext == ".html":
-            self.send_header("Content-Security-Policy", CSP)
-            self.send_header("X-Frame-Options", "DENY")
+            # an app page may be framed by the launcher (same origin), the launcher itself never
+            self.send_header("Content-Security-Policy", APP_CSP if app_page else CSP)
+            self.send_header("X-Frame-Options", "SAMEORIGIN" if app_page else "DENY")
             self.send_header("Referrer-Policy", "no-referrer")
         self.end_headers()
         if not head:
@@ -419,6 +440,44 @@ class Handler(BaseHTTPRequestHandler):
         kind = "web" if self.headers.get("Origin") else "remote"
         session = self.web.ctx.add_session(ws.WSStream(conn), "%s:%d" % self.client_address[:2], kind)
         session._closed.wait()            # keep this handler thread until the session ends
+
+    # ---------------------------------------------------------------- NTWB apps
+    def _apps(self):
+        apps = self.web.ctx.apps
+        if apps is None:
+            self._send_json({"ok": False, "error": "the Apps module is not enabled"}, 404)
+        return apps
+
+    def _app_ws(self, app_id):
+        apps = self._apps()
+        if apps is None:
+            return
+        conn = self._upgrade()
+        if conn is None:
+            return
+        apps.serve_web(conn, app_id, "%s:%d" % self.client_address[:2])
+
+    def _app_file(self, rest, head):
+        apps = self._apps()
+        if apps is None:
+            return
+        app_id, slash, rel = rest.partition("/")
+        if not slash:                                  # /apps/cosmo -> /apps/cosmo/ (relative URLs)
+            self.send_response(HTTPStatus.MOVED_PERMANENTLY)
+            self.send_header("Location", "/apps/%s/" % urllib.parse.quote(app_id))
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        rel = urllib.parse.unquote(rel)
+        if rel == "api.json":
+            try:
+                return self._send_json(apps.op_apps_api(None, {"app": app_id}))
+            except Exception as e:                     # noqa: BLE001 - OpError: no such app
+                return self._send_json({"ok": False, "error": str(e)}, 404)
+        full = apps.web_file(app_id, rel)
+        if not full:
+            return self.send_error(HTTPStatus.NOT_FOUND)
+        self._static(full, head, app_page=True)
 
     def _preview(self):
         rec = self.web.ctx.recorder

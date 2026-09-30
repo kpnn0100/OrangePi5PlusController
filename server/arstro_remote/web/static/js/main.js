@@ -18,6 +18,7 @@ import screen from "./views/screen.js";
 import system from "./views/system.js";
 import logs from "./views/logs.js";
 import files from "./views/files.js";
+import apps from "./views/apps.js";
 import { pins, i2c, spi, uart, pwm, adc } from "./views/io.js";
 
 const GROUPS = [
@@ -30,6 +31,7 @@ const GROUPS = [
   { id: "io", title: "IO Control", short: "IO", icon: "chip", module: "io",
     pages: [[pins, "Pins"], [i2c, "I2C"], [spi, "SPI"], [uart, "UART"], [pwm, "PWM & LEDs"], [adc, "ADC"]] },
   { id: "files", title: "Files", icon: "folder", module: "files", pages: [[files, "Files"]] },
+  { id: "apps", title: "Apps", icon: "apps", module: "apps", pages: [[apps, "Apps"]] },
   { id: "system", title: "System", icon: "system", module: "system", pages: [[system, "System"], [logs, "Logs"]] },
 ];
 let VIEWS = GROUPS;         // the groups this server offers (set from hello)

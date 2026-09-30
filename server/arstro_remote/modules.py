@@ -26,6 +26,7 @@ MODULES = {
     "screen": ("Screen", ("screen.", "in."), "the desktop, remote keyboard and mouse"),
     "io": ("IO Control", ("io.",), "GPIO, I2C, SPI, UART, PWM, LEDs, ADC"),
     "files": ("Files", ("files.",), "browse, upload and download files"),
+    "apps": ("Apps", ("apps.",), "native apps with a web UI through the NTWB bridge"),
 }
 ALWAYS = ("system",)          # needed to manage the server itself
 

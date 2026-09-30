@@ -31,6 +31,7 @@
 #   --no-perms            do not set up device permissions (udev rules, groups)
 #   --no-start            install only
 #   --uninstall           stop and remove this slot (config and logs stay; --purge removes them)
+#   --force-own-session   install into the slot that hosts THIS shell anyway (it gets killed)
 #   -y, --yes             never ask (password defaults to "admin" for a new slot)
 set -euo pipefail
 
@@ -38,7 +39,7 @@ SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CODE="$SRC"                                   # the installed copy lives in <slot>/bin/
 [ -d "$CODE/arstro_remote" ] || [ ! -d "$SRC/../arstro_remote" ] || CODE="$(cd "$SRC/.." && pwd)"
 SLOT=a PORT="" PASSWORD="" MODULES="all" BT="" BOOT="" ACTIVATE=0
-DEPS=1 PERMS=1 START=1 UNINSTALL=0 PURGE=0 YES=0
+DEPS=1 PERMS=1 START=1 UNINSTALL=0 PURGE=0 YES=0 FORCE_OWN=0
 
 usage() { sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p}' "$0"; exit "${1:-0}"; }
 while [ $# -gt 0 ]; do
@@ -56,6 +57,7 @@ while [ $# -gt 0 ]; do
         --uninstall) UNINSTALL=1; shift ;;
         --purge) PURGE=1; shift ;;
         -y|--yes) YES=1; shift ;;
+        --force-own-session) FORCE_OWN=1; shift ;;
         -h|--help) usage 0 ;;
         *) echo "unknown option $1" >&2; usage 2 ;;
     esac
@@ -121,6 +123,21 @@ stop_slot() {
     [ -n "$dp" ] && kill "$dp" 2>/dev/null || true
     for _ in $(seq 1 30); do [ -z "$(daemon_pid)" ] && break; sleep 0.5; done
 }
+
+# ------------------------------------------------------------------ rule zero (ADM-08)
+# A shell in a slot's web terminal is that slot's child: reinstalling or restarting that slot
+# kills the shell running this script (and whatever started it). Refuse, and name the idle slot.
+HOST_SLOT=$(PYTHONPATH="$CODE" python3 -c "import os; from arstro_remote import slots; print(slots.current($$) or '-')" 2>/dev/null || echo -)
+# (--no-start only swaps files; the running daemon keeps its code until it restarts, so that is safe)
+if { [ "$HOST_SLOT" = "$SLOT" ] || { [ "$HOST_SLOT" = legacy ] && [ "$SLOT" = a ]; }; } &&
+   { [ "$START" = 1 ] || [ "$UNINSTALL" = 1 ]; }; then
+    IDLE=$(PYTHONPATH="$CODE" python3 -c "from arstro_remote import slots; print(slots.idle($$) or '-')" 2>/dev/null)
+    if [ "$FORCE_OWN" = 1 ]; then
+        warn "this shell runs inside slot $HOST_SLOT - it will be killed by this install (--force-own-session)"
+    else
+        die "this shell runs inside slot $HOST_SLOT: installing slot $SLOT_UP would kill it. Deploy into the idle slot (--slot ${IDLE:-?}), or pass --force-own-session"
+    fi
+fi
 
 # ------------------------------------------------------------------ uninstall
 if [ "$UNINSTALL" = 1 ]; then

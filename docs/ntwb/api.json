@@ -1,0 +1,544 @@
+{
+  "app_api": {
+    "fields": {
+      "app": {
+        "doc": "app id",
+        "required": true,
+        "type": "name"
+      },
+      "events": {
+        "doc": "event name -> {doc, data: doc}",
+        "required": false,
+        "type": "obj"
+      },
+      "methods": {
+        "doc": "method name -> {doc, params: {name: {type, required, doc}}, result: doc}",
+        "required": true,
+        "type": "obj"
+      },
+      "ntwb": {
+        "doc": "protocol version",
+        "required": true,
+        "type": "version"
+      },
+      "state": {
+        "doc": "state key -> {doc, data: doc}",
+        "required": false,
+        "type": "obj"
+      },
+      "streams": {
+        "doc": "blob stream -> {doc, mime, meta: doc}",
+        "required": false,
+        "type": "obj"
+      }
+    }
+  },
+  "blob_header": {
+    "dir": [
+      "a2h",
+      "h2c"
+    ],
+    "doc": "Binary data (images, audio, files) without base64. App -> host -> clients only.",
+    "fields": {
+      "client": {
+        "doc": "towards the host only: deliver to this client alone",
+        "required": false,
+        "type": "id"
+      },
+      "coalesce": {
+        "doc": "true for live streams (previews): while this blob waits in a slow client's queue, a newer blob of the same stream replaces it. Default false: every blob is delivered (thumbnails, files)",
+        "required": false,
+        "type": "bool"
+      },
+      "meta": {
+        "doc": "stream-specific metadata (size, sequence, the call it answers ...)",
+        "required": false,
+        "type": "obj"
+      },
+      "mime": {
+        "doc": "media type of the data, e.g. image/jpeg",
+        "required": true,
+        "type": "str"
+      },
+      "stream": {
+        "doc": "which stream in the app's API, e.g. `preview`, `thumb`",
+        "required": true,
+        "type": "name"
+      }
+    }
+  },
+  "capabilities": {
+    "attach": "the app may be running before the host (started by hand) and attach to it",
+    "blobs": "the app sends binary streams"
+  },
+  "directions": {
+    "a2h": "app -> host (socket)",
+    "c2h": "client -> host (WebSocket)",
+    "h2a": "host -> app (socket)",
+    "h2c": "host -> client (WebSocket)"
+  },
+  "environment": {
+    "NTWB_APP_ID": "the manifest id the host launched",
+    "NTWB_DATA_DIR": "a writable directory for the app's own data under the host's state dir",
+    "NTWB_HOST": "name of the host program (arstro-remote)",
+    "NTWB_SOCKET": "path of the host's Unix socket to connect to",
+    "NTWB_TOKEN": "one-time token to send in `hello`",
+    "NTWB_VERSION": "the host's protocol version"
+  },
+  "frames": {
+    "blob": {
+      "payload": "[header length u16 BE][header: UTF-8 JSON object, see BLOB_HEADER][data bytes]",
+      "type": 2
+    },
+    "json": {
+      "payload": "one UTF-8 JSON object: a message from MESSAGES",
+      "type": 1
+    }
+  },
+  "manifest": {
+    "fields": {
+      "api": {
+        "doc": "path of the app's API description (see APP_API), relative to the manifest directory",
+        "required": false,
+        "type": "str"
+      },
+      "capabilities": {
+        "doc": "see CAPABILITIES",
+        "required": false,
+        "type": "list[str]"
+      },
+      "cwd": {
+        "doc": "working directory (default: the manifest directory)",
+        "required": false,
+        "type": "str"
+      },
+      "description": {
+        "doc": "one sentence for the app list",
+        "required": false,
+        "type": "str"
+      },
+      "env": {
+        "doc": "extra environment variables (string values)",
+        "required": false,
+        "type": "obj"
+      },
+      "exec": {
+        "doc": "argv to launch the adapter; first element absolute or relative to the manifest dir",
+        "required": true,
+        "type": "list[str]"
+      },
+      "icon": {
+        "doc": "path of an SVG/PNG icon, relative to the manifest directory",
+        "required": false,
+        "type": "str"
+      },
+      "id": {
+        "doc": "unique app id; also the directory name and the URL path /apps/<id>/",
+        "required": true,
+        "type": "name"
+      },
+      "name": {
+        "doc": "display name",
+        "required": true,
+        "type": "str"
+      },
+      "ntwb": {
+        "doc": "protocol version the app speaks",
+        "required": true,
+        "type": "version"
+      },
+      "single": {
+        "doc": "one process for all clients (default true; false is reserved)",
+        "required": false,
+        "type": "bool"
+      },
+      "version": {
+        "doc": "the app's version",
+        "required": true,
+        "type": "str"
+      },
+      "web": {
+        "doc": "directory with the web UI (index.html), relative to the manifest directory",
+        "required": true,
+        "type": "str"
+      }
+    },
+    "file": "<data dir>/ntwb/apps/<id>/ntwb.json - searched in $XDG_DATA_HOME (default ~/.local/share), then each of $XDG_DATA_DIRS (default /usr/local/share:/usr/share); the first wins"
+  },
+  "max_blob_header": 16384,
+  "max_frame": 67108864,
+  "messages": {
+    "bye": {
+      "dir": [
+        "a2h",
+        "h2a"
+      ],
+      "doc": "Orderly end. From the host: the app should save and exit (it is killed after STOP_GRACE_S). From the app: it is about to exit.",
+      "fields": {
+        "reason": {
+          "doc": "why",
+          "required": false,
+          "type": "str"
+        }
+      }
+    },
+    "call": {
+      "dir": [
+        "c2h",
+        "h2a"
+      ],
+      "doc": "A request. The host adds `client` and forwards it to the app; the app must answer with `result` carrying the same `id`. Methods are the app's own API (its manifest `api` lists them).",
+      "fields": {
+        "client": {
+          "doc": "set by the host towards the app; a client never sends it",
+          "required": false,
+          "type": "id"
+        },
+        "id": {
+          "doc": "chosen by the caller, unique among its open calls",
+          "required": true,
+          "type": "id"
+        },
+        "method": {
+          "doc": "the app method",
+          "required": true,
+          "type": "name"
+        },
+        "params": {
+          "doc": "the method's arguments (default {})",
+          "required": false,
+          "type": "obj"
+        }
+      }
+    },
+    "client.close": {
+      "dir": [
+        "h2a"
+      ],
+      "doc": "A client went away; per-client resources (subscriptions, streams) can be freed.",
+      "fields": {
+        "client": {
+          "doc": "the client",
+          "required": true,
+          "type": "id"
+        }
+      }
+    },
+    "client.open": {
+      "dir": [
+        "h2a"
+      ],
+      "doc": "A client attached to the app.",
+      "fields": {
+        "client": {
+          "doc": "the client",
+          "required": true,
+          "type": "id"
+        },
+        "info": {
+          "doc": "{peer, controller}: where it connects from",
+          "required": false,
+          "type": "obj"
+        }
+      }
+    },
+    "error": {
+      "dir": [
+        "h2a",
+        "h2c"
+      ],
+      "doc": "The peer sent something the protocol does not allow (unknown message, bad field, unknown method...). The offending message was dropped.",
+      "fields": {
+        "about": {
+          "doc": "the offending message type or call id",
+          "required": false,
+          "type": "str"
+        },
+        "error": {
+          "doc": "what was wrong",
+          "required": true,
+          "type": "str"
+        }
+      }
+    },
+    "event": {
+      "dir": [
+        "a2h",
+        "h2c"
+      ],
+      "doc": "Something happened. To every client of the app, or to one when `client` is set.",
+      "fields": {
+        "client": {
+          "doc": "towards the host only: deliver to this client alone",
+          "required": false,
+          "type": "id"
+        },
+        "data": {
+          "doc": "payload",
+          "required": false,
+          "type": "any"
+        },
+        "name": {
+          "doc": "the event's name in the app's API",
+          "required": true,
+          "type": "name"
+        }
+      }
+    },
+    "hello": {
+      "dir": [
+        "a2h"
+      ],
+      "doc": "First message on an app connection. The host answers `welcome`, or `error` and closes.",
+      "fields": {
+        "app": {
+          "doc": "the app id, as in its manifest",
+          "required": true,
+          "type": "name"
+        },
+        "capabilities": {
+          "doc": "optional features the app uses: see CAPABILITIES",
+          "required": false,
+          "type": "list[str]"
+        },
+        "ntwb": {
+          "doc": "protocol version the app speaks; the MAJOR must equal the host's",
+          "required": true,
+          "type": "version"
+        },
+        "pid": {
+          "doc": "process id, for the host's process view",
+          "required": false,
+          "type": "int"
+        },
+        "token": {
+          "doc": "NTWB_TOKEN from the environment when the host launched the app; an app started by hand may attach without one if its manifest allows `attach`",
+          "required": false,
+          "type": "str"
+        },
+        "version": {
+          "doc": "the app's own version (shown to users)",
+          "required": true,
+          "type": "str"
+        }
+      }
+    },
+    "log": {
+      "dir": [
+        "a2h"
+      ],
+      "doc": "A line for the host's log of this app (System > Logs, `arstro-remote apps log`).",
+      "fields": {
+        "level": {
+          "doc": "severity",
+          "required": true,
+          "type": "enum:debug|info|warning|error"
+        },
+        "msg": {
+          "doc": "the line; never secrets",
+          "required": true,
+          "type": "str"
+        }
+      }
+    },
+    "notify": {
+      "dir": [
+        "c2h",
+        "h2a"
+      ],
+      "doc": "A request without a reply (pointer moves, slider drags). Same routing as `call`.",
+      "fields": {
+        "client": {
+          "doc": "set by the host towards the app",
+          "required": false,
+          "type": "id"
+        },
+        "method": {
+          "doc": "the app method",
+          "required": true,
+          "type": "name"
+        },
+        "params": {
+          "doc": "the method's arguments (default {})",
+          "required": false,
+          "type": "obj"
+        }
+      }
+    },
+    "ping": {
+      "dir": [
+        "h2a"
+      ],
+      "doc": "Liveness check; the app answers `pong` with the same `n`.",
+      "fields": {
+        "n": {
+          "doc": "sequence number",
+          "required": true,
+          "type": "int"
+        }
+      }
+    },
+    "pong": {
+      "dir": [
+        "a2h"
+      ],
+      "doc": "Answer to `ping`.",
+      "fields": {
+        "n": {
+          "doc": "the ping's number",
+          "required": true,
+          "type": "int"
+        }
+      }
+    },
+    "ready": {
+      "dir": [
+        "h2c"
+      ],
+      "doc": "The app is connected. Carries the app's retained state, so a client is complete at once.",
+      "fields": {
+        "app": {
+          "doc": "{id, name, version} of the connected app",
+          "required": true,
+          "type": "obj"
+        },
+        "client": {
+          "doc": "this client's id (what the app sees in `call.client`)",
+          "required": true,
+          "type": "id"
+        },
+        "ntwb": {
+          "doc": "protocol version of the host",
+          "required": true,
+          "type": "version"
+        },
+        "state": {
+          "doc": "every retained state key -> its latest data (see `state`)",
+          "required": true,
+          "type": "obj"
+        }
+      }
+    },
+    "result": {
+      "dir": [
+        "a2h",
+        "h2c"
+      ],
+      "doc": "The answer to one `call`. The host routes it to the client that made the call.",
+      "fields": {
+        "data": {
+          "doc": "the method's result when ok",
+          "required": false,
+          "type": "any"
+        },
+        "error": {
+          "doc": "a sentence a user understands, when not ok",
+          "required": false,
+          "type": "str"
+        },
+        "id": {
+          "doc": "the call's id",
+          "required": true,
+          "type": "id"
+        },
+        "ok": {
+          "doc": "false = the call failed; `error` says why",
+          "required": true,
+          "type": "bool"
+        }
+      }
+    },
+    "state": {
+      "dir": [
+        "a2h",
+        "h2c"
+      ],
+      "doc": "Observable state. The host retains the newest `data` per `key` and replays all keys in `ready`, so a client that (re)connects is complete without asking. `data: null` deletes the key.",
+      "fields": {
+        "data": {
+          "doc": "the whole new value (not a delta)",
+          "required": true,
+          "type": "any"
+        },
+        "key": {
+          "doc": "state key in the app's API",
+          "required": true,
+          "type": "name"
+        }
+      }
+    },
+    "status": {
+      "dir": [
+        "h2c"
+      ],
+      "doc": "Where the app's process is: sent on connect and on every change.",
+      "fields": {
+        "detail": {
+          "doc": "why (exit code, launch error, ...)",
+          "required": false,
+          "type": "str"
+        },
+        "state": {
+          "doc": "starting = launched, waiting for `hello`",
+          "required": true,
+          "type": "enum:starting|running|stopped|failed"
+        }
+      }
+    },
+    "welcome": {
+      "dir": [
+        "h2a"
+      ],
+      "doc": "The host accepted `hello`. From here on both sides may send any message of their direction.",
+      "fields": {
+        "clients": {
+          "doc": "clients already waiting for the app; each also gets `client.open`",
+          "required": true,
+          "type": "list[str]"
+        },
+        "host": {
+          "doc": "{name, version} of the host",
+          "required": true,
+          "type": "obj"
+        },
+        "ntwb": {
+          "doc": "protocol version of the host",
+          "required": true,
+          "type": "version"
+        },
+        "session": {
+          "doc": "this app connection",
+          "required": true,
+          "type": "id"
+        }
+      }
+    }
+  },
+  "protocol": "ntwb",
+  "roles": {
+    "app": "a native program with an NTWB adapter; it keeps its core and state, the host never interprets its methods",
+    "client": "a browser page (the app's web UI, with ntwb.js) or any other front end that speaks the WebSocket side",
+    "host": "Arstro Remote: registers apps, launches them, serves their web UI and relays between app and clients"
+  },
+  "timings": {
+    "HELLO_TIMEOUT_S": 20,
+    "PING_INTERVAL_S": 15,
+    "PONG_TIMEOUT_S": 30,
+    "STOP_GRACE_S": 5
+  },
+  "title": "NTWB - native-to-web bridge",
+  "types": {
+    "any": "any JSON value, null included",
+    "bool": "true or false",
+    "enum": "one of the listed strings",
+    "id": "string of 1-64 characters from A-Z a-z 0-9 . _ : -",
+    "int": "a JSON integer",
+    "list[str]": "a JSON array of strings",
+    "name": "string: a lower-case letter, then up to 63 of a-z 0-9 . _ -",
+    "num": "a JSON number",
+    "obj": "a JSON object",
+    "str": "a JSON string",
+    "version": "string: semantic version MAJOR.MINOR.PATCH"
+  },
+  "version": "1.0.0"
+}

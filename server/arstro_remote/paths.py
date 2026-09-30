@@ -42,6 +42,8 @@ DEFAULT_CONFIG = {
     "camera_device": None,
     # Files module (FILE-01): folders a controller may browse, upload to and download from
     "files_roots": ["~"],
+    # Apps (APP-01): NTWB manifests registered by path, besides the installed ones
+    "apps_registered": [],
     # Logging (LOG-01): "debug" | "info" | "warning"
     "log_level": "info",
     # Poll Wi-Fi status this often so changes made outside the server are pushed too

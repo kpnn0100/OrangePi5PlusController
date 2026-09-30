@@ -123,6 +123,7 @@ IDs are stable: never renumber, mark removed ones `(withdrawn)`.
 | ADM-04 | System info: version, slot, port, board / model, kernel, code / config / log paths, the modules and their state. |
 | ADM-05 | Restart the server, reboot or power off the machine from any controller (with a confirmation in the GUI / web, `--yes` in the CLI). |
 | ADM-06 | **A/B slots.** Several instances install side by side (`install.sh --slot a\|b`): own code, config, logs, control socket, lock, port (8080 + index) and start-at-boot entry, so a new version is installed and tested in the slot not in use while the other keeps serving. Only one slot owns the app's Bluetooth link (`--activate` moves it and the default `arstro-remote` command); hardware changes one slot makes do not disturb the other (e.g. the HDMI EDID is re-written only when it changes). |
+| ADM-08 | **Never deploy into the running session's slot.** `arstro-remote slots` names the slot hosting the calling process (by its process tree: a web-terminal shell is a child of that slot's daemon) and the idle slot to deploy into; `install.sh` refuses to (re)start or uninstall the slot hosting the shell that runs it (`--force-own-session` overrides). |
 | ADM-07 | The web UI shows which slot it talks to (next to the host name) and keeps a separate login per port. |
 
 ## MOD – Feature modules
@@ -183,6 +184,34 @@ IDs are stable: never renumber, mark removed ones `(withdrawn)`.
 | LOG-01 | Every slot keeps rotating log files in its state dir (`arstro-remote.log` 5 × 5 MB, plus launcher / recorder / screen / crash logs) with time, level, component and thread; the level (debug / info / warning) is set in the config or at run time. |
 | LOG-02 | Every failed op is logged as a warning with the op, the controller and the reason (the traceback at debug level); uncaught exceptions in any thread are logged with their traceback; a hard crash leaves a Python stack in `crash.log`. Secrets are never logged (SEC-05). |
 | LOG-03 | Logs are readable from any controller: list, tail with a filter, follow live, download, change the level, write a marker line. |
+
+## APP – Apps (native programs with a web UI)
+
+| ID | Requirement |
+|---|---|
+| APP-01 | The server lists the installed NTWB apps: manifests in `<data dir>/ntwb/apps/<id>/ntwb.json` (XDG data dirs) and manifests registered by path (`apps register`). The list is rescanned on every request (installing needs no restart); an app that cannot run is listed with the reason. |
+| APP-02 | An app is started and stopped from every controller (web Apps page, CLI `apps launch/stop`); its run state (stopped / starting / running / failed with the reason) and the number of open clients are pushed live (topic `apps`). |
+| APP-03 | The app's own web UI is served at `/apps/<id>/` (with `/ntwb/ntwb.js`, the app's icon and API description) and can be opened inside the launcher or in its own tab. |
+| APP-04 | One app process serves every client; a client that opens it late gets the app's full retained state at once. |
+| APP-05 | Each app has a log in the slot's state dir (its output, launches, exits, its `log` messages, protocol errors), readable from every controller. |
+| APP-06 | Opening an app that is not running starts it. |
+| APP-07 | Security: app pages and app WebSockets need the server's password; the app socket is private (0600); a launched app must present its one-time token; attaching without one needs the manifest's `attach` capability. |
+| APP-08 | Every app method is reachable without a browser (`apps call`, `apps state`, `apps api`) by the same path a browser uses - so apps are scriptable and testable. |
+
+## NTWB – The native-to-web bridge protocol
+
+| ID | Requirement |
+|---|---|
+| NTWB-01 | **One definition.** The protocol (messages, fields, types, directions, framing, blob header, manifest, environment, timings) is defined once, in `server/arstro_remote/ntwb/spec.py`; the host validates with it and `docs/ntwb/api.json` + `docs/ntwb/API.md` are generated from it. `docs/ntwb/NTWB.md` explains it. Version 1.0.0. |
+| NTWB-02 | An app declares itself with a manifest (id, name, version, exec, web dir, optional icon, API description, capabilities). |
+| NTWB-03 | The host launches an app with `NTWB_SOCKET`, `NTWB_TOKEN`, `NTWB_APP_ID`, `NTWB_VERSION`, `NTWB_HOST`, `NTWB_DATA_DIR`; the app connects and says `hello`, the host answers `welcome`. |
+| NTWB-04 | Framing: app ↔ host `[type u8][length u32 BE][payload]` with JSON messages and binary blobs (`[u16 header length][JSON header][data]`); browser ↔ host the same messages over WebSocket (text = JSON, binary = blob). |
+| NTWB-05 | Lifecycle: a launched app must say `hello` within 20 s; idle connections are pinged; `bye` asks an app to exit (SIGTERM, then SIGKILL after 5 s each); an exit is reported with its code. |
+| NTWB-06 | Unknown input is rejected, never accepted quietly: an unknown message, field or wrong type, a missing field, a message in the wrong direction or a result for no call is dropped and answered with `error` (a bad browser `call` with `result` ok=false). |
+| NTWB-07 | An app that ships an API description only receives calls and notifies for the methods it lists; the description is served to controllers. |
+| NTWB-08 | Routing: `call` → `result` back to the calling client (the host rewrites call ids, so clients never collide), `notify` without reply, `event` to all clients or one, `state` retained per key and replayed, blobs to all or one - a blob marked `coalesce` (live previews) is replaced by a newer one of its stream while a slow client's queue holds it, every other blob is delivered. |
+| NTWB-09 | SDKs speak exactly the defined protocol: the web SDK `ntwb.js`, the Python app SDK `arstro_remote.ntwb.app`, the C++ client arstro `core/Ntwb` (checked against the vendored `api.json`). |
+| NTWB-10 | A test fails when the generated reference, the web SDK or the narrative drift from the definition. |
 
 ## UX – Look and feel
 

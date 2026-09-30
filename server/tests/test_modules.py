@@ -25,80 +25,15 @@ import urllib.request
 
 from harness import check, run, test, wait_until
 
-from arstro_remote.client import Client
+from instance import Instance as _Instance
 
 SERVER = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODULES = ["monitor", "system", "io", "files"]
 
 
-def free_port():
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    p = s.getsockname()[1]
-    s.close()
-    return p
-
-
-class Instance:
+class Instance(_Instance):
     def __init__(self):
-        self.dir = tempfile.mkdtemp(prefix="arstro-test-")
-        self.port = free_port()
-        self.token = secrets.token_urlsafe(12)
-        self.files = os.path.join(self.dir, "files")
-        os.makedirs(self.files)
-        self.env = dict(os.environ, ARSTRO_SLOT="t", XDG_CONFIG_HOME=self.dir + "/cfg", XDG_STATE_HOME=self.dir + "/state",
-                        XDG_DATA_HOME=self.dir + "/data", XDG_RUNTIME_DIR=self.dir + "/run", PYTHONPATH=SERVER)
-        os.makedirs(self.dir + "/run", mode=0o700)
-        cfg = os.path.join(self.dir, "cfg", "arstro-remote-t")
-        os.makedirs(cfg)
-        with open(os.path.join(cfg, "config.json"), "w") as f:
-            json.dump({"web_port": self.port, "web_host": "127.0.0.1", "bluetooth_enabled": False, "modules": MODULES,
-                       "files_roots": [self.files], "log_level": "info"}, f)
-        fd = os.open(os.path.join(cfg, "web_token"), os.O_WRONLY | os.O_CREAT, 0o600)
-        os.write(fd, (self.token + "\n").encode())
-        os.close(fd)
-        self.log = os.path.join(self.dir, "state", "arstro-remote-t", "arstro-remote.log")
-        self.base = "http://127.0.0.1:%d" % self.port
-        self.proc = None
-
-    def start(self):
-        self.proc = subprocess.Popen([sys.executable, "-m", "arstro_remote", "run"], cwd=SERVER, env=self.env,
-                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        sock = os.path.join(self.dir, "run", "arstro-remote-t.sock")
-        if not wait_until(lambda: os.path.exists(sock) and self._ping(), 20):
-            raise RuntimeError("test instance did not start (see %s)" % self.log)
-        self.c = Client.unix(sock)
-        self.hello = self.c.call("hello", app="test-modules")
-
-    def _ping(self):
-        try:
-            urllib.request.urlopen(self.base + "/api/ping", timeout=1).read()
-            return True
-        except OSError:
-            return False
-
-    def http(self, method, path, data=None, headers=None):
-        h = {"Authorization": "Bearer " + self.token}
-        h.update(headers or {})
-        req = urllib.request.Request(self.base + path, data=data, headers=h, method=method)
-        try:
-            with urllib.request.urlopen(req, timeout=20) as r:
-                return r.status, r.read()
-        except urllib.error.HTTPError as e:
-            return e.code, e.read()
-
-    def stop(self):
-        try:
-            self.c.close()
-        except Exception:
-            pass
-        if self.proc and self.proc.poll() is None:
-            self.proc.send_signal(signal.SIGTERM)
-            try:
-                self.proc.wait(20)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
-        shutil.rmtree(self.dir, ignore_errors=True)
+        super().__init__(MODULES, app="test-modules")
 
 
 # --------------------------------------------------------------------- modules
@@ -267,6 +202,33 @@ def gpio_line_request_read_release(t):
     t.c.call("io.gpio.release", chip=chip, line=int(line))
     info = t.c.call("io.gpio.lines", chip=chip)["lines"][int(line)]
     check(not info["used"], info)
+
+
+@test("ADM-08")
+def slots_name_the_slot_hosting_a_process(t):
+    """The throwaway instance is slot "t": its daemon, and anything it spawns (a shell in its
+    terminal, an agent), is hosted by "t" - and "t" is never offered as the idle slot."""
+    import subprocess
+    from arstro_remote import slots
+    keep = {k: os.environ.get(k) for k in ("XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME")}
+    os.environ.update(XDG_RUNTIME_DIR=t.dir + "/run", XDG_CONFIG_HOME=t.dir + "/cfg", XDG_DATA_HOME=t.dir + "/data")
+    child = subprocess.Popen(["sleep", "5"])                       # stands in for a shell it hosts
+    try:
+        rows = {r["slot"]: r for r in slots.slots(t.proc.pid)}
+        check("t" in rows and rows["t"]["running"] and rows["t"]["pid"] == t.proc.pid and rows["t"]["port"] == t.port, rows)
+        check(slots.current(t.proc.pid) == "t", "the daemon itself is in slot t")
+        check(slots.current(child.pid) is None, "a process outside the slot's tree is not hosted by it")
+        check(slots.idle(t.proc.pid) not in ("t", None), slots.idle(t.proc.pid))
+        r = subprocess.run([sys.executable, "-c", "import os;from arstro_remote import slots;print(slots.current(os.getppid()))"],
+                           capture_output=True, text=True, env=dict(os.environ, PYTHONPATH=SERVER))
+        check(r.stdout.strip() == "None", r.stdout + r.stderr)
+    finally:
+        child.kill()
+        for k, v in keep.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 # --------------------------------------------------------------- last: restart

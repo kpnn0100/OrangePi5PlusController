@@ -51,6 +51,10 @@ and all three are updated live by the same state events (ARC-03).
 | Modules on / off | MOD-01/02 | ³ | `system modules [--set monitor,system,...]` | System › Modules |
 | Restart server, reboot, power off | ADM-05 | ³ | `system restart / reboot --yes / poweroff --yes` | System › Modules card |
 | Which slot, A/B side by side | ADM-06/07 | ³ | `--slot a\|b` or `arstro-remote-a` / `arstro-remote-b`; `system info` | host line shows the slot; own login per port |
+| Which slot hosts this session, which is idle | ADM-08 | - (a phone hosts no shell) | `slots [--current\|--idle]` | - (the browser is not a process on the board) |
+| Apps: list, start, stop, log, register | APP-01/02/05 | ³ | `apps list / launch ID / stop ID / log ID / register PATH / unregister PATH` | Apps |
+| Use an app (its own web UI) | APP-03/04/06 | ³ | `apps call ID METHOD '{json}'`, `apps state ID [KEY]`, `apps api ID` | Apps › Open (inside the shell) or `/apps/<id>/` |
+| The NTWB protocol reference | NTWB-01 | - | `apps spec [--json]` | `docs/ntwb/API.md` |
 | Any op (tools, scripts) | ARC-02 | - | `call OP '{json}'` | `POST /api/op/OP` |
 
 ¹ A terminal cannot show video: the CLI saves the live H.264 stream to a file (play it with

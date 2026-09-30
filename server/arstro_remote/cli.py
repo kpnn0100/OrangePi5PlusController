@@ -18,6 +18,8 @@ the app and the web page is here too (ARC-04), and changes made here show up the
     arstro-remote io info|header|gpio ...|i2c ...|spi ...|uart ...|pwm ...|led ...|adc
     arstro-remote files ls [PATH]|get PATH|put FILE DIR|rm PATH|mkdir PATH|mv PATH NEW
     arstro-remote system info|modules [--set a,b]|restart|reboot|poweroff
+    arstro-remote apps list|info|api|launch|stop|call ID METHOD [JSON]|state ID [KEY]|log ID|register PATH|unregister PATH|spec
+    arstro-remote slots [--current|--idle]   which A/B slot hosts this session, which one to deploy into
     arstro-remote log [--file NAME] [-n N] [--grep TEXT] [--follow] | log level LEVEL
     arstro-remote stats | pair [SECONDS] | unpair ADDRESS | web [--rotate] | call OP [JSON]
     arstro-remote run                    start the server (used by the autostart launcher)
@@ -1037,7 +1039,70 @@ def cmd_log(ctl, a):
         time.sleep(1)
 
 
+def cmd_apps(ctl, a):
+    sub = a.apps_cmd or "list"
+    if sub == "spec":                                   # the protocol itself: no server needed
+        from .ntwb import spec
+        sys.stdout.write(spec.render_json() if a.json else spec.render_markdown())
+        return
+    if sub == "list":
+        r = ctl.call("apps.list")
+
+        def human(r):
+            print("NTWB %s · socket %s" % (r["ntwb"], r["socket"]))
+            if not r["apps"]:
+                print("no apps installed (manifests go in %s)" % r["search"][0])
+            for x in r["apps"]:
+                print("%-12s %-8s %-9s %-22s %s%s" % (x["id"] or "?", x.get("version") or "", x["state"],
+                                                     str(x.get("name"))[:22], "clients %d" % x["clients"] if x.get("clients") else "",
+                                                     "  PROBLEM: %s" % x["problem"] if x.get("problem") else ""))
+        out(a, r, human)
+    elif sub in ("info", "api"):
+        out(a, ctl.call("apps." + sub, app=a.id), lambda r: print(json.dumps(r, indent=2)))
+    elif sub == "launch":
+        r = ctl.call("apps.launch", app=a.id, timeout=60)
+        print("%s: %s%s" % (a.id, r["state"], " - %s" % r["detail"] if r.get("detail") else ""))
+    elif sub == "stop":
+        r = ctl.call("apps.stop", app=a.id, timeout=60)
+        print("%s: %s" % (a.id, r.get("state", "stopped")))
+    elif sub == "call":
+        params = json.loads(a.params) if a.params else {}
+        r = ctl.call("apps.call", app=a.id, method=a.method, params=params, timeout=a.timeout + 5)
+        print(json.dumps(r, indent=2))
+    elif sub == "state":
+        r = ctl.call("apps.state", app=a.id, **({"key": a.key} if a.key else {}))
+        print(json.dumps(r, indent=2))
+    elif sub == "log":
+        for line in ctl.call("apps.log", app=a.id, lines=a.lines)["lines"]:
+            print(line)
+    elif sub == "register":
+        r = ctl.call("apps.register", path=os.path.abspath(a.path))
+        print("registered %s%s" % (r.get("id"), " (problem: %s)" % r["problem"] if r.get("problem") else ""))
+    elif sub == "unregister":
+        ctl.call("apps.unregister", path=os.path.abspath(a.path))
+        print("unregistered")
+
+
 def add_module_parsers(sub):
+    ap_ = sub.add_parser("apps", help="native apps with a web UI (NTWB)")
+    aps = ap_.add_subparsers(dest="apps_cmd")
+    aps.add_parser("list")
+    aps.add_parser("spec", help="print the NTWB protocol reference (--json: the catalogue)")
+    for name in ("info", "api", "launch", "stop", "log", "state", "call"):
+        x = aps.add_parser(name)
+        x.add_argument("id")
+        if name == "log":
+            x.add_argument("-n", "--lines", type=int, default=100)
+        if name == "state":
+            x.add_argument("key", nargs="?")
+        if name == "call":
+            x.add_argument("method")
+            x.add_argument("params", nargs="?", default="{}", help="JSON object")
+            x.add_argument("--timeout", type=float, default=60)
+    for name in ("register", "unregister"):
+        x = aps.add_parser(name)
+        x.add_argument("path", help="an ntwb.json manifest or its directory")
+
     cam = sub.add_parser("camera", help="camera source (HDMI input, USB camera, test pattern)")
     cs = cam.add_subparsers(dest="cam_cmd")
     cs.add_parser("sources")
@@ -1364,6 +1429,10 @@ def build_parser():
 
     add_module_parsers(sub)
 
+    sl = sub.add_parser("slots", help="A/B slots: which hosts this session, which is idle")
+    sl.add_argument("--current", action="store_true", help="print the slot hosting this session")
+    sl.add_argument("--idle", action="store_true", help="print the slot to deploy into")
+
     ca = sub.add_parser("call", help="send any protocol op")
     ca.add_argument("op")
     ca.add_argument("params", nargs="?", default="{}")
@@ -1389,6 +1458,23 @@ def main(argv=None):
         if a.web_port:
             cfg["web_port"] = a.web_port
         return Daemon(cfg, use_bluetooth=not a.no_bluetooth).run()
+    if a.cmd == "slots":                       # no server needed: /proc and the lock files
+        from . import slots as slots_mod
+        if a.current:
+            print(slots_mod.current() or "-")
+        elif a.idle:
+            print(slots_mod.idle() or "-")
+        else:
+            rows = slots_mod.slots()
+            if a.json:
+                print(json.dumps({"slots": rows, "current": slots_mod.current(), "idle": slots_mod.idle()}, indent=2))
+            else:
+                for r in rows:
+                    print("%-7s port %-5d %-8s %-10s %s" % (r["slot"], r["port"], "running" if r["running"] else "stopped",
+                                                           "pid %s" % r["pid"] if r["pid"] else "",
+                                                           "<- THIS SESSION (do not reinstall/restart)" if r["current"] else ""))
+                print("deploy into: %s" % (slots_mod.idle() or "-"))
+        return 0
     if a.cmd == "version" or a.cmd is None:
         if a.cmd is None:
             ap.print_help()
@@ -1400,7 +1486,7 @@ def main(argv=None):
                 "web": cmd_web, "screen": cmd_screen, "stats": cmd_stats, "wifi": cmd_wifi, "term": cmd_term, "input": cmd_input,
                 "rec": cmd_rec, "gallery": cmd_gallery, "jobs": cmd_jobs, "call": cmd_call,
                 "camera": cmd_camera, "net": cmd_net, "bt": cmd_bt, "io": cmd_io, "files": cmd_files,
-                "system": cmd_system, "log": cmd_log}
+                "system": cmd_system, "log": cmd_log, "apps": cmd_apps}
     try:
         return handlers[a.cmd](ctl, a) or 0
     except KeyboardInterrupt:

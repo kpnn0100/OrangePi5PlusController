@@ -1,0 +1,78 @@
+{
+  "ntwb": "1.0.0",
+  "app": "hello",
+  "methods": {
+    "add": {
+      "doc": "add to the shared counter",
+      "params": {
+        "n": {
+          "type": "int",
+          "required": true,
+          "doc": "how much"
+        }
+      },
+      "result": "the new count"
+    },
+    "echo": {
+      "doc": "answer with the params",
+      "params": {},
+      "result": "the params"
+    },
+    "fail": {
+      "doc": "always fails (tests the error path)",
+      "params": {},
+      "result": "-"
+    },
+    "picture": {
+      "doc": "send a generated PNG on the picture stream to the caller",
+      "params": {
+        "size": {
+          "type": "int",
+          "required": false,
+          "doc": "edge in pixels (8-256)"
+        }
+      },
+      "result": "{bytes}"
+    },
+    "quit": {
+      "doc": "the app says bye and exits",
+      "params": {},
+      "result": "-"
+    },
+    "burst": {
+      "doc": "send n small PNGs on the picture stream at once (coalesce: mark them live)",
+      "params": {
+        "n": {
+          "type": "int",
+          "required": false,
+          "doc": "1-50"
+        },
+        "coalesce": {
+          "type": "bool",
+          "required": false,
+          "doc": "mark the blobs coalescable"
+        }
+      },
+      "result": "{sent}"
+    }
+  },
+  "events": {
+    "added": {
+      "doc": "somebody changed the counter",
+      "data": "{n, by}"
+    }
+  },
+  "state": {
+    "counter": {
+      "doc": "the shared counter",
+      "data": "int"
+    }
+  },
+  "streams": {
+    "picture": {
+      "doc": "a generated gradient",
+      "mime": "image/png",
+      "meta": "{size}"
+    }
+  }
+}

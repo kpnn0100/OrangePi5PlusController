@@ -48,8 +48,9 @@ you are running in.
 6. **Docs**: `docs/parity.md` (the row, all columns), `docs/protocol.md` (ops / topics / routes),
    `docs/architecture.md` if the structure changed, README if user-visible, then
    `python3 scripts/req_coverage.py --check` (regenerates `docs/traceability.md`; must pass).
-7. **Deploy into the idle slot and verify** (`arstro.embedded_server.deploy`), run the affected
-   suites against it (`ARSTRO_SLOT=b ...`).
+7. **Deploy into the idle slot and verify** (`arstro.embedded_server.deploy`): first
+   `arstro-remote slots --idle` names it, then install there and run the affected suites against
+   it (`ARSTRO_SLOT=<idle> ...`).
 8. **Commit and push** - every implementation ends with this:
    `git add -A && git commit -m "<what and why, requirement IDs>" && git push`.
    Before committing: `python3 server/tests/test_repo_policy.py` (no addresses, serials, user
@@ -117,7 +118,9 @@ log in the slot's state dir.
 ## Rules and gotchas (each cost real time)
 
 - **Slots**: never restart / reinstall the slot that hosts your session (its terminal dies with
-  it). `pkill -f 'python3 -m arstro_remote run'` would hit *every* slot - stop a slot by the pid
+  it). **Ask, don't assume:** `arstro-remote slots` (or `cd server && python3 -m arstro_remote
+  slots`) marks the slot hosting this shell and prints the one to deploy into; the session moves
+  between A and B over time. `pkill -f 'python3 -m arstro_remote run'` would hit *every* slot - stop a slot by the pid
   in its lock file (`$XDG_RUNTIME_DIR/arstro-remote-<slot>.lock`) or `system restart`.
 - Two slots share the hardware: the camera worker re-writes the HDMI EDID only when it changed
   (a write re-plugs the source and would glitch the other slot's recording); only the active

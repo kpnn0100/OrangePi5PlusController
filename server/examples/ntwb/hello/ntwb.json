@@ -1,0 +1,12 @@
+{
+  "ntwb": "1.0.0",
+  "id": "hello",
+  "name": "Hello NTWB",
+  "version": "1.0.0",
+  "description": "The example app: a shared counter, an echo and a generated picture",
+  "icon": "icon.svg",
+  "exec": ["hello_app.py"],
+  "web": "web",
+  "api": "api.json",
+  "capabilities": ["blobs"]
+}

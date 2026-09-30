@@ -13,6 +13,7 @@ Control an Orange Pi 5 Plus - or any Linux machine - from an **Android app**, a 
 | **Screen** | watch and control the desktop (like TeamViewer), remote keyboard and mouse |
 | **IO Control** | GPIO (header view, edges), I2C scan / transfer / dump, SPI, UART consoles, PWM, LEDs, ADC - a bring-up and debugging bench |
 | **Files** | browse, upload, download, edit |
+| **Apps** | native programs (e.g. the Cosmo photo editor) with their own web UI, through the **NTWB** bridge: the core runs on the machine, the UI in the browser |
 
 One server runs on the Pi. The three controllers use the same protocol and stay in sync: start
 a recording from the CLI and the record button turns red in the app and on the web page.
@@ -105,6 +106,11 @@ arstro-remote log -f --grep error                  # follow the server log
 
 `docs/parity.md` shows how every feature is reached from each controller.
 
+**Apps (NTWB).** A native program becomes an app by installing a manifest into
+`~/.local/share/ntwb/apps/<id>/ntwb.json` and speaking NTWB 1.0.0 over the socket the server
+gives it - see [docs/ntwb/NTWB.md](docs/ntwb/NTWB.md) (reference: [docs/ntwb/API.md](docs/ntwb/API.md),
+example: `server/examples/ntwb/hello/`). `arstro-remote apps list | call ID METHOD JSON | spec`.
+
 ## Development
 
 | | |
@@ -135,7 +141,10 @@ The server also runs on a PC with a test pattern (`python3 -m arstro_remote run 
 For agents: the skills `.claude/skills/arstro.embedded_server.implement` (workflow: requirements
 first, all controllers, tests, commit and push), `.claude/skills/arstro.embedded_server.test`
 (which suite proves what, how to run it against a slot) and `.claude/skills/arstro.embedded_server.deploy`
-(the A/B procedure: install into the idle slot, verify, switch) describe how to work here.
+(the A/B procedure: `arstro-remote slots` names the slot hosting your shell and the idle one to
+install into, verify, switch) and `.claude/skills/arstro.ntwb.implement` (the NTWB protocol and
+adapting apps - one definition, everything else generated or tested against it) describe how to
+work here.
 
 Nothing machine-specific is committed (addresses, serials, passwords): scripts take arguments,
 environment variables or `local.env` (gitignored); the signing key stays in `app/android/`
