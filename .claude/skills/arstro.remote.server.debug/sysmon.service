@@ -1,0 +1,9 @@
+[Unit]
+Description=Crash-safe system health logger
+
+[Service]
+ExecStart=%h/sysmon/sysmon.sh
+Restart=always
+
+[Install]
+WantedBy=default.target
