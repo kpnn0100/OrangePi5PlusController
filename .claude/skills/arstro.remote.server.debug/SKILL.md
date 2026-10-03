@@ -55,6 +55,13 @@ many times the board booted*.
   magnitude more than the 94 board boots in the same weeks (unless the drive came with that history:
   `nvme-counters.log` will tell - baseline taken 2026-10-04 00:30: cycles=9718, unsafe=6956).
 - **USB-C: no PD contract** (`online=0`, mode `default`).
+- **2026-10-04 00:38, reproduced by the user: a complete shutdown 31 s into a RAW -> FFV1 conversion**
+  (`recorder/jobs.py`: `avenc_ffv1 ... threads=0` = all 8 cores). health.log: memory -1 GB at
+  up=889 s (the job starts), load 1.5 -> 4.9, both big clusters at 2304 MHz, NVMe reading RAW and
+  writing FFV1 at once, dead at up=920 s at 54-56 C (Wi-Fi 42 C). Peak current, not heat. NVMe
+  counters across it: +3 power cycles for 1 logged boot. A CPU-heavy job + sustained NVMe writes is
+  the reliable trigger - use it to test a new supply (it should survive a full FFV1 job), and cap the
+  encoder's threads / big-core clock while the supply is weak.
 - Verdict: **power supply, not overheating** - the user's "Wi-Fi/NVMe broken, Bluetooth alive"
   symptom is the PCIe side losing power. Fix the supply first: a 5 V / 4 A (or more) supply rated for
   the Orange Pi 5 Plus, a short thick USB-C cable, check the PD contract comes up (`online=1`).
