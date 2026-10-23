@@ -657,6 +657,18 @@ def cmd_jobs(ctl, a):
         print("cleared finished jobs")
 
 
+def parse_bitrate(text):
+    """'2.5M', '800k', '3000000', 'auto' / '0' -> bits/s (0 = from the quality)."""
+    t = text.strip().lower().rstrip("bps").rstrip("/").rstrip("bit").strip()
+    if t in ("auto", "0", ""):
+        return 0
+    mult = {"k": 1000, "m": 1_000_000}.get(t[-1:], 1)
+    try:
+        return int(float(t[:-1] if mult > 1 else t) * mult)
+    except ValueError:
+        raise SystemExit("bitrate: give bits/s like 2.5M, 800k or auto")
+
+
 def cmd_screen(ctl, a):
     sub = a.screen_cmd or "status"
     if sub == "status":
@@ -666,15 +678,26 @@ def cmd_screen(ctl, a):
             scr = st.get("screen")
             print("Desktop : %s%s" % (st.get("display") or "none", "  %dx%d" % tuple(scr) if scr else ""))
             print("State   : %s%s" % (st["state"], " - %s" % st["error"] if st.get("error") else ""))
-            print("Viewers : %d · quality %s" % (st["viewers"], st["quality"]))
+            print("Viewers : %d · quality %s · encoder %s · bitrate %s" % (
+                st["viewers"], st["quality"], st.get("encoder", "auto"),
+                "%d kbit/s" % (st["bitrate"] // 1000) if st.get("bitrate") else "auto"))
             if st.get("stream"):
                 s = st["stream"]
-                print("Stream  : %sx%s@%s %s kbit/s" % (s["width"], s["height"], s["fps"], s["bitrate"] // 1000))
+                print("Stream  : %sx%s@%s %s kbit/s%s" % (s["width"], s["height"], s["fps"], s["bitrate"] // 1000,
+                                                       " · " + {"vpu": "VPU", "cpu": "x264 (CPU)"}.get(s.get("encoder"), "")
+                                                       if s.get("encoder") else ""))
             print("Watch   : the web UI's Screen tab, or the app's Remote › Screen")
         out(a, st, human)
     elif sub == "quality":
         ctl.call("screen.settings.set", settings={"quality": a.value})
         print("screen quality: %s" % a.value)
+    elif sub == "encoder":
+        ctl.call("screen.settings.set", settings={"encoder": a.value})
+        print("screen encoder: %s" % a.value)
+    elif sub == "bitrate":
+        bps = parse_bitrate(a.value)
+        ctl.call("screen.settings.set", settings={"bitrate": bps})
+        print("screen bitrate: %s" % ("%d kbit/s" % (bps // 1000) if bps else "auto (from the quality)"))
     elif sub == "save":
         save_preview(ctl, a.file, a.seconds, "/ws/screen")
 
@@ -1405,6 +1428,10 @@ def build_parser():
     scs.add_parser("status")
     sq = scs.add_parser("quality", help="stream quality (shared)")
     sq.add_argument("value", choices=["low", "medium", "high"])
+    se = scs.add_parser("encoder", help="H.264 encoder (shared): auto = the VPU when there is one, cpu = x264")
+    se.add_argument("value", choices=["auto", "vpu", "cpu"])
+    sb = scs.add_parser("bitrate", help="stream bitrate (shared): e.g. 2.5M, 800k, or auto (from the quality)")
+    sb.add_argument("value")
     sv = scs.add_parser("save", help="save the live desktop to an .h264 file")
     sv.add_argument("file")
     sv.add_argument("--seconds", type=float, default=5)

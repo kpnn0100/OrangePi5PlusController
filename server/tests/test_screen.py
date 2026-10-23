@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Remote screen tests (SCR-01..04): the Pi desktop streamed and controlled.
+"""Remote screen tests (SCR-01..05): the Pi desktop streamed and controlled.
 
 Run on the Pi (server running, desktop session on the display):
     python3 tests/test_screen.py
@@ -35,14 +35,16 @@ def setup():
     c.b.call("hello", app="test-observer")
     c.port = int(load_config().get("web_port", 8080))
     c.token = auth.load()
-    c.orig_quality = c.a.call("screen.status")["quality"]
+    st = c.a.call("screen.status")
+    c.orig = {k: st[k] for k in ("quality", "encoder", "bitrate")}
+    c.has_vpu = subprocess.run(["gst-inspect-1.0", "mpph264enc"], capture_output=True).returncode == 0
     c.orig_pointer = c.a.call("in.pointer")
     return c
 
 
 def teardown(c):
     try:
-        c.a.call("screen.settings.set", settings={"quality": c.orig_quality})
+        c.a.call("screen.settings.set", settings=c.orig)
         c.a.call("in.move_to", x=c.orig_pointer["x"], y=c.orig_pointer["y"])
     finally:
         c.a.close()
@@ -83,9 +85,10 @@ def desktop_is_streamed_live(c):
     fps = len(frames) / (5 - frames[0][0])
     gaps = sorted(b[0] - a[0] for a, b in zip(frames, frames[1:]))
     p95 = gaps[int(len(gaps) * 0.95)]
-    print("      %sx%s, %.1f fps, 95%% gap %.0f ms" % (cfg["width"], cfg["height"], fps, p95 * 1000))
-    check(fps >= 20, "only %.1f fps" % fps)
-    check(p95 < 0.15, "stutters: 95%% gap %.0f ms" % (p95 * 1000))
+    vpu = cfg.get("encoder") == "vpu"
+    print("      %sx%s, %.1f fps, 95%% gap %.0f ms, %s" % (cfg["width"], cfg["height"], fps, p95 * 1000, cfg.get("encoder")))
+    check(fps >= (15 if vpu else 20), "only %.1f fps" % fps)
+    check(p95 < (0.25 if vpu else 0.15), "stutters: 95%% gap %.0f ms" % (p95 * 1000))
     st = c.a.call("screen.status")
     check(st["screen"] and st["screen"][0] >= cfg["width"], st)
 
@@ -119,6 +122,33 @@ def quality_is_shared_and_applied(c):
     check(r["ok"] is False, r)
 
 
+@test("SCR-05", "ARC-03")
+def encoder_and_bitrate_are_shared_and_applied(c):
+    c.a.call("screen.settings.set", settings={"quality": "medium", "encoder": "cpu", "bitrate": 1_000_000})
+    check(c.b.wait_state("screen", lambda s: s["encoder"] == "cpu" and s["bitrate"] == 1_000_000, 2),
+          "observer did not get the encoder / bitrate")
+    encoders = ["cpu", "vpu"] if c.has_vpu else ["cpu"]
+    for enc in encoders:
+        c.a.call("screen.settings.set", settings={"encoder": enc})
+        conn = viewer(c)
+        try:
+            cfg, frames = watch(conn, 4)
+        finally:
+            conn.close()
+        check(cfg and cfg.get("encoder") == enc and cfg["bitrate"] == 1_000_000, cfg)
+        key = next((f for f in frames if f[1]), None)
+        check(key and {7, 8, 5} <= set(nal_types(key[2])), "%s: no keyframe with SPS/PPS/IDR" % enc)
+        span = frames[-1][0] - frames[0][0] if len(frames) > 1 else 0
+        kbps = sum(len(f[2]) for f in frames) * 8 / max(span, 0.1) / 1000
+        print("      %s: %.1f fps, %.0f kbit/s (asked 1000)" % (enc, len(frames) / max(span, 0.1), kbps))
+        check(kbps < 2500, "%s ignores the bitrate: %.0f kbit/s" % (enc, kbps))
+    c.a.call("screen.settings.set", settings={"bitrate": 0})
+    check(c.a.call("screen.status")["bitrate"] == 0, "bitrate auto not taken")
+    for bad in ({"bitrate": 5}, {"bitrate": "lots"}, {"encoder": "gpu"}, {}):
+        r = c.a.request("screen.settings.set", settings=bad)
+        check(r["ok"] is False and r.get("error"), "accepted %s: %s" % (bad, r))
+
+
 @test("SCR-02")
 def pointer_goes_where_the_viewer_points(c):
     st = c.a.call("screen.status")
@@ -130,12 +160,17 @@ def pointer_goes_where_the_viewer_points(c):
         check(abs(p["x"] - x) <= 1 and abs(p["y"] - y) <= 1, "pointer %s, wanted %s" % (p, (x, y)))
 
 
-@test("SCR-04", "CON-04")
+@test("SCR-04", "SCR-05", "CON-04")
 def cli_status_and_save(c):
     env = dict(os.environ)
     out = subprocess.run([sys.executable, "-m", "arstro_remote", "screen", "status"], cwd=os.path.join(HERE, ".."),
                          capture_output=True, text=True, timeout=30, env=env)
-    check(out.returncode == 0 and "Desktop" in out.stdout, out.stdout + out.stderr)
+    check(out.returncode == 0 and "Desktop" in out.stdout and "encoder" in out.stdout, out.stdout + out.stderr)
+    for args, want in ((["encoder", "cpu"], ("encoder", "cpu")), (["bitrate", "1.5M"], ("bitrate", 1_500_000)),
+                       (["bitrate", "auto"], ("bitrate", 0))):
+        out = subprocess.run([sys.executable, "-m", "arstro_remote", "screen"] + args, cwd=os.path.join(HERE, ".."),
+                             capture_output=True, text=True, timeout=30, env=env)
+        check(out.returncode == 0 and c.a.call("screen.status")[want[0]] == want[1], out.stdout + out.stderr)
     path = tempfile.mktemp(suffix=".h264")
     try:
         out = subprocess.run([sys.executable, "-m", "arstro_remote", "screen", "save", path, "--seconds", "2"],

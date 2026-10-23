@@ -358,7 +358,7 @@ test("terminal_shared_between_browsers", ["TERM-01", "TERM-02", "TERM-04", "ARC-
   await b.close();
 });
 
-test("remote_screen_is_live_and_the_mouse_lands_on_the_same_spot", ["SCR-01", "SCR-02", "SCR-03"], async () => {
+test("remote_screen_is_live_and_the_mouse_lands_on_the_same_spot", ["SCR-01", "SCR-02", "SCR-03", "SCR-05"], async () => {
   const p0 = await op("in.pointer").catch(() => null);
   const page = await newPage();
   try {
@@ -379,6 +379,13 @@ test("remote_screen_is_live_and_the_mouse_lands_on_the_same_spot", ["SCR-01", "S
     }, 3000);
     check(got, `pointer should be near ${want}, is ${JSON.stringify(await op("in.pointer"))}`);
     await shot(page, "screen");
+    // Stream sheet (SCR-05): encoder + bitrate, showing what runs now
+    const btn = await page.$$eval(".screen-bar button", (bs) => bs.findIndex((b) => b.textContent.includes("Stream")));
+    check(btn >= 0, "no Stream button");
+    await (await page.$$(".screen-bar button"))[btn].click();
+    check(await until(() => page.$(".sheet.show select"), 3000), "Stream sheet has no bitrate");
+    const txt = await page.$eval(".sheet.show", (e) => e.textContent);
+    check(/VPU/.test(txt) && /CPU/.test(txt) && /Now:/.test(txt), txt);
   } finally {
     await page.close();
     if (p0) await op("in.move_to", { x: p0.x, y: p0.y }).catch(() => {});

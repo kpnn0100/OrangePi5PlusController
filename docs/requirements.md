@@ -108,10 +108,11 @@ IDs are stable: never renumber, mark removed ones `(withdrawn)`.
 
 | ID | Requirement |
 |---|---|
-| SCR-01 | **Remote screen.** The Pi's desktop (X display, with its mouse pointer) is streamed live as H.264 over WebSocket to any number of viewers from one shared encoder - smooth and live first: ≥ 20 fps and < 0.5 s behind; a late viewer skips ahead. The capture runs in a helper process (ARC-06) and only while someone watches (stops ~5 s after the last viewer). |
+| SCR-01 | **Remote screen.** The Pi's desktop (X display, with its mouse pointer) is streamed live as H.264 over WebSocket to any number of viewers from one shared encoder - smooth and live first: ≥ 20 fps with the CPU encoder (≥ 15 fps with the VPU, SCR-05) and < 0.5 s behind; a late viewer skips ahead. The capture runs in a helper process (ARC-06) and only while someone watches (stops ~5 s after the last viewer). |
 | SCR-02 | **Control from the picture.** A viewer can take control: the mouse maps to the same point of the Pi's screen (move, left/middle/right press and release, drag, wheel), the keyboard types into the Pi (keys with modifiers, text), and local text can be sent as typing. *View only* switches control off. |
 | SCR-03 | Quality presets (low ≤ 960 px wide at 15 fps, medium ≤ 1280 px at 30 fps, high native at 30 fps) are a shared, saved setting; the view shows the Pi's screen size and follows a change of it. When there is no desktop the view says why. |
-| SCR-04 | All controllers: Web (Screen tab, mouse + keyboard), GUI (Remote › Screen, touch: tap = click, long press = right click, drag, two-finger scroll), CLI (`screen status / quality / save`). |
+| SCR-04 | All controllers: Web (Screen tab, mouse + keyboard), GUI (Remote › Screen, touch: tap = click, long press = right click, drag, two-finger scroll), CLI (`screen status / quality / encoder / bitrate / save`). |
+| SCR-05 | **Encoder and bitrate.** The stream's H.264 encoder is a shared, saved setting: *auto* (default: the hardware VPU when the machine has one, else the CPU; a VPU that fails before its first frame falls back to the CPU), *vpu* or *cpu* (x264). The VPU costs about a third of the CPU's processor time (less heat and current) at a lower frame rate (~20 fps on the Orange Pi 5 Plus); the CPU encoder keeps 30 fps. The bitrate is a shared, saved setting too: *auto* (from the quality preset, scaled by the picture area) or 0.2 - 20 Mbit/s. The stream reports which encoder and bitrate it runs with; a change restarts a running capture. |
 
 ## ADM – System
 

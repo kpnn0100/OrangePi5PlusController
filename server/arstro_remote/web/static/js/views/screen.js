@@ -1,4 +1,4 @@
-// Remote screen (SCR-01..04): the Pi's desktop, live, controlled from the picture -
+// Remote screen (SCR-01..05): the Pi's desktop, live, controlled from the picture -
 // like TeamViewer / UltraViewer. Mouse and keyboard go through the normal input ops.
 
 import { h, clear, icon, store, conn, run, seg, toggle, sheet, formBox, toast } from "../core.js";
@@ -12,6 +12,10 @@ const SPECIAL = {
   Meta: "Super_L", OS: "Super_L",
 };
 const BUTTONS = ["left", "middle", "right"];
+// SCR-05: bits/s; 0 = from the quality preset
+const BITRATES = [0, 500_000, 1_000_000, 2_000_000, 3_000_000, 5_000_000, 8_000_000, 12_000_000, 20_000_000];
+const ENCODERS = [["auto", "Auto"], ["vpu", "VPU"], ["cpu", "CPU (x264)"]];
+const mbps = (b) => (b / 1e6).toFixed(b < 1e6 ? 1 : b % 1e6 ? 1 : 0) + " Mb/s";
 
 function loadPref() {
   try { return localStorage.getItem(PREF) !== "0"; } catch (e) { return true; }
@@ -54,11 +58,12 @@ export default {
     }, { label: "Control the Pi" });
     const keysBtn = h("button.btn.sm", { onclick: () => openKeys() }, icon("keyboard"), "Keys");
     const typeBtn = h("button.btn.sm", { onclick: () => typeText() }, icon("send"), "Type text");
+    const streamBtn = h("button.btn.sm", { onclick: () => openStream(), title: "Encoder and bitrate" }, icon("sliders"), "Stream");
     root.append(
       h("div.view-head", null, h("div", null, h("h1", null, "Screen"), h("div.sub", null, "The Pi's desktop, live · click the picture to control it"))),
       h("div.screen-bar", null,
         h("label.row", { style: { gap: "10px", cursor: "pointer" } }, controlToggle, h("span.dim", null, "Control")),
-        h("div.grow"), keysBtn, typeBtn, quality),
+        h("div.grow"), keysBtn, typeBtn, streamBtn, quality),
       stage);
     stage.classList.toggle("control", control);
 
@@ -186,6 +191,31 @@ export default {
       void s;
     }
 
+    // Encoder + bitrate (SCR-05): shared settings, so the sheet follows the topic while open.
+    let streamSheet = null;
+    function openStream() {
+      const enc = seg(ENCODERS, st.encoder || "auto", (v) => run("screen.settings.set", { settings: { encoder: v } }), { full: true });
+      const rate = h("select.input", { "aria-label": "Bitrate",
+        onchange: (e) => run("screen.settings.set", { settings: { bitrate: Number(e.target.value) } }) });
+      const now = h("p.dim", { style: { margin: "0" } });
+      const update = () => {
+        enc.set(st.encoder || "auto");
+        const b = st.bitrate || 0;
+        clear(rate, [...new Set([...BITRATES, b])].sort((x, y) => x - y).map((v) =>
+          h("option", { value: String(v), selected: v === b }, v ? mbps(v) : "Auto (from the quality)")));
+        const sm = st.stream;
+        now.textContent = sm ? `Now: ${sm.width}×${sm.height} at ${sm.fps} fps, ${mbps(sm.bitrate)}, ` +
+          (sm.encoder === "vpu" ? "VPU (hardware)" : "x264 (CPU)") : "Not streaming.";
+      };
+      update();
+      const s = sheet({ title: "Stream", onClose: () => { streamSheet = null; }, body: h("div.stack", null,
+        h("div.field", null, h("label", null, "Encoder"), enc),
+        h("p.dim", { style: { margin: "0" } }, "VPU: little CPU, about 20 fps. CPU (x264): 30 fps, but it keeps a core busy. Auto uses the VPU when there is one."),
+        h("div.field", null, h("label", null, "Bitrate"), rate),
+        now) });
+      streamSheet = { s, update };
+    }
+
     async function typeText() {
       const v = await formBox({ title: "Type on the Pi", ok: "Type", text: "The text is typed at the Pi's cursor.",
         fields: [{ name: "t", label: "Text", placeholder: "Paste or write text here" }] });
@@ -198,12 +228,13 @@ export default {
       if (document.visibilityState === "visible" && st.available !== false) player.start(); else player.stop();
       render();
     };
-    const offs = [store.on("screen", (v) => { st = v || {}; quality.set(st.quality); render(); })];
+    const offs = [store.on("screen", (v) => { st = v || {}; quality.set(st.quality); streamSheet?.update(); render(); })];
     document.addEventListener("visibilitychange", sync);
     sync();
     if (control) setTimeout(() => stage.focus(), 100);
     return () => {
       offs.forEach((f) => f());
+      streamSheet?.s.close();
       document.removeEventListener("visibilitychange", sync);
       releaseAll();
       if (raf) cancelAnimationFrame(raf);

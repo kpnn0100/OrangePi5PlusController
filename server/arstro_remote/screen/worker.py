@@ -1,15 +1,23 @@
 """Screen capture worker (SCR-01): the X desktop -> H.264 access units on stdout.
 
-    python3 -m arstro_remote.screen.worker --quality medium
+    python3 -m arstro_remote.screen.worker --quality medium [--encoder auto|vpu|cpu] [--bitrate BPS]
 
 A separate process like the recorder worker (ARC-06): an X error or a GStreamer crash
 ends only this process. Output on stdout, one record after another:
 
     b"F" [key u8][pts_us u64][size u32] <Annex-B access unit>
-    b"C" [size u32] <JSON: {"width", "height", "fps", "bitrate", "quality", "screen": [w, h]}>
+    b"C" [size u32] <JSON: {"width", "height", "fps", "bitrate", "quality", "encoder", "screen": [w, h]}>
     b"E" [size u32] <JSON: {"error"}>                    (then the worker exits)
 
 stdin takes JSON lines: {"cmd": "keyframe"}.
+
+Encoders (SCR-05): "vpu" is the Rockchip hardware encoder (mpph264enc), "cpu" is x264, "auto" takes
+the VPU when GStreamer has it and falls back to x264 if it fails before the first frame. The VPU
+keeps up only when (1) it gets NV12 from a videoconvert behind a queue (its own copy then runs on
+another thread than the capture) and (2) zero-copy-pkt is on - without it each access unit costs a
+fixed copy and the encoder tops out near 19 fps even at 1024x768; with it, 140 fps from a test
+source and full rate from the desktop at a third of x264's CPU. max-reenc=0: its CBR would
+otherwise re-encode frames that miss the rate.
 """
 
 import argparse
@@ -29,6 +37,8 @@ from gi.repository import GLib, Gst, GstVideo  # noqa: E402
 
 # quality -> (max width, fps, bits/s at 1280x720; scaled by the picture area)
 QUALITIES = {"low": (960, 15, 800_000), "medium": (1280, 30, 2_500_000), "high": (0, 30, 5_000_000)}
+ENCODERS = ("auto", "vpu", "cpu")
+BITRATE_RANGE = (200_000, 20_000_000)                    # an explicit --bitrate, bits/s
 FRAME = struct.Struct(">BQI")
 SIZE = struct.Struct(">I")
 _out_lock = threading.Lock()
@@ -65,6 +75,17 @@ def screen_size(display):
         x.XCloseDisplay(dpy)
 
 
+def has_idr(au):
+    """Does an Annex-B access unit hold an IDR slice? mpph264enc flags every buffer DELTA_UNIT,
+    so the keyframe mark has to come from the NAL types."""
+    i = au.find(b"\x00\x00\x01")
+    while 0 <= i < len(au) - 3:
+        if au[i + 3] & 0x1F == 5:
+            return True
+        i = au.find(b"\x00\x00\x01", i + 3)
+    return False
+
+
 def fit(w, h, max_w):
     if max_w and w > max_w:
         h = round(h * max_w / w)
@@ -73,9 +94,15 @@ def fit(w, h, max_w):
 
 
 class Worker:
-    def __init__(self, display, quality):
+    def __init__(self, display, quality, encoder="auto", bitrate=0):
         self.display = display
         self.quality = quality if quality in QUALITIES else "medium"
+        self.encoder = encoder if encoder in ENCODERS else "auto"
+        self.bitrate = min(max(bitrate, BITRATE_RANGE[0]), BITRATE_RANGE[1]) if bitrate else 0
+        self.use = "cpu" if self.encoder == "cpu" or not Gst.ElementFactory.find("mpph264enc") else "vpu"
+        if self.encoder == "vpu" and self.use == "cpu":
+            print("screen: no mpph264enc in GStreamer - encoding with x264", file=sys.stderr)
+        self.frames = 0
         self.loop = GLib.MainLoop()
         self.pipe = None
         self.size = None
@@ -83,15 +110,22 @@ class Worker:
     def build(self, size):
         max_w, fps, bps720 = QUALITIES[self.quality]
         w, h = fit(size[0], size[1], max_w)
-        bps = int(bps720 * max(0.35, (w * h) / (1280 * 720)))
+        bps = self.bitrate or int(bps720 * max(0.35, (w * h) / (1280 * 720)))
         key = max(1, fps // 2)                           # keyframe every 0.5 s: quick recovery
+        if self.use == "vpu":
+            enc = ("videoconvert ! video/x-raw,format=NV12 ! "
+                   "queue max-size-buffers=2 max-size-bytes=0 max-size-time=0 ! "
+                   f"mpph264enc name=enc rc-mode=cbr bps={bps} max-reenc=0 zero-copy-pkt=true gop={key} "
+                   "header-mode=each-idr profile=main ! video/x-h264,stream-format=byte-stream,alignment=au ! ")
+        else:
+            enc = ("videoconvert ! video/x-raw,format=I420 ! "
+                   f"x264enc name=enc tune=zerolatency speed-preset=ultrafast bitrate={bps // 1000} "
+                   f"vbv-buf-capacity=400 key-int-max={key} byte-stream=true sliced-threads=false threads=2 ! "
+                   "video/x-h264,stream-format=byte-stream,alignment=au,profile=main ! ")
         desc = (f"ximagesrc name=src display-name={self.display} use-damage=false show-pointer=true ! "
                 f"video/x-raw,framerate={fps}/1 ! "
                 "queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! "
-                f"videoscale ! video/x-raw,width={w},height={h} ! videoconvert ! video/x-raw,format=I420 ! "
-                f"x264enc name=enc tune=zerolatency speed-preset=ultrafast bitrate={bps // 1000} "
-                f"vbv-buf-capacity=400 key-int-max={key} byte-stream=true sliced-threads=false threads=2 ! "
-                "video/x-h264,stream-format=byte-stream,alignment=au,profile=main ! "
+                f"videoscale ! video/x-raw,width={w},height={h} ! " + enc +
                 "appsink name=sink emit-signals=true sync=false async=false max-buffers=4 drop=true")
         pipe = Gst.parse_launch(desc)
         pipe.get_by_name("sink").connect("new-sample", self._on_sample)
@@ -99,12 +133,13 @@ class Worker:
         bus.add_signal_watch()
         bus.connect("message::error", self._on_error)
         self.config = {"width": w, "height": h, "fps": fps, "bitrate": bps, "quality": self.quality,
-                       "screen": list(size)}
+                       "encoder": self.use, "screen": list(size)}
         return pipe
 
     def start(self, size):
         self.stop()
         self.size = size
+        self.frames = 0
         self.pipe = self.build(size)
         self.pipe.set_state(Gst.State.PLAYING)
         emit_json(b"C", self.config)
@@ -126,7 +161,8 @@ class Worker:
             data = bytes(info.data)
         finally:
             buf.unmap(info)
-        key = not buf.has_flags(Gst.BufferFlags.DELTA_UNIT)
+        self.frames += 1
+        key = has_idr(data) if self.use == "vpu" else not buf.has_flags(Gst.BufferFlags.DELTA_UNIT)
         pts = buf.pts // 1000 if buf.pts != Gst.CLOCK_TIME_NONE else 0
         with _out_lock:
             sys.stdout.buffer.write(b"F" + FRAME.pack(1 if key else 0, pts, len(data)) + data)
@@ -135,6 +171,11 @@ class Worker:
 
     def _on_error(self, _bus, msg):
         err, _dbg = msg.parse_error()
+        if self.use == "vpu" and self.encoder == "auto" and not self.frames:
+            print("screen: the VPU encoder failed (%s) - falling back to x264" % err.message, file=sys.stderr)
+            self.use = "cpu"
+            GLib.idle_add(lambda: self.start(self.size) and False)
+            return
         emit_json(b"E", {"error": "screen capture: %s" % err.message})
         self.loop.quit()
 
@@ -182,10 +223,12 @@ class Worker:
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="arstro_remote.screen.worker")
     ap.add_argument("--quality", default="medium", choices=list(QUALITIES))
+    ap.add_argument("--encoder", default="auto", choices=list(ENCODERS))
+    ap.add_argument("--bitrate", type=int, default=0, help="bits/s; 0 = from the quality")
     ap.add_argument("--display", default=os.environ.get("DISPLAY", ":0"))
     a = ap.parse_args(argv)
     Gst.init(None)
-    return Worker(a.display, a.quality).run()
+    return Worker(a.display, a.quality, a.encoder, a.bitrate).run()
 
 
 if __name__ == "__main__":

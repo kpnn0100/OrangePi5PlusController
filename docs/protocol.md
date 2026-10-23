@@ -62,7 +62,7 @@ Pushed to every session whenever they change (whoever changed them), newest valu
 | `pairing` | Bluetooth `{ready, alias, address, pairing_open, pairing_remaining, paired_devices}` |
 | `controllers` | connected controllers `[{session, controller, kind, peer, since}]` |
 | `web` | `{enabled, port, urls, auth: "password" \| "open"}` (never the password) |
-| `screen` | remote screen `{available, display, state: stopped\|starting\|live\|error, viewers, screen: [w, h], stream: {width, height, fps, bitrate, quality}, quality, error}` |
+| `screen` | remote screen `{available, display, state: stopped\|starting\|live\|error, viewers, screen: [w, h], stream: {width, height, fps, bitrate, quality, encoder: vpu\|cpu}, quality, encoder: auto\|vpu\|cpu, bitrate (0 = auto), error}` |
 | `net` | `{devices: [...net.devices], connections: [...net.connections]}` (polled every ~30 s and after every change) |
 | `io.gpio` | `{held: [{chip, line, pin, mode, bias, drive, active_low, edge, debounce_us, value, events}], events: [{chip, line, pin, edge: rising\|falling, t}]}` (latest 20 events) |
 | `io.pwm` | the `io.pwm.list` chips after a change |
@@ -115,7 +115,7 @@ Other events: `stats` `{data}` (after `stats.subscribe`), `term.exit` `{term, co
 | `gallery.delete_take` | `take` | |
 | `jobs.list` / `jobs.clear` / `jobs.cancel` | `id` (cancel) | `{jobs}` / job |
 | `screen.status` | | the `screen` topic |
-| `screen.settings.set` | `settings: {quality}` (low ≤ 960 px 15 fps, medium ≤ 1280 px 30 fps, high native 30 fps) | saved, shared; a running capture restarts at the new size |
+| `screen.settings.set` | `settings: {quality?, encoder?, bitrate?}` - quality low ≤ 960 px 15 fps, medium ≤ 1280 px 30 fps, high native 30 fps; encoder `auto` (VPU when present) / `vpu` / `cpu` (x264); bitrate bits/s, 0 = from the quality, else 200000 - 20000000 (SCR-05) | saved, shared; only the given keys change; a running capture restarts |
 | `admin.status` | | `{version, bluetooth, input, web, recorder, sessions}` |
 | `admin.pair` | `seconds` (0 closes) | status |
 | `admin.unpair` | `address` | |
