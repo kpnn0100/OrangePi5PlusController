@@ -29,6 +29,16 @@ from gi.repository import GLib, Gst  # noqa: E402
 
 H264_FPS = 15                     # what the VPU's H.264 encoder keeps up with at 4K
 H264_BPS = 12_000_000
+MIN_FREE_MB = 1024                # stop before the board runs out of RAM (it freezes, no OOM kill):
+                                  # MPP elements fed the wrong buffers leak GBs (RGA scaling: ~5 GB/20 s)
+
+
+def mem_available_mb():
+    try:
+        with open("/proc/meminfo") as f:
+            return next(int(l.split()[1]) // 1024 for l in f if l.startswith("MemAvailable:"))
+    except (OSError, StopIteration, ValueError):
+        return None
 QUEUE = "queue max-size-buffers=0 max-size-bytes=0 max-size-time=2000000000"
 
 
@@ -152,6 +162,14 @@ def play(path, start, mode, codec, audio):
         t.start()
     for sig in (15, 2):                               # SIGTERM / SIGINT: the viewer went away
         GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, sig, lambda: loop.quit() or GLib.SOURCE_REMOVE)
+
+    def guard():
+        free = mem_available_mb()
+        if free is not None and free < MIN_FREE_MB:
+            fail("stopped: only %d MB of memory left" % free)
+            return GLib.SOURCE_REMOVE
+        return GLib.SOURCE_CONTINUE
+    GLib.timeout_add(500, guard)
     try:
         loop.run()
     finally:

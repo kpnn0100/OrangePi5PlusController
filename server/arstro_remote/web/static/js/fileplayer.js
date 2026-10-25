@@ -1,8 +1,13 @@
 // Recording player for any browser (GAL-11): the server streams a fragmented MP4
 // (/api/play/<file>?mode=copy|h264&t=S) and this plays it with Media Source Extensions.
 //   copy - the video as it is (H.265 stays H.265: full quality, no load on the Pi), when this
-//          browser decodes it (MediaSource.isTypeSupported with the file's exact codec string)
+//          device decodes it
 //   h264 - otherwise the Pi's VPU converts it to H.264 (15 fps at 4K, one viewer at a time)
+// "Decodes it" is asked with MediaCapabilities (codec AND size, frame rate, bitrate - a phone
+// whose decoder stops at 1080p says no to 4K, where isTypeSupported only checks the codec),
+// and proven by playing: a decode error moves on to the next mode at the same position and
+// is remembered on this device. When nothing works, onCantPlay() lets the page offer a
+// smaller H.264 copy (the Pi has no leak-free way to scale 4K live).
 // Seeking starts a new stream at that time; the bar shows the file's time (offset + currentTime).
 
 import { h, icon, fmtDur } from "./core.js";
@@ -10,24 +15,58 @@ import { h, icon, fmtDur } from "./core.js";
 const MS = window.ManagedMediaSource || window.MediaSource;
 const H264_MIME = "avc1.640033";          // what the Pi's H.264 conversion produces (High@5.1)
 const AHEAD = 30;                          // s buffered before we stop reading (backpressure)
+const H264 = { fps: 15, bps: 12e6 };        // the Pi's conversion (recorder/play.py)
+const NO_KEY = "arstro.play.cant.";        // + codec@WxH: this device failed to decode it
 
 function mime(video, audio) {
   return `video/mp4; codecs="${video}${audio ? ",mp4a.40.2" : ""}"`;
 }
 
-/** {mode, mime} this browser can play the item with, or null. */
-export function streamMode(item) {
-  if (!MS || !item || item.recording || item.problem || !["hevc", "h264"].includes(item.codec)) return null;
+function remembered(codec, item) {
+  try { return localStorage.getItem(NO_KEY + `${codec}@${item.width}x${item.height}`) === "1"; } catch (e) { return false; }
+}
+
+function remember(codec, item) {
+  try { localStorage.setItem(NO_KEY + `${codec}@${item.width}x${item.height}`, "1"); } catch (e) { /* private mode */ }
+}
+
+/** The modes worth trying, best first: [{mode, mime, codec, fps, bps}]. Synchronous (codec only). */
+export function candidates(item) {
+  if (!MS || !item || item.recording || item.problem || !["hevc", "h264"].includes(item.codec)) return [];
   const ok = (m) => { try { return MS.isTypeSupported(m); } catch (e) { return false; } };
-  if (item.mse && ok(mime(item.mse, item.audio))) return { mode: "copy", mime: mime(item.mse, item.audio) };
-  if (item.codec === "hevc" && ok(mime(H264_MIME, item.audio))) return { mode: "h264", mime: mime(H264_MIME, item.audio) };
-  return null;
+  const out = [];
+  const bps = item.duration ? Math.round(item.size * 8 / item.duration) : 20e6;
+  if (item.mse && ok(mime(item.mse, item.audio)) && !remembered(item.mse, item))
+    out.push({ mode: "copy", codec: item.mse, mime: mime(item.mse, item.audio), fps: item.fps || 30, bps });
+  if (item.codec === "hevc" && ok(mime(H264_MIME, item.audio)) && !remembered(H264_MIME, item))
+    out.push({ mode: "h264", codec: H264_MIME, mime: mime(H264_MIME, item.audio), fps: H264.fps, bps: H264.bps });
+  return out;
+}
+
+/** Can this browser try to stream the item at all? (the gallery's play button) */
+export function streamMode(item) {
+  return candidates(item)[0] || null;
+}
+
+/** Does the device decode this mode at the item's size? (MediaCapabilities; true when unknown) */
+async function decodes(c, item) {
+  if (!navigator.mediaCapabilities?.decodingInfo || !item.width) return true;
+  try {
+    const r = await navigator.mediaCapabilities.decodingInfo({ type: "media-source", video: {
+      contentType: `video/mp4; codecs="${c.codec}"`, width: item.width, height: item.height,
+      bitrate: Math.max(1, Math.round(c.bps)), framerate: c.fps || 30 } });
+    return r.supported;
+  } catch (e) {
+    return true;
+  }
 }
 
 export class FilePlayer {
-  constructor(root, item, { poster } = {}) {
+  constructor(root, item, { poster, onCantPlay } = {}) {
     this.item = item;
-    this.how = streamMode(item);
+    this.onCantPlay = onCantPlay;
+    this.todo = candidates(item);                        // modes still to try, best first
+    this.how = null;
     this.offset = 0;
     this.gen = 0;
     this.duration = item.duration || 0;
@@ -37,10 +76,7 @@ export class FilePlayer {
     this.seek = h("input.seek", { type: "range", min: "0", max: String(Math.max(1, this.duration)), step: "0.1", value: "0",
                                   "aria-label": "Position" });
     this.time = h("span.mono.dim", null, "");
-    this.badge = h("span.tag", { class: this.how?.mode === "copy" ? "accent" : "warn",
-                                 title: this.how?.mode === "copy" ? "the original video, no conversion"
-                                   : "this browser has no H.265 decoder: the Pi converts it (15 fps)" },
-                   this.how?.mode === "copy" ? (item.codec === "hevc" ? "H.265 original" : "Original") : "H.264 · 15 fps");
+    this.badge = h("span.tag.hidden");
     this.msg = h("div.note.hidden");
     const fs = h("button.btn.ghost.icon.sm", { "aria-label": "Full screen",
       onclick: () => (document.fullscreenElement ? document.exitFullscreen() : root.requestFullscreen?.()) }, icon("expand"));
@@ -55,9 +91,43 @@ export class FilePlayer {
     this.video.addEventListener("play", () => this.renderBtn());
     this.video.addEventListener("pause", () => this.renderBtn());
     this.video.addEventListener("ended", () => this.renderBtn());
+    this.video.addEventListener("error", () => this.decodeFailed());
     this.renderTime(0);
-    if (!this.how) this.fail("This browser can't play this video (no Media Source support).");
-    else this.load(0, false);
+    this.next(0, false);
+  }
+
+  /** Take the next mode this device decodes and start it at t. */
+  async next(t, play) {
+    const gen = ++this.gen;
+    while (this.todo.length) {
+      const c = this.todo.shift();
+      if (!(await decodes(c, this.item))) continue;
+      if (gen !== this.gen) return;
+      this.how = c;
+      const copy = c.mode === "copy";
+      this.badge.className = "tag " + (copy ? "accent" : "warn");
+      this.badge.textContent = copy ? (this.item.codec === "hevc" ? "H.265 original" : "Original") : "H.264 · 15 fps";
+      this.badge.title = copy ? "the original video, no conversion"
+        : "this device can't decode the original: the Pi converts it to H.264 (15 fps)";
+      return this.load(t, play || this.wantPlay);                // play pressed while choosing
+    }
+    this.how = null;
+    const big = this.item.width > 1920;
+    this.fail(big ? `This device can't decode ${this.item.width}×${this.item.height} video. A 1080p H.264 copy plays here.`
+                  : "This device can't decode this video.");
+    this.onCantPlay?.(big);
+  }
+
+  /** The device failed on the stream it said it could decode: remember, try the next mode here. */
+  decodeFailed() {
+    if (!this.how || this.failing || this.destroyed) return;
+    this.failing = true;
+    const err = this.video.error;
+    console.warn("playback failed", this.how.mode, err?.code, err?.message);
+    remember(this.how.codec, this.item);
+    const t = this.now(), play = this.wantPlay || !this.video.paused;
+    this.how = null;
+    setTimeout(() => { this.failing = false; this.next(t, play); }, 0);
   }
 
   now() { return this.offset + (this.video.currentTime || 0); }
@@ -74,6 +144,7 @@ export class FilePlayer {
   }
 
   toggle() {
+    if (!this.how) { this.wantPlay = !this.wantPlay; return; }    // still choosing: play once ready
     if (this.video.ended) return this.load(0, true);
     if (this.video.paused) { this.wantPlay = true; this.video.play().catch(() => {}); }
     else { this.wantPlay = false; this.video.pause(); }
@@ -86,6 +157,7 @@ export class FilePlayer {
 
   /** (Re)start the stream at t seconds of the file. */
   load(t, play) {
+    if (!this.how) return;
     const gen = ++this.gen;
     this.abort?.abort();
     this.abort = new AbortController();
@@ -116,6 +188,7 @@ export class FilePlayer {
       if (gen === this.gen) this.fail("The stream stopped: " + e.message);
       return;
     }
+    if (gen !== this.gen) return;
     if (!resp.ok) {
       let why = resp.statusText;
       try { why = (await resp.json()).error || why; } catch (e) { /* not JSON */ }
@@ -149,11 +222,14 @@ export class FilePlayer {
       }
       if (gen === this.gen && ms.readyState === "open") ms.endOfStream();
     } catch (e) {
-      if (gen === this.gen && e.name !== "AbortError") this.fail("The stream stopped: " + e.message);
+      if (gen !== this.gen || e.name === "AbortError") return;
+      if (this.video.error) return this.decodeFailed();           // the decoder gave up
+      this.fail("The stream stopped: " + e.message);
     }
   }
 
   destroy() {
+    this.destroyed = true;
     this.gen++;
     this.abort?.abort();
     this.video.pause();

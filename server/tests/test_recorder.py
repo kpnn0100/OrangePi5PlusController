@@ -63,6 +63,24 @@ def setup():
     st = c.a.call("recorder.status")
     c.orig_source = st.get("simulate")
     c.orig_settings = c.a.call("recorder.settings.get")
+    # The user's settings survive a run that never reached teardown (board froze / repowered):
+    # they are saved first, and a slot still on a test folder gets them back from that file.
+    backup = os.path.join(os.path.expanduser("~/.cache"),          # one per slot (by its socket)
+                          "arstro-test-recorder-%s.json" % os.path.basename(control_socket_path()))
+    if c.orig_settings.get("storage", "").startswith(os.path.join(tempfile.gettempdir(), "arstro-rec-test-")):
+        try:
+            with open(backup) as f:
+                c.orig_settings, c.orig_source = json.load(f)
+            print("      (an interrupted run left test settings; restoring the user's from %s)" % backup)
+        except (OSError, ValueError):
+            pass
+    else:
+        os.makedirs(os.path.dirname(backup), exist_ok=True)
+        with open(backup, "w") as f:
+            json.dump([c.orig_settings, c.orig_source], f)
+            f.flush()
+            os.fsync(f.fileno())
+    c.backup = backup
     c.tmp = tempfile.mkdtemp(prefix="arstro-rec-test-")
     c.a.call("recorder.settings.set", settings={"storage": c.tmp, "audio": {"record": False}})
     c.a.call("recorder.source", simulate=args.source, timeout=40)
@@ -83,6 +101,10 @@ def teardown(c):
         c.a.call("recorder.settings.set", settings={k: o[k] for k in ("mode", "h265", "raw", "audio",
                                                                        "storage", "edid", "preview")})
         c.a.call("recorder.source", simulate=c.orig_source, timeout=40)
+        try:
+            os.remove(c.backup)                       # restored: nothing left to recover
+        except OSError:
+            pass
         c.a.close()
         c.b.close()
         shutil.rmtree(c.tmp, ignore_errors=True)
@@ -317,7 +339,8 @@ def h265_streams_to_any_browser(c):
         first.read(1000)
         second = http(c, path + "&t=2")
         try:
-            check(second.read(1000)[4:8] == b"ftyp", "the seek did not get a new stream")
+            got = second.read(1000)
+            check(got[4:8] == b"ftyp", "the seek did not get a new stream: %r" % got[:80])
             other = http_client.HTTPConnection("127.0.0.1", c.port, timeout=20, source_address=("127.0.0.2", 0))
             other.request("GET", path, headers={"Authorization": "Bearer " + c.token})
             resp = other.getresponse()

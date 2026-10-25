@@ -227,7 +227,11 @@ export function openTake(takeId) {
                                    "data-id": item.id, poster: thumbUrl(take) }));
       } else {
         clear(player);
-        fp = new FilePlayer(player, item, { poster: thumbUrl(take) });
+        // nothing this device decodes (e.g. a phone and 4K): offer a smaller copy it plays itself
+        const onCantPlay = (big) => player.querySelector(".note")?.append(
+          h("button.btn.sm.primary", { onclick: () => openConvert(item, "h264-vpu", big ? { scale: "1080" } : {}) },
+            icon("convert"), big ? "Make 1080p H.264" : "Make H.264"));
+        fp = new FilePlayer(player, item, { poster: thumbUrl(take), onCantPlay });
       }
     } else {
       const src = take.items.find((i) => !i.recording && i.kind !== "H.264");
@@ -309,13 +313,13 @@ export function openTake(takeId) {
 }
 
 // -------------------------------------------------------------- convert
-export async function openConvert(item, preselect) {
+export async function openConvert(item, preselect, preset = {}) {
   let list;
   try { list = await targets(); } catch (e) { toast(errText(e), "err"); return; }
   const caps = new Set(list.filter((t) => t.available).map((t) => t.id));
   let sel = preselect && caps.has(preselect) ? preselect : (list.find((t) => t.available && !sameKind(t.id, item)) || {}).id;
   const rawDefault = ((store.get("recorder.settings") || {}).raw || {}).ffv1_replace_raw;
-  const opts = { quality: "high", scale: "source", preset: "fast", bitrate: "", replaceRaw: rawDefault !== false };
+  const opts = { quality: "high", scale: preset.scale || "source", preset: "fast", bitrate: "", replaceRaw: rawDefault !== false };
   const box = h("div");
   const startBtn = h("button.btn.primary", { onclick: () => start() }, icon("convert"), "Convert");
   const s = sheet({ title: "Convert", body: box, foot: [h("button.btn.ghost", { onclick: () => s.close() }, "Cancel"), startBtn] });

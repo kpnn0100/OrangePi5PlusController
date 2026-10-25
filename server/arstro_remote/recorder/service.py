@@ -397,6 +397,11 @@ class RecorderService:
                 if mine is None:
                     raise OpError("busy: %d %s stream(s) already playing" % (len(live), mode))
                 mine.terminate()                    # a seek: the same viewer's previous stream
+                try:                                # ... must let go of the VPU first
+                    mine.wait(3)
+                except subprocess.TimeoutExpired:
+                    mine.kill()
+                    mine.wait()
                 self._plays[mode] = [(w, p) for w, p in live if p is not mine]
         cmd = [sys.executable, "-m", "arstro_remote.recorder.play", path, "--codec", item["codec"],
                "--mode", mode, "--start", "%.3f" % max(0.0, start)]
@@ -405,8 +410,9 @@ class RecorderService:
         try:
             from ..paths import state_dir
             with open(os.path.join(state_dir(), "play.log"), "a") as logf:
+                # RGA off: the stream never scales, and RGA paths leak GBs here (see play.py)
                 proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=logf,
-                                        env=self.jobs._env())
+                                        env=dict(self.jobs._env(), GST_MPP_NO_RGA="1"))
         except OSError as e:
             raise OpError("can't start the player: %s" % e)
         with self._play_lock:
