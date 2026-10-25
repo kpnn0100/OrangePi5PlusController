@@ -35,6 +35,10 @@ TARGETS = [   # (id, title, needs capability, description)
 ]
 
 
+# GAL-11: streams at once per mode. h264 = the VPU re-encodes, which it does for one viewer only
+PLAY_LIMIT = {"copy": 4, "h264": 1}
+
+
 class RecorderService:
     def __init__(self, ctx):
         self.ctx = ctx
@@ -61,6 +65,8 @@ class RecorderService:
         self._gallery_wake = threading.Event()
         self._planned = {}
         self._raw_to_delete = {}       # RAW path -> job whose FFV1 copy was verified (GAL-08)
+        self._plays = {m: [] for m in PLAY_LIMIT}     # mode -> [(viewer address, Popen)]
+        self._play_lock = threading.Lock()
 
     # ------------------------------------------------------------ lifecycle
     @property
@@ -373,6 +379,44 @@ class RecorderService:
             return self._file_path(name)
         except OpError:
             return None
+
+    def play_open(self, name, mode, start, who):
+        """GAL-11: start a play helper for one browser -> the Popen (its stdout is the
+        fragmented MP4). Call play_close(mode) when it ends. Raises OpError."""
+        if mode not in PLAY_LIMIT:
+            raise OpError("mode must be copy or h264")
+        path = self._file_path(name)
+        item = next((i for t in (self._gallery or self._scan()) for i in t["items"] if i["id"] == name), None)
+        if not item or item.get("codec") not in ("hevc", "h264") or item.get("recording"):
+            raise OpError("only finished H.265 / H.264 files can be streamed")
+        host = who.rsplit(":", 1)[0]
+        with self._play_lock:
+            live = self._plays[mode] = [(w, p) for w, p in self._plays[mode] if p.poll() is None]
+            if len(live) >= PLAY_LIMIT[mode]:
+                mine = next((p for w, p in live if w == host), None)
+                if mine is None:
+                    raise OpError("busy: %d %s stream(s) already playing" % (len(live), mode))
+                mine.terminate()                    # a seek: the same viewer's previous stream
+                self._plays[mode] = [(w, p) for w, p in live if p is not mine]
+        cmd = [sys.executable, "-m", "arstro_remote.recorder.play", path, "--codec", item["codec"],
+               "--mode", mode, "--start", "%.3f" % max(0.0, start)]
+        if not item.get("audio"):
+            cmd.append("--no-audio")
+        try:
+            from ..paths import state_dir
+            with open(os.path.join(state_dir(), "play.log"), "a") as logf:
+                proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=logf,
+                                        env=self.jobs._env())
+        except OSError as e:
+            raise OpError("can't start the player: %s" % e)
+        with self._play_lock:
+            self._plays[mode].append((host, proc))
+        log.info("playing %s (%s, from %.1f s) for %s", name, mode, start, who)
+        return proc
+
+    def play_close(self, mode):
+        with self._play_lock:
+            self._plays[mode] = [(w, p) for w, p in self._plays[mode] if p.poll() is None]
 
     def thumbnail(self, take_id):
         try:

@@ -1,21 +1,27 @@
-// Gallery (GAL-01..07): takes and their variants, playback, download, convert, delete, jobs.
+// Gallery (GAL-01..07, GAL-11): takes and their variants, playback, download, convert, delete, jobs.
 
 import { h, clear, icon, store, conn, run, sheet, confirmBox, toast, toggle, fmtBytes, fmtDur, busy, errText } from "../core.js";
+import { FilePlayer, streamMode } from "../fileplayer.js";
 
 const KINDS = [["all", "All"], ["RAW", "RAW"], ["H.265", "H.265"], ["H.264", "H.264"], ["FFV1", "FFV1"], ["VIDEO", "Other"]];
 const KIND_TAG = { RAW: "", "H.265": "accent", "H.264": "ok", FFV1: "warn", VIDEO: "" };
 let targetsCache = null;
 
-function playable(item) {
-  if (!item || item.recording || item.problem) return false;
+/** The browser plays the file itself (HTTP Range: smooth seeking). H.265 never: recordings
+ *  carry PCM audio browsers refuse, and a 4K H.265 file is too big a download - it streams. */
+function native(item) {
+  if (!item || item.recording || item.problem || item.codec === "hevc") return false;
   const ext = item.id.split(".").pop().toLowerCase();
   const v = document.createElement("video");
   if (!["mp4", "mov", "m4v", "webm", "mkv"].includes(ext)) return false;
   if (item.codec === "h264") return ext !== "mkv" && !!v.canPlayType('video/mp4; codecs="avc1.640033"');
-  if (item.codec === "hevc") return ext !== "mkv" && !!(v.canPlayType('video/mp4; codecs="hvc1.1.6.L153.B0"') ||
-                                                         v.canPlayType('video/mp4; codecs="hev1.1.6.L153.B0"'));
   if (["vp9", "vp8", "av1"].includes(item.codec)) return !!v.canPlayType("video/webm");
   return false;
+}
+
+/** Natively, or streamed by the Pi (GAL-11: H.265 as it is or converted, H.264 in any container). */
+function playable(item) {
+  return native(item) || !!streamMode(item);
 }
 
 function bestPlayable(take) {
@@ -186,6 +192,7 @@ export function jobRow(j) {
 export function openTake(takeId) {
   let take = null;
   let playing = null;
+  let fp = null;                                     // the streamed player (GAL-11), if one is shown
   const player = h("div.player");
   const list = h("div");
   const footDel = h("button.btn.danger", { onclick: () => deleteTake() }, icon("trash"), "Delete take");
@@ -210,10 +217,18 @@ export function openTake(takeId) {
     const item = current || bestPlayable(take);
     const cur = player.querySelector("video");
     if (item && cur && cur.dataset.id === item.id) return;     // keep playback position
+    fp?.destroy();
+    fp = null;
+    player.classList.remove("fp");
     if (item) {
       playing = item.id;
-      clear(player, h("video", { src: mediaUrl(item), controls: true, playsInline: true, preload: "metadata",
-                                 "data-id": item.id, poster: thumbUrl(take) }));
+      if (native(item)) {
+        clear(player, h("video", { src: mediaUrl(item), controls: true, playsInline: true, preload: "metadata",
+                                   "data-id": item.id, poster: thumbUrl(take) }));
+      } else {
+        clear(player);
+        fp = new FilePlayer(player, item, { poster: thumbUrl(take) });
+      }
     } else {
       const src = take.items.find((i) => !i.recording && i.kind !== "H.264");
       clear(player, h("img", { src: thumbUrl(take), alt: "" }),
@@ -288,7 +303,7 @@ export function openTake(takeId) {
 
   const off = store.on("gallery", () => refresh(), { now: false });
   const origClose = s.close;
-  s.close = () => { off(); player.querySelector("video")?.pause(); origClose(); };
+  s.close = () => { off(); fp?.destroy(); player.querySelector("video")?.pause(); origClose(); };
   refresh();
   return s;
 }

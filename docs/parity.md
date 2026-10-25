@@ -30,6 +30,7 @@ and all three are updated live by the same state events (ARC-03).
 | Jobs: progress, cancel, clear | GAL-05 | Gallery › Conversions | `jobs`, `jobs cancel ID`, `jobs clear` | Gallery › Conversions |
 | Verified lossless FFV1 replaces the RAW (setting, per conversion, on demand) | GAL-08 | Settings sheet › *Delete RAW after a verified copy*; Convert switch; FFV1 › *Check against the RAW…* | `rec set raw.ffv1_replace_raw=true`, `gallery convert … --keep-raw`, `gallery verify FFV1 [--delete-raw] [--wait]` | Settings sheet; Convert switch; FFV1 › check button |
 | Interrupted RAW repaired; conversions resumed and retried (state, attempt, note) | GAL-09, GAL-10 | automatic; Gallery shows the job state ³ | automatic; `jobs` shows `retrying`, the attempt and the note; `gallery list` / `gallery show` the item note | automatic; Gallery › Conversions shows *Retry n/3* and the note; the take shows the repair note |
+| Play H.265 (as it is, or converted to H.264 by the VPU) with seeking | GAL-11 | ³ (the app plays H.264 copies; H.265 streaming pending) | `gallery stream FILE OUT.mp4 [--mode copy\|h264] [--start S]` ¹ | Take sheet: player with *H.265 original* / *H.264 · 15 fps*, seek bar, full screen |
 | Delete one format / whole take | GAL-06 | Take sheet | `gallery delete FILE`, `gallery delete-take TAKE [--yes]` | Take dialog |
 | Server + Bluetooth status | ADM-01 | Settings › Bluetooth, About | `status` | System |
 | Pairing window, forget a phone | ADM-02 | Settings › Bluetooth | `pair [SECONDS]`, `unpair ADDRESS` | System |

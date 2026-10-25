@@ -505,6 +505,34 @@ def _deep_merge(a, b):
             a[k] = v
 
 
+def save_stream(ctl, name, path, mode, start):
+    """GAL-11: save what a browser gets from /api/play (fragmented MP4) - e.g. a playable H.264
+    version of an H.265 take, from `start` seconds."""
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+    base, token = ctl.http_base()
+    url = "%s/api/play/%s?mode=%s&t=%s" % (base, urllib.parse.quote(name), mode, start)
+    req = urllib.request.Request(url, headers={"Authorization": "Bearer %s" % token} if token else {})
+    try:
+        r = urllib.request.urlopen(req, timeout=30)
+    except urllib.error.HTTPError as e:
+        try:
+            why = json.loads(e.read()).get("error")
+        except ValueError:
+            why = e.reason
+        sys.exit("can't stream %s: %s" % (name, why))
+    size = 0
+    with r, open(path, "wb") as f:
+        while True:
+            chunk = r.read(1 << 20)
+            if not chunk:
+                break
+            f.write(chunk)
+            size += len(chunk)
+    print("saved the %s stream of %s (%s) to %s" % (mode, name, fmt_size(size), path))
+
+
 def save_preview(ctl, path, seconds, stream="/ws/preview"):
     """Write `seconds` of a live stream (HDMI preview or /ws/screen) to an .h264 file."""
     from .web import ws as wsmod
@@ -585,6 +613,8 @@ def cmd_gallery(ctl, a):
             sys.exit("this deletes every file of %s - add --yes" % a.take)
         r = ctl.call("gallery.delete_take", take=a.take)
         print("deleted " + (", ".join(r["deleted"]) or "nothing"))
+    elif sub == "stream":
+        save_stream(ctl, a.file, a.out, a.mode, a.start)
     elif sub == "download":
         download(ctl, a.file, a.out)
 
@@ -1468,6 +1498,12 @@ def build_parser():
     dt = gs.add_parser("delete-take", help="delete every file of a take")
     dt.add_argument("take")
     dt.add_argument("--yes", action="store_true")
+    st = gs.add_parser("stream", help="save the browser stream of an H.265/H.264 file as MP4 (GAL-11)")
+    st.add_argument("file")
+    st.add_argument("out")
+    st.add_argument("--mode", choices=["copy", "h264"], default="copy",
+                    help="copy = the video as it is, h264 = converted by the VPU (15 fps)")
+    st.add_argument("--start", type=float, default=0, help="seconds into the file")
     dw = gs.add_parser("download")
     dw.add_argument("file")
     dw.add_argument("--out", help="file or folder")

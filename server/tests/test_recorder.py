@@ -10,13 +10,16 @@ board is known to reset under heavy HDMI capture load.
 """
 
 import argparse
+import http.client as http_client
 import json
 import os
 import shutil
 import struct
 import subprocess
+import sys
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 
 from harness import check, nal_types, run, test, wait_until
@@ -24,6 +27,8 @@ from harness import check, nal_types, run, test, wait_until
 from arstro_remote.client import Client
 from arstro_remote.paths import control_socket_path, load_config
 from arstro_remote.web import auth, ws
+
+HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 class Ctx:
@@ -282,6 +287,67 @@ def media_range_and_thumbnail(c):
         check(False, "path traversal served")
     except urllib.error.HTTPError as e:
         check(e.code == 404, e.code)
+
+
+@test("GAL-11", "GAL-03", "SEC-03")
+def h265_streams_to_any_browser(c):
+    t = c.a.call("gallery.get", take=c.h265_take)
+    item = next(i for i in t["items"] if i["id"] == c.h265_file)
+    check((item.get("mse") or "").startswith("hvc1."), "no MSE codec string: %s" % item.get("mse"))
+    for mode, start, codec in (("copy", 0, "hevc"), ("h264", 1, "h264")):
+        with http(c, "/api/play/%s?mode=%s&t=%s" % (urllib.parse.quote(c.h265_file), mode, start)) as r:
+            check(r.status == 200 and r.headers["Content-Type"] == "video/mp4", r.status)
+            data = r.read()
+        check(data[4:8] == b"ftyp" and b"moov" in data[:4096] and b"moof" in data, "%s: not a fragmented MP4" % mode)
+        path = tempfile.mktemp(suffix=".mp4")
+        try:
+            open(path, "wb").write(data)
+            probe = subprocess.run(["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v",
+                                    "-show_entries", "stream=codec_name,nb_read_frames", "-of", "csv=p=0", path],
+                                   capture_output=True, text=True, timeout=30).stdout.strip()
+        finally:
+            os.remove(path)
+        print("      %s from %ss: %s, %d bytes" % (mode, start, probe, len(data)))
+        check(probe.startswith(codec) and int(probe.split(",")[-1]) > 0, probe)
+    # one VPU conversion at a time: the same viewer's next request (a seek) replaces its stream,
+    # another viewer is told the converter is busy
+    path = "/api/play/%s?mode=h264" % urllib.parse.quote(c.h265_file)
+    first = http(c, path)
+    try:
+        first.read(1000)
+        second = http(c, path + "&t=2")
+        try:
+            check(second.read(1000)[4:8] == b"ftyp", "the seek did not get a new stream")
+            other = http_client.HTTPConnection("127.0.0.1", c.port, timeout=20, source_address=("127.0.0.2", 0))
+            other.request("GET", path, headers={"Authorization": "Bearer " + c.token})
+            resp = other.getresponse()
+            check(resp.status == 409 and b"busy" in resp.read(), resp.status)
+            other.close()
+        finally:
+            second.close()
+    finally:
+        first.close()
+    for bad in ("?mode=x265", ""):
+        try:
+            http(c, "/api/play/%s%s" % (urllib.parse.quote(c.h264_file if bad else "nope.mov"), bad))
+            check(False, "served %s" % bad)
+        except urllib.error.HTTPError as e:
+            check(e.code in (404, 409), e.code)
+    try:
+        urllib.request.urlopen(c.base + "/api/play/" + urllib.parse.quote(c.h265_file), timeout=5)
+        check(False, "stream without token was served")
+    except urllib.error.HTTPError as e:
+        check(e.code == 401, e.code)
+    out = tempfile.mktemp(suffix=".mp4")
+    try:                                              # the CLI saves the same stream
+        r = subprocess.run([sys.executable, "-m", "arstro_remote", "gallery", "stream", c.h265_file, out,
+                            "--start", "1"], cwd=os.path.join(HERE, ".."), capture_output=True, text=True, timeout=60)
+        check(r.returncode == 0 and open(out, "rb").read(8)[4:8] == b"ftyp", r.stdout + r.stderr)
+    finally:
+        if os.path.exists(out):
+            os.remove(out)
+    check(wait_until(lambda: not subprocess.run(["pgrep", "-f", "arstro_remote.recorder.play"],
+                                                capture_output=True).stdout, 10), "a play helper outlived its viewer")
 
 
 @test("REC-04", "REC-03", "GAL-05")

@@ -107,7 +107,7 @@ Other events: `stats` `{data}` (after `stats.subscribe`), `term.exit` `{term, co
 | `camera.select` | `source`, `mode?` (V4L2: `"MJPG 1280x720@30"`), `spec?` (test: `"1920x1080@30"`) | recorder status (`source`, `camera`); saved in config.json (CAM-01) |
 | `recorder.test_signal` | `present` (test source only) | status |
 | `gallery.list` | `kind?` (RAW, H.265, H.264, FFV1, VIDEO) | `{folder, version, takes}` |
-| `gallery.get` | `take` | one take `{id, title, created, size, duration, kinds, recording, items}` |
+| `gallery.get` | `take` | one take `{id, title, created, size, duration, kinds, recording, items}`; an H.265/H.264 item carries `mse` (its RFC 6381 codec string, e.g. `hvc1.1.6.L150.B0`, GAL-11) |
 | `gallery.targets` | | `{targets: [{id, title, available, description, options}]}` |
 | `gallery.convert` | `file, target, quality?, scale?, preset?, bitrate?, rc?, chroma?, replace_raw?` | the new job; `replace_raw` (FFV1 from RAW, default = setting `raw.ffv1_replace_raw`): check the copy, then delete the RAW |
 | `gallery.verify` | `file` (the take's FFV1 or RAW), `delete_raw` | a *verify* job: decodes the FFV1 and compares every frame plane and audio sample with the RAW byte for byte; with `delete_raw` the RAW is deleted only if all of it is identical (GAL-08) |
@@ -182,6 +182,7 @@ Take ids are `REC_YYYYMMDD_HHMMSS`; its files are `<take>.arh` (RAW), `<take>_H2
 | `POST /api/login` `{password}` / `POST /api/logout` | sets / clears the HttpOnly `arstro_token_<port>` cookie (derived from the password; per port so A/B slots keep separate logins) |
 | `GET /ws` | WebSocket session (the protocol above) |
 | `GET /ws/preview` | live H.264 preview (below) |
+| `GET /api/play/<file>?mode=copy\|h264&t=S` | GAL-11: an H.265/H.264 recording as a fragmented MP4 stream from S s (keyframe before it, timestamps from 0), audio AAC; `copy` = the video as it is, `h264` = VPU conversion at 15 fps (one at a time: the same viewer's next request replaces its stream, others get 409 *busy*); no length (`Connection: close`) |
 | `GET /ws/screen` | the Pi's desktop, same messages as `/ws/preview`; control it with `in.move_to` (absolute desktop pixels), `in.btn`, `in.scroll`, `in.key`, `in.text` |
 | `GET /api/media/<file>` | a recording, HTTP Range; `?download=1` |
 | `GET /api/thumb/<take>` | JPEG thumbnail |

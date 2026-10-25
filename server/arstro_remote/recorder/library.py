@@ -44,6 +44,25 @@ def _probe_arh(path, item):
         item["problem"] = "not finalized (still recording, or interrupted)"
 
 
+# GAL-11: RFC 6381 codec strings, so a browser can say exactly whether it decodes a stream
+H264_PROFILES = {"Baseline": "4200", "Constrained Baseline": "4240", "Main": "4D00", "High": "6400",
+                 "High 10": "6E00", "High 4:2:2": "7A00", "High 4:4:4 Predictive": "F400"}
+HEVC_PROFILES = {"Main": "1.6", "Main 10": "2.4", "Rext": "4.10", "Main Still Picture": "3.8"}
+
+
+def mse_codec(codec, profile, level):
+    """'hvc1.1.6.L150.B0' / 'avc1.640033' for the video as it is, or None."""
+    try:
+        level = int(level)
+    except (TypeError, ValueError):
+        return None
+    if codec == "hevc" and profile in HEVC_PROFILES and level > 0:
+        return "hvc1.%s.L%d.B0" % (HEVC_PROFILES[profile], level)
+    if codec == "h264" and profile in H264_PROFILES and level > 0:
+        return "avc1.%s%02X" % (H264_PROFILES[profile], level)
+    return None
+
+
 def _probe_media(path, item):
     try:
         out = subprocess.run(["ffprobe", "-v", "error", "-print_format", "json", "-show_format",
@@ -74,6 +93,7 @@ def _probe_media(path, item):
     except ValueError:
         pass
     item["pixel_format"] = v.get("pix_fmt", "")
+    item["mse"] = mse_codec(codec, v.get("profile", ""), v.get("level"))
     try:
         item["duration"] = float(info.get("format", {}).get("duration") or v.get("duration") or 0)
     except ValueError:

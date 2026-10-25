@@ -9,6 +9,8 @@
   GET  /ws/preview            WebSocket: live H.264 preview (see recorder/preview.py)
   GET  /ws/screen             WebSocket: the Pi's desktop, same messages (see screen/service.py)
   GET  /api/media/<file>      a recording (HTTP Range; ?download=1 for "save as")
+  GET  /api/play/<file>?mode=copy|h264&t=S   a recording as a fragmented MP4 stream from S seconds,
+                              for browsers (GAL-11): copy = the video as it is, h264 = VPU re-encode
   GET  /api/thumb/<clip>      JPEG thumbnail of a take
   GET  /api/files/download?path=P    a file of the Files module (FILE-03)
   PUT  /api/files/upload?dir=D&name=N[&overwrite=1]   raw body -> D/N (FILE-02)
@@ -287,6 +289,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._app_file(path[len("/apps/"):], head)
             if path.startswith("/api/media/"):
                 return self._media(urllib.parse.unquote(path[len("/api/media/"):]), head)
+            if path.startswith("/api/play/"):
+                return self._play(urllib.parse.unquote(path[len("/api/play/"):]), head)
             if path.startswith("/api/thumb/"):
                 return self._thumb(urllib.parse.unquote(path[len("/api/thumb/"):]), head)
             if path == "/api/files/download":
@@ -507,6 +511,51 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_error(HTTPStatus.NOT_FOUND)
         download = "download" in urllib.parse.parse_qs(self._url.query)
         self._send_file(path, name, download, head)
+
+    def _play(self, name, head):
+        """GAL-11: pipe a play helper's fragmented MP4 to the browser until either side stops."""
+        rec = self.web.ctx.recorder
+        if not rec:
+            return self.send_error(HTTPStatus.NOT_FOUND)
+        q = urllib.parse.parse_qs(self._url.query)
+        mode = (q.get("mode") or ["copy"])[0]
+        try:
+            start = float((q.get("t") or ["0"])[0])
+        except ValueError:
+            start = 0.0
+        if head:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        try:
+            proc = rec.play_open(name, mode, start, "%s:%d" % self.client_address[:2])
+        except Exception as e:                          # OpError: the reason, as text
+            return self._send_json({"ok": False, "error": str(e).strip("'\"")}, 409)
+        try:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True                 # the body ends when the stream does
+            while True:
+                chunk = proc.stdout.read1(256 << 10)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass                                         # the viewer seeked or left
+        finally:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(3)
+                except Exception:
+                    proc.kill()
+            proc.stdout.close()
+            rec.play_close(mode)
 
     def _thumb(self, clip, head):
         rec = self.web.ctx.recorder

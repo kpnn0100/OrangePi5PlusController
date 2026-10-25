@@ -485,6 +485,14 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .player .note { position: absolute; left: 12px; right: 12px; bottom: 12px; background: rgba(10, 11, 13, .75);
                 backdrop-filter: blur(8px); border-radius: 12px; padding: 10px 12px; font-size: 13px;
                 display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+/* GAL-11: streamed recording player (fileplayer.js) - controls over the picture */
+.player.fp .fp-bar { position: absolute; left: 0; right: 0; bottom: 0; display: flex; gap: 8px; align-items: center;
+                     padding: 6px 10px; background: linear-gradient(transparent, rgba(0, 0, 0, .7)); color: #fff; }
+.player.fp .fp-bar .seek { flex: 1; min-width: 60px; accent-color: var(--accent); }
+.player.fp .fp-bar .mono { font-size: 12px; white-space: nowrap; color: rgba(255, 255, 255, .85); }
+.player.fp .fp-bar .btn { color: #fff; }
+.player.fp .note { bottom: 52px; }
+@media (max-width: 560px) { .player.fp .fp-bar .tag { display: none; } }
 .variant { display: flex; gap: 12px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--line);
            flex-wrap: wrap; }
 .variant:last-child { border-bottom: 0; }
