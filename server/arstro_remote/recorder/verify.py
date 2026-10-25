@@ -5,8 +5,9 @@
 FFV1 is lossless by design, so this does not test the codec: it proves the *whole copy*
 before the RAW may be deleted - no chroma or colour conversion on the way, no missing or
 duplicated frame, nothing truncated, and every audio sample. The FFV1 video is decoded in
-its own (native) pixel format, the RAW frames are rearranged into the same planes
-(NV16 -> Y + U + V ...), and every plane of every frame is compared byte for byte; the
+its own (native) pixel format, the RAW frames - as the constant-rate sequence the encoder got
+(arh.cfr_frames: a dropped capture frame is the previous one repeated) - are rearranged into
+the same planes (NV16 -> Y + U + V ...), and every plane of every frame is compared byte for byte; the
 audio is decoded to the RAW's sample format and compared the same way.
 
 Prints JSON lines like the transcode worker: {"state": "verifying", "frames", "total"}
@@ -107,6 +108,7 @@ def _first_diff(a, b):
 def verify(arh_path, mkv_path, progress=None):
     """Return {"ok", "frames", "audio_bytes", "detail"}; never raises for a mismatch."""
     try:
+        arh.repair_if_needed(arh_path)                 # an interrupted recording (GAL-09)
         reader = arh.ArhReader(arh_path)
         v, a = reader.video, reader.audio
         fmt, w, h = v["format"], v["width"], v["height"]
@@ -143,7 +145,8 @@ def _check_video(reader, mkv_path, fmt, pix, v, total, progress):
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=size * 2)
     n = 0
     try:
-        for _t, _pts, _seq, data in reader.chunks((arh.VFRM,), False):
+        # the same constant-rate sequence the encoder was fed: a capture drop is a repeated frame
+        for _pts, _seq, data, _rep in arh.cfr_frames(reader):
             got = proc.stdout.read(size)
             if len(got) < size:
                 raise Mismatch("the copy ends after %d frames, the RAW has more" % n)

@@ -126,11 +126,44 @@ def _default_layout(v):
 
 
 def transcode(args):
-    """Entry point of the worker process. Returns the exit code."""
+    """Entry point of the worker process. Returns the exit code.
+
+    The output is locked for the whole run (arh.file_lock): the other A/B slot, or a job
+    resumed after a restart, can never write the same file at the same time."""
     try:
         os.nice(args.nice)
     except OSError:
         pass
+    if args.cpus:          # threads=0 encoders (FFV1) size themselves to the CPUs they may use
+        try:
+            cpus = sorted(os.sched_getaffinity(0))
+            os.sched_setaffinity(0, cpus[:max(1, args.cpus)])
+        except (AttributeError, OSError):
+            pass
+    out = args.output or output_path(args.input, args.codec, args.scale)
+    with arh.file_lock(out) as mine:
+        if not mine:
+            print(json.dumps({"state": "failed", "error": "%s is being made by another job (the other slot?)"
+                              % os.path.basename(out)}), flush=True)
+            return 4
+        if args.input.lower().endswith(".arh") and not args.follow:
+            try:   # an interrupted recording (power loss): finalize it before reading (GAL-09)
+                note = arh.repair_if_needed(args.input, lambda m: print(m, file=sys.stderr))
+                if note:
+                    print(json.dumps({"state": "running", "frames": 0, "total": note["frames"], "fps": 0,
+                                      "repaired": note}), flush=True)
+            except (OSError, ValueError) as e:
+                print("repair of %s failed: %s - reading around the damage" % (args.input, e), file=sys.stderr)
+        return _transcode(args)
+
+
+def _damage(reader):
+    """{"ranges", "bytes"} the reader skipped, or None."""
+    d = sorted(reader.damaged)
+    return {"ranges": [list(x) for x in d[:5]], "bytes": sum(b - a for a, b in d)} if d else None
+
+
+def _transcode(args):
     Gst.init(None)
     if args.codec == "ffv1-gpu":
         return transcode_ffv1_gpu(args)
@@ -204,7 +237,6 @@ def transcode(args):
 
     def feed_video():
         src = pipe.get_by_name("vsrc")
-        last_seq, prev = None, None
         n = [0]
 
         def push(data):
@@ -214,16 +246,11 @@ def transcode(args):
             n[0] += 1
             return src.emit("push-buffer", buf) == Gst.FlowReturn.OK
         try:
-            for _t, pts, seq, data in reader.chunks((arh.VFRM,), args.follow, stop=stop):
+            # constant frame rate: capture drops repeat the previous frame (the check does the same)
+            for pts, _seq, data, _rep in arh.cfr_frames(reader, args.follow, stop=stop):
                 if first_pts[0] is None:
                     first_pts[0] = pts
                     first_ready.set()
-                # constant frame rate: repeat the previous frame over capture drops
-                if last_seq is not None and prev is not None:
-                    for _ in range(min(max(0, seq - last_seq - 1), int(fps * 10))):
-                        if not push(prev):
-                            return
-                last_seq, prev = seq, data
                 if not push(data):
                     return
         except (OSError, ValueError) as e:
@@ -301,7 +328,7 @@ def transcode(args):
     if result["code"] == 0:
         os.replace(part, out)
         emit(state="done", frames=encoded[0], output=out,
-             seconds=round(time.monotonic() - t0, 1))
+             seconds=round(time.monotonic() - t0, 1), damaged=_damage(reader))
     else:
         try:
             os.remove(part)
@@ -370,14 +397,8 @@ def transcode_ffv1_gpu(args):
     result = {"error": None}
 
     def feed_video():
-        last_seq, prev = None, None
-        fps = reader.fps
         try:
-            for _t, pts, seq, data in reader.chunks((arh.VFRM,), args.follow, stop=stop):
-                if last_seq is not None and prev is not None:       # CFR over capture drops
-                    for _ in range(min(max(0, seq - last_seq - 1), int(fps * 10))):
-                        proc.stdin.write(prev)
-                last_seq, prev = seq, data
+            for _pts, _seq, data, _rep in arh.cfr_frames(reader, args.follow, stop=stop):   # CFR over drops
                 proc.stdin.write(data)
         except (BrokenPipeError, OSError, ValueError) as e:
             if not stop.is_set():
@@ -440,7 +461,8 @@ def transcode_ffv1_gpu(args):
     err = "\n".join(l for l in err.splitlines() if "arm_release_ver" not in l).strip()
     if code == 0 and not result["error"]:
         os.replace(part, out)
-        emit(state="done", frames=frames, output=out, seconds=round(time.monotonic() - t0, 1))
+        emit(state="done", frames=frames, output=out, seconds=round(time.monotonic() - t0, 1),
+             damaged=_damage(reader) if reader else None)
         return 0
     try:
         os.remove(part)
@@ -587,15 +609,52 @@ def add_transcode_args(sp):
     sp.add_argument("--no-audio", action="store_true")
     sp.add_argument("-o", "--output", help="output file (default: next to the .arh)")
     sp.add_argument("--nice", type=int, default=10, help="CPU priority niceness (default 10)")
+    sp.add_argument("--cpus", type=int, default=0,
+                    help="run on the first N CPUs only (0 = all): less peak current on a weak supply; "
+                         "on big.LITTLE boards the little cores come first")
 
 
 # ---------------------------------------------------------------- job manager (UI side)
 
 VERIFIED_SUFFIX = ".verified.json"      # next to an FFV1 file proven identical to its RAW (GAL-08)
+MAX_ATTEMPTS = 3                        # a failed or interrupted job runs again, up to this (GAL-10)
+RETRY_DELAY = 10                        # s, times the attempt number
+GENTLE_CPUS = 6                         # FFV1 on CPU after a failure: fewer cores, less peak current
+EXIT_LOCKED = 4                         # the worker's code for "another job makes this file"
 
 
 def verify_wanted(codec, src, opts):
     return codec in ("ffv1", "ffv1-gpu", "verify") and src.lower().endswith(".arh") and bool(opts.get("verify"))
+
+
+def _mb(n):
+    return "%.1f MB" % (n / 1e6)
+
+
+def clean_stale_parts(folder, busy=()):
+    """Remove *.part outputs nobody is writing (left by a power loss), and their empty logs."""
+    removed = []
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return removed
+    for name in names:
+        if not name.endswith(".part"):
+            continue
+        out = os.path.join(folder, name[:-5])
+        if out in busy:
+            continue
+        with arh.file_lock(out) as mine:
+            if not mine:
+                continue                       # a worker (this slot or the other) writes it
+            for p in (out + ".part", out + ".log"):
+                try:
+                    if p.endswith(".part") or os.path.getsize(p) == 0:
+                        os.remove(p)
+                        removed.append(os.path.basename(p))
+                except OSError:
+                    pass
+    return removed
 
 
 class Job:
@@ -607,7 +666,7 @@ class Job:
         self.src, self.codec, self.opts, self.follow = src, codec, opts, follow
         self.output = output or output_path(src, codec, opts.get("scale"))
         self.created = time.time()
-        # queued | running | verifying | done | failed | cancelled
+        # queued | running | verifying | retrying | done | failed | cancelled
         self.state = "queued"
         self.verify = None            # {"ok", "frames", "audio_bytes", "detail", "raw_deleted"?}
         self.frames = self.total = 0
@@ -617,6 +676,9 @@ class Job:
         self.proc = None
         self.started = None
         self.log_path = self.output + (".verify.log" if codec == "verify" else ".log")
+        self.attempt = 1
+        self.note = None              # what happened on the way: repaired RAW, damage skipped, retries
+        self.verify_only = False      # resumed after its copy was made: only the check is left
 
     @property
     def title(self):
@@ -625,6 +687,9 @@ class Job:
     @property
     def finished(self):
         return self.state in ("done", "failed", "cancelled")
+
+    def add_note(self, text):
+        self.note = text if not self.note else self.note + "; " + text
 
     def eta(self):
         if self.state not in ("running", "verifying") or self.fps <= 0 or self.total <= self.frames:
@@ -638,17 +703,80 @@ class Job:
                 "progress": round(self.frames / self.total, 4) if self.total else 0.0,
                 "eta": round(self.eta()) if self.eta() is not None else None,
                 "error": self.error, "options": self.opts, "created": int(self.created),
-                "verify": self.verify}
+                "verify": self.verify, "attempt": self.attempt, "max_attempts": MAX_ATTEMPTS,
+                "note": self.note}
+
+    def persisted(self):
+        return {"src": self.src, "codec": self.codec, "opts": self.opts, "output": self.output,
+                "attempt": self.attempt, "note": self.note, "created": self.created,
+                "verify_only": self.verify_only or self.state == "verifying"}
 
 
 class JobManager:
-    """Runs transcode workers; at most `parallel` at a time (follow jobs always start)."""
+    """Runs transcode workers; at most `parallel` at a time (follow jobs always start).
 
-    def __init__(self, on_update, parallel=2):
-        self.on_update = on_update
+    GAL-10: unfinished jobs are kept in `store` (JSON, rewritten on every state change), so a
+    restart or a power loss does not lose them - start() resumes them. A job that fails (or was
+    cut off) runs again up to MAX_ATTEMPTS times; FFV1 on the CPU then uses fewer threads."""
+
+    def __init__(self, on_update, parallel=2, store=None):
+        self._notify = on_update
         self.parallel = parallel
         self.jobs = []
+        self.store = store
+        self._saved = None
+        self._closing = False
 
+    def on_update(self, job):
+        self._save()
+        self._notify(job)
+
+    def _save(self):
+        if not self.store or self._closing:
+            return
+        keep = [j for j in self.jobs if not j.finished]
+        fp = [(j.id, j.state, j.attempt) for j in keep]
+        if fp == self._saved:
+            return
+        tmp = self.store + ".tmp"
+        try:
+            with open(tmp, "w") as f:
+                json.dump([j.persisted() for j in keep], f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, self.store)
+            self._saved = fp
+        except OSError:
+            pass
+
+    def resume(self):
+        """Re-queue the jobs a stop / crash / power loss cut off. Returns how many."""
+        try:
+            with open(self.store) as f:
+                saved = json.load(f)
+        except (OSError, ValueError, TypeError):
+            return 0
+        n = 0
+        for d in saved if isinstance(saved, list) else []:
+            try:
+                if not os.path.exists(d["src"]) or any(j.output == d["output"] and not j.finished for j in self.jobs):
+                    continue
+                job = Job(d["src"], d["codec"], d.get("opts") or {}, False, output=d["output"])
+            except (KeyError, TypeError):
+                continue
+            job.created = d.get("created", job.created)
+            job.attempt = int(d.get("attempt", 1)) + 1     # the cut-off run counts
+            job.note = d.get("note")
+            job.verify_only = bool(d.get("verify_only")) and os.path.exists(job.output)
+            if job.attempt > MAX_ATTEMPTS:
+                job.state, job.error = "failed", "interrupted %d times (power?) - start it again by hand" % MAX_ATTEMPTS
+            else:
+                job.add_note("resumed after a restart")
+                n += 1
+            self.jobs.append(job)
+        self._schedule()
+        self.on_update(None)
+        return n
     def get(self, job_id):
         return next((j for j in self.jobs if j.id == int(job_id)), None)
 
@@ -680,7 +808,7 @@ class JobManager:
         return sum(1 for j in self.jobs if not j.finished)
 
     def cancel(self, job):
-        if job.state == "queued":
+        if job.state in ("queued", "retrying"):
             job.state = "cancelled"
             self.on_update(job)
         elif job.state in ("running", "verifying") and job.proc:
@@ -692,7 +820,9 @@ class JobManager:
         self.on_update(None)
 
     def shutdown(self):
-        """Stop all workers (on quit); unfinished outputs are removed."""
+        """Stop all workers (on quit); unfinished outputs are removed. The store keeps the
+        unfinished jobs, so the next start resumes them."""
+        self._closing = True
         for j in self.jobs:
             if j.state in ("running", "verifying") and j.proc:
                 j.proc.send_signal(signal.SIGTERM)
@@ -737,12 +867,15 @@ class JobManager:
             busy += 1
 
     def _spawn(self, job):
-        if job.codec == "verify":
+        if job.codec == "verify" or job.verify_only:
             return self._spawn_verify(job)
         o = job.opts
         cmd = [sys.executable, "-m", "arstro_remote.recorder.transcode", job.src, "--codec", job.codec,
                "--quality", o.get("quality", "high"), "--preset", o.get("preset", "fast"),
-               "--chroma", o.get("chroma", "420"), "--scale", o.get("scale") or "source"]
+               "--chroma", o.get("chroma", "420"), "--scale", o.get("scale") or "source",
+               "-o", job.output]
+        if job.attempt > 1 and job.codec == "ffv1":
+            cmd += ["--cpus", str(GENTLE_CPUS)]
         if o.get("bitrate"):
             cmd += ["--bitrate", str(o["bitrate"]), "--rc", o.get("rc", "vbr")]
         if job.follow:
@@ -758,7 +891,8 @@ class JobManager:
             self.on_update(job)
             return
         log.close()
-        job.state, job.started = "running", time.monotonic()
+        job.state, job.started, job.error = "running", time.monotonic(), None
+        self.on_update(job)
         GLib.io_add_watch(job.proc.stdout, GLib.PRIORITY_DEFAULT,
                           GLib.IOCondition.IN | GLib.IOCondition.HUP, self._on_output, job)
 
@@ -800,13 +934,20 @@ class JobManager:
             job.fps = msg.get("fps", job.fps)
             job.live = msg.get("live", job.live)
             st = msg.get("state")
+            if msg.get("repaired"):
+                r = msg["repaired"]
+                job.add_note("RAW was cut off - repaired: %d frames kept, %s of damaged tail removed"
+                             % (r.get("frames", 0), _mb(r.get("dropped_bytes", 0))))
+            if msg.get("damaged"):
+                job.add_note("skipped %s of damaged data" % _mb(msg["damaged"].get("bytes", 0)))
             if job.state == "verifying":
                 if "verify" in msg:
                     job.verify = msg["verify"]
                 elif st == "verifying" and job.frames:
                     job.fps = round(job.frames / max(0.1, time.monotonic() - job.verify_started), 1)
             elif st in ("done", "failed", "cancelled"):
-                job.state, job.error = st, msg.get("error")
+                # the final state is set when the worker exits: a failure may still be retried
+                job.result, job.error = st, msg.get("error")
             self.on_update(job)
             return True
         # worker exited
@@ -819,11 +960,18 @@ class JobManager:
                 job.state = "done" if job.codec != "verify" or code == 0 else "failed"
                 if job.verify.get("ok"):
                     self._mark_verified(job)
+                elif job.codec != "verify" and self._retry(job, "the copy failed the check: " + str(job.verify.get("detail"))):
+                    return False
             self._finish(job)
             return False
         if not job.finished:
-            job.state = "done" if code == 0 else "failed"
-            job.error = job.error or f"worker exited with code {code} (see {job.log_path})"
+            job.state = getattr(job, "result", None) or ("done" if code == 0 else "failed")
+            job.result = None
+            if job.state != "done":
+                job.error = job.error or f"worker exited with code {code} (see {job.log_path})"
+        if job.state == "failed" and code != EXIT_LOCKED and not getattr(job, "cancelled", False):
+            if self._retry(job, job.error):
+                return False
         if job.state == "done" and verify_wanted(job.codec, job.src, job.opts):
             self._cleanup_part(job)
             self._spawn_verify(job)                  # phase 2: prove it before the RAW may go
@@ -835,6 +983,28 @@ class JobManager:
         self._cleanup(job)
         self.on_update(job)
         self._schedule()
+
+    def _retry(self, job, reason):
+        """Run a failed job again later (GAL-10). False when it has had all its attempts."""
+        if job.attempt >= MAX_ATTEMPTS:
+            job.add_note("gave up after %d attempts" % job.attempt)
+            return False
+        self._cleanup_part(job)
+        delay = RETRY_DELAY * job.attempt
+        job.add_note("attempt %d failed (%s) - retrying" % (job.attempt, (reason or "?")[:120]))
+        job.attempt += 1
+        job.state, job.verify, job.verify_only, job.proc = "retrying", None, False, None
+        job.frames = job.fps = 0
+        self.on_update(job)
+
+        def again():
+            if job.state == "retrying":
+                job.state = "queued"
+                self._schedule()
+                self.on_update(job)
+            return False
+        GLib.timeout_add_seconds(delay, again)
+        return True
 
     @staticmethod
     def _cleanup_part(job):

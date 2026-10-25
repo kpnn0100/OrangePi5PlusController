@@ -19,7 +19,7 @@ from datetime import datetime
 
 from ..protocol import T_JSON, T_VIDEO, FrameDecoder, ProtocolError, decode_video
 from ..session import OpError
-from . import jobs as jobs_mod, library, settings as settings_mod, thumbs
+from . import arh, jobs as jobs_mod, library, settings as settings_mod, thumbs
 from .preview import Preview
 
 log = logging.getLogger("arstro.recorder")
@@ -69,9 +69,18 @@ class RecorderService:
 
     def start(self):
         os.makedirs(self.storage, exist_ok=True)
-        self.jobs = jobs_mod.JobManager(self._on_job)      # GLib io watches: main thread
+        from ..paths import state_dir
+        os.makedirs(state_dir(), exist_ok=True)
+        # GLib io watches: main thread. Unfinished jobs survive a restart / power loss (GAL-10).
+        self.jobs = jobs_mod.JobManager(self._on_job, store=os.path.join(state_dir(), "jobs.json"))
         self.hub.publish("recorder.settings", self.settings)
         self.hub.publish("jobs", [])
+        stale = jobs_mod.clean_stale_parts(self.storage)
+        if stale:
+            log.info("removed unfinished outputs of an interrupted run: %s", ", ".join(stale))
+        n = self.jobs.resume()
+        if n:
+            log.info("resumed %d conversion job(s) cut off by a restart or power loss", n)
         self._spawn_worker()
         threading.Thread(target=self._gallery_loop, name="gallery", daemon=True).start()
 
@@ -301,8 +310,26 @@ class RecorderService:
         busy = self.jobs.busy_paths() if self.jobs else set()
         return self.library.scan(self.storage, self.recording_path, busy)
 
+    def _repair_interrupted(self):
+        """GAL-09: finalize RAW recordings a crash / power loss cut off, once nobody writes them."""
+        busy = set(self.jobs.busy_paths()) if self.jobs else set()
+        for name in os.listdir(self.storage):
+            if not name.endswith(".arh"):
+                continue
+            p = os.path.join(self.storage, name)
+            if p in busy or (self.recording_path and os.path.abspath(p) == os.path.abspath(self.recording_path)):
+                continue
+            try:
+                arh.repair_if_needed(p, log.info)
+            except (OSError, ValueError) as e:
+                log.warning("could not repair %s: %s (conversions still read around the damage)", name, e)
+
     def _gallery_loop(self):
         while True:
+            try:
+                self._repair_interrupted()
+            except Exception:
+                log.exception("repair scan")
             try:
                 takes = self._scan()
                 fp = json.dumps([(t["id"], [(i["id"], i["kind"], i["busy"], i["problem"],
@@ -369,6 +396,15 @@ class RecorderService:
 
     # ------------------------------------------------------------------ jobs
     def _on_job(self, job):
+        if job is not None:
+            seen = (job.state, job.attempt)
+            if getattr(job, "_logged", None) != seen:
+                job._logged = seen
+                if job.state in ("retrying", "failed", "done", "cancelled") or job.attempt > 1:
+                    log.log(logging.WARNING if job.state in ("retrying", "failed") else logging.INFO,
+                            "job #%d %s %s: %s (attempt %d)%s%s", job.id, job.title, os.path.basename(job.src),
+                            job.state, job.attempt, " - " + job.error if job.error else "",
+                            " - " + job.note if job.note else "")
         if job is not None and job.finished and (job.verify or {}).get("ok") and job.opts.get("replace_raw"):
             self._raw_to_delete[job.src] = job
         self._delete_verified_raws()

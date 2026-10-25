@@ -55,7 +55,7 @@ Pushed to every session whenever they change (whoever changed them), newest valu
 |---|---|
 | `recorder` | status: `available, caps, signal, capture, recording, preview, disk, mode, mode_text, last, simulate` |
 | `recorder.settings` | the recording settings (see `recorder.settings.set`) |
-| `jobs` | list of jobs `{id, title, codec, state, source, output, progress, fps, eta, live, error, options, verify}`; `state`: queued, running, **verifying** (FFV1 being compared with its RAW), done, failed, cancelled; `verify`: `{ok, frames, audio_bytes, detail, raw_deleted?}` or null; `codec` `verify` = an on-demand check |
+| `jobs` | list of jobs `{id, title, codec, state, source, output, progress, fps, eta, live, error, options, verify, attempt, max_attempts, note}`; `state`: queued, running, **verifying** (FFV1 being compared with its RAW), **retrying** (failed, runs again shortly - GAL-10), done, failed, cancelled; `note`: what happened on the way (RAW repaired, damage skipped, retries, resumed after a restart - GAL-09/10); `verify`: `{ok, frames, audio_bytes, detail, raw_deleted?}` or null; `codec` `verify` = an on-demand check |
 | `gallery` | summary `{version, takes, files, size, folder}`; fetch `gallery.list` when `version` changes |
 | `wifi` | `{device, enabled, connected, ssid, signal, ip, state, connection}` |
 | `terminals` | shared shells `[{term, cols, rows, viewers, attached, opened_by, ephemeral, age, detached_for}]` |

@@ -552,6 +552,8 @@ def cmd_gallery(ctl, a):
                     print("    %-6s %-40s %-18s %9s%s%s" % (i["kind"], i["id"], res, fmt_size(i["size"]),
                                                             "  verified lossless" if i.get("verified") else "",
                                                             "  (%s)" % i["problem"] if i.get("problem") else ""))
+                    if i.get("note"):                   # GAL-09: repaired after an interruption
+                        print("           %s" % i["note"])
         out(a, r, human)
     elif sub == "show":
         out(a, ctl.call("gallery.get", take=a.take), lambda t: print(json.dumps(t, indent=2)))
@@ -646,9 +648,13 @@ def cmd_jobs(ctl, a):
                 return j.get("error") or ""
             return ("verified%s" % (", RAW deleted" if v.get("raw_deleted") else "")) if v.get("ok") \
                 else "NOT identical: " + str(v.get("detail"))
-        out(a, r, lambda js: [print("#%-3d %-9s %-10s %3d%%  %-40s %s" % (
-            j["id"], j["state"], j["codec"], int(j["progress"] * 100), j["output"], verdict(j)))
-            for j in js] or print("no jobs"))
+        def row(j):
+            att = " %d/%d" % (j["attempt"], j["max_attempts"]) if j.get("attempt", 1) > 1 else ""
+            print("#%-3d %-9s %-10s %3d%%  %-40s %s" % (
+                j["id"], j["state"] + att, j["codec"], int(j["progress"] * 100), j["output"], verdict(j)))
+            if j.get("note"):                    # GAL-09/10: repairs, skipped damage, retries
+                print("      %s" % j["note"])
+        out(a, r, lambda js: [row(j) for j in js] or print("no jobs"))
     elif sub == "cancel":
         ctl.call("jobs.cancel", id=a.id)
         print("cancelling job #%d" % a.id)

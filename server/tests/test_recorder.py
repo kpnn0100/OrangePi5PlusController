@@ -286,8 +286,10 @@ def media_range_and_thumbnail(c):
 
 @test("REC-04", "REC-03", "GAL-05")
 def raw_recording_with_ffv1_copy_after(c):
+    # keep the RAW here (replacing it is GAL-08's test): a job is "done" only after its check
     c.a.call("recorder.settings.set", settings={"mode": "raw", "raw": {"hq": False, "ffv1": True,
-                                                                        "ffv1_engine": "cpu", "when": "after"}})
+                                                                        "ffv1_engine": "cpu", "when": "after",
+                                                                        "ffv1_replace_raw": False}})
     r = c.a.call("recorder.start", timeout=30)
     check(r["file"].endswith(".arh"), r)
     time.sleep(2)

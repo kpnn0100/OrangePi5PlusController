@@ -5,6 +5,13 @@ HDMI RX driver delivers them (NV12 / NV16 / NV24 / BGR ...), each prefixed by
 a small chunk header. A file cut short by a crash or a full disk stays
 readable up to its last complete chunk.
 
+Damage (GAL-09): a power loss leaves an unfinalized file whose tail is often zero-filled
+blocks the filesystem had allocated but never written, sometimes a damaged stretch in the
+middle. Readers never stop at a bad chunk header: they resync to the next plausible chunk
+(type, payload size and pts all have to fit, and so does the chunk after it) and record the
+skipped range in `damaged`. repair() finalizes such a file: it cuts only bytes after the last
+valid chunk and records what it did in the metadata ("repair").
+
 All integers are little endian.
 
 File header (4096 bytes)
@@ -40,9 +47,13 @@ JSON metadata:
                "colorimetry", "caps"},
      "audio": {"format": "S16LE", "rate": 48000, "channels": 2} | null}
 """
+import contextlib
+import fcntl
+import hashlib
 import json
 import os
 import struct
+import tempfile
 import time
 
 MAGIC = b"ARH1"
@@ -51,6 +62,8 @@ HEADER_SIZE = 4096
 HEADER = struct.Struct("<4sHHIIQQQQ16x")
 CHUNK = struct.Struct("<4sIQQII")
 FLAG_FINALIZED = 1
+FLAG_REPAIRED = 2                     # finalized by repair() after an interruption
+AUDIO_MAX = 8 << 20                   # an AUDS chunk is a few ms of PCM; larger = not a header
 
 VFRM, AUDS, INDX, END = b"VFRM", b"AUDS", b"INDX", b"END "
 CHUNK_TYPES = (VFRM, AUDS, INDX, END)
@@ -110,7 +123,7 @@ class ArhWriter:
         if size != self.offset:
             # The writer stopped early (disk full, error): keep complete chunks only.
             with open(self.path, "rb") as f:
-                end, index, audio_bytes = _scan_complete(f, size)
+                end, index, audio_bytes = _scan_complete(f, size, self.meta["video"]["frame_size"])
             with open(self.path, "r+b") as f:
                 f.truncate(end)
             size = end
@@ -127,22 +140,87 @@ class ArhWriter:
         return len(index)
 
 
-def _scan_complete(f, size):
-    """Walk chunk headers; return (end of last complete chunk, frame index, audio bytes)."""
-    pos, index, audio = HEADER_SIZE, [], 0
+def _plausible(ctype, psize, frame_size):
+    if ctype == VFRM:
+        return psize == frame_size
+    if ctype == AUDS:
+        return 0 < psize <= AUDIO_MAX
+    if ctype == INDX:
+        return psize % 16 == 0
+    return ctype == END and psize == 0
+
+
+def _chunk_ok(f, pos, size, frame_size, min_pts, depth=2):
+    """A plausible chunk header at pos whose payload fits, followed by another one (or the
+    end of the file) - two in a row make a false match inside pixel data very unlikely."""
+    if pos + CHUNK.size > size:
+        return False
+    f.seek(pos)
+    ctype, psize, pts, _seq, _, _ = CHUNK.unpack(f.read(CHUNK.size))
+    if not _plausible(ctype, psize, frame_size) or pos + CHUNK.size + psize > size:
+        return False
+    if ctype in (INDX, END):
+        return True
+    if pts + 10**9 < min_pts:                          # time never runs backwards
+        return False
+    nxt = pos + CHUNK.size + psize
+    return depth <= 1 or nxt + CHUNK.size > size or _chunk_ok(f, nxt, size, frame_size, pts, depth - 1)
+
+
+def resync(f, pos, size, frame_size, min_pts=0, block=64 << 20):
+    """Offset of the next valid chunk after a bad one at pos, or None (nothing valid follows)."""
+    p = pos + 1
+    while p + CHUNK.size <= size:
+        f.seek(p)
+        buf = f.read(block + CHUNK.size)
+        i = 0
+        while True:
+            hits = [j for j in (buf.find(t, i) for t in CHUNK_TYPES) if j >= 0]
+            if not hits:
+                break
+            j = min(hits)
+            if _chunk_ok(f, p + j, size, frame_size, min_pts):
+                return p + j
+            i = j + 1
+        p += block
+    return None
+
+
+def scan(f, size, frame_size):
+    """Walk all chunks, resyncing over damage. Returns {"end": end of the last valid chunk,
+    "index": [(offset, pts)] video, "audio": bytes, "damaged": [(start, end)], "tail": offset
+    of INDX/END or None}."""
+    pos, index, audio, damaged, last_pts, end, tail = HEADER_SIZE, [], 0, [], 0, HEADER_SIZE, None
     while pos + CHUNK.size <= size:
         f.seek(pos)
         ctype, psize, pts, _seq, _, _ = CHUNK.unpack(f.read(CHUNK.size))
-        if ctype not in CHUNK_TYPES or pos + CHUNK.size + psize > size:
+        if _plausible(ctype, psize, frame_size) and pos + CHUNK.size + psize <= size:
+            if ctype in (INDX, END):
+                tail = pos
+                break
+            if ctype == VFRM:
+                index.append((pos, pts))
+                last_pts = max(last_pts, pts)
+            else:
+                audio += psize
+            pos += CHUNK.size + psize
+            end = pos
+            continue
+        nxt = resync(f, pos, size, frame_size, last_pts)
+        damaged.append((pos, nxt if nxt is not None else size))
+        if nxt is None:
+            pos = size
             break
-        if ctype == VFRM:
-            index.append((pos, pts))
-        elif ctype == AUDS:
-            audio += psize
-        elif ctype == END:
-            break
-        pos += CHUNK.size + psize
-    return pos, index, audio
+        pos = nxt
+    if tail is None and end < size and not (damaged and damaged[-1][1] == size):
+        damaged.append((end, size))                 # a partial last chunk
+    return {"end": end, "index": index, "audio": audio, "damaged": damaged, "tail": tail}
+
+
+def _scan_complete(f, size, frame_size):
+    """(end of the last valid chunk, frame index, audio bytes)."""
+    r = scan(f, size, frame_size)
+    return r["end"], r["index"], r["audio"]
 
 
 class ArhReader:
@@ -151,6 +229,7 @@ class ArhReader:
     def __init__(self, path, wait=0.0):
         """wait: seconds to wait for the file/header to appear (for follow mode)."""
         self.path = path
+        self.damaged = set()          # (start, end) byte ranges chunks() skipped
         deadline = time.monotonic() + wait
         while True:
             try:
@@ -181,6 +260,11 @@ class ArhReader:
         return bool(self.flags & FLAG_FINALIZED)
 
     @property
+    def repaired(self):
+        """What repair() did, or None: {"frames", "dropped_bytes", "damaged": [[start, end]], "at"}."""
+        return self.meta.get("repair") if self.flags & FLAG_REPAIRED else None
+
+    @property
     def fps(self):
         return self.video["fps_n"] / self.video["fps_d"]
 
@@ -201,33 +285,45 @@ class ArhReader:
         END chunk arrives, or the file stops growing for idle_timeout seconds
         (recorder crashed). `stop` is an optional threading.Event.
         """
+        frame_size = self.video["frame_size"]
         with open(self.path, "rb") as f:
-            pos, last_growth, last_size = HEADER_SIZE, time.monotonic(), -1
+            pos, last_growth, last_size, last_pts = HEADER_SIZE, time.monotonic(), -1, 0
             while not (stop and stop.is_set()):
+                size = os.fstat(f.fileno()).st_size
+                if size != last_size:
+                    last_size, last_growth = size, time.monotonic()
+                stalled = not follow or time.monotonic() - last_growth > idle_timeout
                 f.seek(pos)
                 head = f.read(CHUNK.size)
                 if len(head) == CHUNK.size:
                     ctype, psize, pts, seq, _, _ = CHUNK.unpack(head)
-                    if ctype not in CHUNK_TYPES:
-                        raise ValueError(f"{self.path}: corrupt chunk at offset {pos}")
-                    if ctype == END or ctype == INDX:
-                        return
-                    if ctype in types:
-                        payload = f.read(psize)
-                        if len(payload) == psize:
-                            yield ctype, pts, seq, payload
-                            pos += CHUNK.size + psize
-                            continue
-                    elif pos + CHUNK.size + psize <= os.fstat(f.fileno()).st_size:
-                        pos += CHUNK.size + psize
+                    if _plausible(ctype, psize, frame_size):
+                        if ctype == END or ctype == INDX:
+                            return
+                        if pos + CHUNK.size + psize <= size:
+                            if ctype == VFRM:
+                                last_pts = max(last_pts, pts)
+                            if ctype in types:
+                                payload = f.read(psize)
+                                if len(payload) == psize:
+                                    yield ctype, pts, seq, payload
+                                    pos += CHUNK.size + psize
+                                    continue
+                            else:
+                                pos += CHUNK.size + psize
+                                continue
+                    elif stalled:
+                        # not a chunk (power-loss damage): skip to the next valid one
+                        nxt = resync(f, pos, size, frame_size, last_pts)
+                        self.damaged.add((pos, nxt if nxt is not None else size))
+                        if nxt is None:
+                            return
+                        pos = nxt
                         continue
                 # incomplete chunk at the end of the file
-                if not follow:
-                    return
-                size = os.fstat(f.fileno()).st_size
-                if size != last_size:
-                    last_size, last_growth = size, time.monotonic()
-                elif time.monotonic() - last_growth > idle_timeout:
+                if stalled:
+                    if pos < size:
+                        self.damaged.add((pos, size))
                     return
                 time.sleep(0.05)
 
@@ -276,12 +372,121 @@ def info(path):
 
 
 def repair(path):
-    """Finalize a recording that was cut off (crash, power loss): keep every complete
-    chunk, drop the partial tail, add the index. Returns the frame count, or None if
-    the file was already finalized."""
+    """Finalize a recording that was cut off (crash, power loss, GAL-09): keep every valid
+    chunk (resyncing over damage), cut only what follows the last one, add the index and
+    note the repair in the metadata. Returns ArhReader.repaired, or None if the file was
+    already finalized. The caller makes sure nobody writes the file any more (in_use)."""
     r = ArhReader(path)
     if r.finalized:
         return None
-    w = ArhWriter(path, r.meta)
-    w.offset = -1                     # unknown: finalize() scans for complete chunks
-    return w.finalize()
+    size = os.path.getsize(path)
+    with open(path, "rb") as f:
+        sc = scan(f, size, r.video["frame_size"])
+    end, index = sc["end"], sc["index"]
+    fps_n, fps_d = r.video["fps_n"], r.video["fps_d"]
+    duration = (index[-1][1] + 10**9 * fps_d // fps_n) if index else 0
+    meta = dict(r.meta, repair={"frames": len(index), "dropped_bytes": size - end,
+                                "damaged": [list(d) for d in sc["damaged"]],
+                                "at": time.strftime("%Y-%m-%dT%H:%M:%S%z")})
+    try:
+        head = pack_header(meta, FLAG_FINALIZED | FLAG_REPAIRED, len(index), sc["audio"], duration, end)
+    except ValueError:                                 # no room for the note: keep it short
+        meta["repair"]["damaged"] = meta["repair"]["damaged"][:3]
+        head = pack_header(meta, FLAG_FINALIZED | FLAG_REPAIRED, len(index), sc["audio"], duration, end)
+    with open(path, "r+b") as f:
+        f.truncate(end)
+        f.seek(end)
+        payload = b"".join(struct.pack("<QQ", o, p) for o, p in index)
+        f.write(pack_chunk(INDX, len(payload)) + payload)
+        f.write(pack_chunk(END, 0, duration))
+        f.flush()
+        os.fsync(f.fileno())
+        f.seek(0)
+        f.write(head)
+        f.flush()
+        os.fsync(f.fileno())
+    return meta["repair"]
+
+
+def in_use(path):
+    """Is any process (of ours) holding the file open for writing? (/proc/*/fdinfo flags)"""
+    target = os.path.realpath(path)
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        fd_dir = f"/proc/{pid}/fd"
+        try:
+            fds = os.listdir(fd_dir)
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                if os.readlink(f"{fd_dir}/{fd}") != target:
+                    continue
+                with open(f"/proc/{pid}/fdinfo/{fd}") as fi:
+                    flags = int(next(l for l in fi if l.startswith("flags:")).split()[1], 8)
+                if flags & (os.O_WRONLY | os.O_RDWR):
+                    return True
+            except (OSError, StopIteration, ValueError):
+                continue
+    return False
+
+
+def needs_repair(path, quiet_s=60):
+    """An unfinalized file nobody writes and that has not grown for quiet_s: interrupted."""
+    try:
+        r = ArhReader(path)
+        if r.finalized:
+            return False
+        if time.time() - os.path.getmtime(path) < quiet_s:
+            return False
+    except (OSError, ValueError):
+        return False
+    return not in_use(path)
+
+
+def cfr_frames(reader, follow=False, stop=None, max_fill_s=10):
+    """The video as a constant frame rate sequence: (pts, seq, payload, repeated) - a gap in
+    the capture sequence (dropped frames, a damaged stretch) repeats the previous frame, at
+    most max_fill_s worth. The encoders and the lossless check walk exactly this sequence."""
+    cap = int(reader.fps * max_fill_s)
+    last_seq, prev = None, None
+    for _t, pts, seq, data in reader.chunks((VFRM,), follow, stop=stop):
+        if last_seq is not None and prev is not None:
+            for _ in range(min(max(0, seq - last_seq - 1), cap)):
+                yield pts, seq, prev, True
+        last_seq, prev = seq, data
+        yield pts, seq, data, False
+
+
+@contextlib.contextmanager
+def file_lock(path):
+    """Exclusive, non-blocking lock named after a file, shared by every slot of this user
+    (A and B see the same recordings): yields True if we hold it, False if someone else does."""
+    name = "arstro-%s.lock" % hashlib.sha1(os.path.realpath(path).encode()).hexdigest()[:16]
+    lock = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir(), name)
+    with open(lock, "a") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def repair_if_needed(path, log=None):
+    """repair() an interrupted recording once it is safe (nobody writes it, nobody else is
+    repairing it). Returns the repair note, or None when nothing was done."""
+    if not needs_repair(path):
+        return None
+    with file_lock(path) as mine:
+        if not mine or not needs_repair(path):
+            return None
+        note = repair(path)
+        if log and note:
+            log("repaired %s: %d frames kept, %d damaged bytes cut" % (
+                os.path.basename(path), note["frames"], note["dropped_bytes"]))
+        return note

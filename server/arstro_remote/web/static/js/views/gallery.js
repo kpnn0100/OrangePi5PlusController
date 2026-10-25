@@ -157,11 +157,14 @@ export function jobRow(j) {
   const stateTag = { queued: h("span.tag", null, "Queued"), running: h("span.tag.accent", null, pct + "%"),
                      verifying: h("span.tag.accent", null, `Checking ${pct}%`),
                      done: verdict || h("span.tag.ok", null, "Done"), failed: verdict || h("span.tag.rec", null, "Failed"),
+                     retrying: h("span.tag.warn", null, `Retry ${j.attempt}/${j.max_attempts}`),
                      cancelled: h("span.tag", null, "Cancelled") }[j.state];
   const detail = j.state === "running" || j.state === "verifying"
     ? [j.state === "verifying" ? "comparing every frame with the RAW" : null,
        j.fps ? `${Math.round(j.fps)} fps` : null, j.eta !== null && j.eta !== undefined ? `${fmtDur(j.eta)} left` : null,
-       j.live ? "following the recording" : null].filter(Boolean).join(" · ")
+       j.live ? "following the recording" : null,
+       j.attempt > 1 ? `attempt ${j.attempt} of ${j.max_attempts}` : null].filter(Boolean).join(" · ")
+    : j.state === "retrying" ? `failed: ${j.error || "?"} · trying again shortly`
     : v ? (v.ok ? v.detail + (v.raw_deleted ? " · the FFV1 is now the original" : "") : v.detail + " · the RAW is kept")
     : j.error || "";
   return h("div.job", null,
@@ -174,7 +177,9 @@ export function jobRow(j) {
       !finished ? h("button.btn.ghost.icon.sm", { title: "Cancel", "aria-label": "Cancel conversion",
                                                   onclick: (e) => run("jobs.cancel", { id: j.id }, { btn: e.currentTarget }) }, icon("x")) : null),
     !finished ? h("div.bar", null, h("i", { style: { width: pct + "%" } })) : null,
-    detail ? h("div", { style: { fontSize: "12.5px", color: j.state === "failed" || (v && !v.ok) ? "var(--err)" : "var(--muted)" } }, detail) : null);
+    detail ? h("div", { style: { fontSize: "12.5px", color: j.state === "failed" || (v && !v.ok) ? "var(--err)" : "var(--muted)" } }, detail) : null,
+    // GAL-09/10: repaired RAW, skipped damage, retries and resumes
+    j.note ? h("div.dim", { style: { fontSize: "12px" } }, j.note) : null);
 }
 
 // ---------------------------------------------------------------- take
@@ -232,7 +237,8 @@ export function openTake(takeId) {
               i.busy && !i.recording ? h("span.tag.accent", null, "In use") : null,
               i.verified ? h("span.tag.ok", { title: `identical to ${i.verified.raw} (${i.verified.frames} frames)` }, "Verified lossless") : null),
             h("div.meta", null, itemMeta(i)),
-            i.problem ? h("div.problem", null, i.problem) : null),
+            i.problem ? h("div.problem", null, i.problem) : null,
+            i.note ? h("div.dim", { style: { fontSize: "12px" } }, i.note) : null),
           h("div.acts", null,
             canPlay ? h("button.btn.ghost.icon.sm", { title: "Play", "aria-label": "Play",
                                                       onclick: () => { playing = i.id; player.replaceChildren(); renderPlayer(); } }, icon("play")) : null,

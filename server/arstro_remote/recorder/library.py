@@ -36,6 +36,9 @@ def _probe_arh(path, item):
                 pixel_format=v["format"], audio=bool(r.audio))
     if r.finalized:
         item["duration"] = r.duration / 1e9
+        if r.repaired:                                  # GAL-09
+            item["note"] = "repaired after an interruption: %d frames kept, %.1f MB damaged tail removed" % (
+                r.repaired.get("frames", 0), r.repaired.get("dropped_bytes", 0) / 1e6)
     else:
         item["duration"] = r.estimate_frames() / r.fps if r.fps else 0
         item["problem"] = "not finalized (still recording, or interrupted)"
