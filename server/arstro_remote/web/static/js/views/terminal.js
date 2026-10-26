@@ -1,5 +1,6 @@
-// Terminal (TERM-01..04): the Pi's shared shells. Every controller sees the same list and
-// can attach to any shell; output is replayed exactly from the last byte we have.
+// Terminal (TERM-01..05): the Pi's shared shells. Every controller sees the same list and
+// can attach to any shell; output is replayed exactly from the last byte we have. Full screen
+// (TERM-05): the shell takes the whole screen; F11 or the corner button leaves it.
 
 import { h, clear, icon, store, conn, toast, confirmBox, errText, loadScript, loadStyle, isNarrow, CONTROLLER_NAMES } from "../core.js";
 
@@ -101,7 +102,10 @@ export default {
     const tabs = h("div.term-tabs");
     const box = h("div.term-box");
     const keys = h("div.term-keys");
-    const wrap = h("div.term-wrap", { class: serial ? "embedded" : "" }, tabs, box, keys);
+    const exitFull = h("button.term-exitfull", { type: "button", title: "Leave full screen (F11)",
+                                                 "aria-label": "Leave full screen", onclick: () => setFull(false) }, icon("shrink"));
+    const wrap = h("div.term-wrap", { class: serial ? "embedded" : "" }, tabs, box, keys, exitFull);
+    let full = false;
     if (!serial) root.append(h("div.view-head", null, h("div", null, h("h1", null, "Terminal"),
                   h("div.sub", null, "Shared shells on the Pi · the app and the CLI see the same ones"))));
     root.append(wrap);
@@ -132,7 +136,9 @@ export default {
             h("span.x", { role: "button", "aria-label": serial ? "Close port" : "Close shell", title: serial ? "Close port" : "Close shell",
                           onclick: (e) => { e.stopPropagation(); closeShell(t); } }, icon("x")));
         }),
-        h("button.btn.sm", { onclick: () => newAction() }, icon("plus"), newLabel));
+        h("button.btn.sm", { onclick: () => newAction() }, icon("plus"), newLabel),
+        list.length ? h("button.btn.sm.ghost.term-fullbtn", { title: "Full screen (F11)", onclick: () => setFull(true) },
+                        icon("expand"), "Full screen") : null);
       if (!list.length) {
         clear(box, h("div.empty", { style: { paddingTop: "80px" } }, icon(serial ? "plug" : "terminal"),
           h("div", null, serial ? "No serial console open." : "No shells open."),
@@ -176,6 +182,34 @@ export default {
       renderTabs();
     }
 
+    /** TERM-05: the terminal over the whole window - and the whole screen where the browser
+     *  allows it. Leaving the browser's own full screen (Esc) keeps the terminal over the window;
+     *  only F11 or the corner button end the mode. */
+    function setFull(on) {
+      if (on === full) return;
+      full = on;
+      wrap.classList.toggle("full", on);
+      document.body.classList.toggle("term-fullscreen", on);
+      try {
+        if (on && wrap.requestFullscreen && !document.fullscreenElement) {
+          wrap.requestFullscreen({ navigationUI: "hide" }).then(() => navigator.keyboard?.lock?.(["Escape"]))
+            .catch(() => {});              // refused (no user gesture, iframe, iOS): the window is enough
+        } else if (!on && document.fullscreenElement) {
+          navigator.keyboard?.unlock?.();
+          document.exitFullscreen().catch(() => {});
+        }
+      } catch (e) { /* older browsers: the CSS mode alone */ }
+      requestAnimationFrame(() => { fitActive(); mgr.terms.get(mgr.active)?.xterm.focus(); });
+    }
+    // F11 belongs to this mode while the terminal is shown (before xterm: the shell never gets it)
+    const onKey = (e) => {
+      if (e.key !== "F11" || e.ctrlKey || e.altKey || e.metaKey || !list.length) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setFull(!full);
+    };
+    window.addEventListener("keydown", onKey, true);
+
     async function openShell() {
       if (!ready) return;
       try {
@@ -217,6 +251,8 @@ export default {
     root.showTerm = (id) => { if (ready) show(id); else opts.term = id; };
 
     return () => {
+      setFull(false);
+      window.removeEventListener("keydown", onKey, true);
       offs.forEach((f) => f());
       ro.disconnect();
       mgr.onChange = null;

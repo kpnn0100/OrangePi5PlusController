@@ -12,6 +12,7 @@ and all three are updated live by the same state events (ARC-03).
 | Wi-Fi status, scan, connect (saved/new/hidden) | WIFI-01..03 | Wi-Fi tab | `wifi status / scan / saved / connect SSID [--ask] [--hidden]` | Wi-Fi |
 | Wi-Fi disconnect, forget, radio | WIFI-04..06 | Wi-Fi tab | `wifi disconnect / forget NAME / radio on\|off` | Wi-Fi |
 | Shared shells: list, open, attach, close | TERM-01..04 | Terminal tab | `term list / open [--ephemeral] / attach ID / close ID`, `term run "cmd"` | Terminal |
+| Full-screen shell (F11 / corner button) | TERM-05 | ³ | - ⁴ | Terminal › Full screen, F11; leave: F11 or the corner button |
 | Remote screen: watch the Pi desktop live, control it from the picture | SCR-01..04 | Remote › Screen (tap = click, long press = right click, drag, two-finger scroll; keyboard panel types) | `screen status`, `screen quality low\|medium\|high`, `screen save FILE [--seconds N]` ¹ | Screen tab (mouse, wheel, keyboard, Keys, Type text, full screen) |
 | Remote screen: encoder (auto / VPU / CPU) and bitrate | SCR-05 | ³ | `screen encoder auto\|vpu\|cpu`, `screen bitrate 2.5M\|800k\|auto`, `screen status` | Screen tab › Stream (encoder, bitrate, what runs now) |
 | Mouse + keyboard | INP-01..04 | Remote tab (touchpad, buttons, drag lock, scroll strip, keys) | `input move X Y [--absolute] / click / down / up [BUTTON] / scroll DY [DX] / key K [--mods ctrl,alt] / type TEXT / pointer` | Remote (pad, buttons, keys, capture mode) |
@@ -64,6 +65,7 @@ and all three are updated live by the same state events (ARC-03).
 
 ¹ A terminal cannot show video: the CLI saves the live H.264 stream to a file (play it with
 any player, e.g. `ffplay`). ² Same reason: the CLI lists and downloads, a player shows it.
+⁴ The CLI runs in a terminal already: `term attach ID` fills whatever terminal window it is in.
 ³ **Pending in the app** (see *Exceptions*): the Android app is built on the dev PC and has not
 been updated for the 2.1 modules yet; until then the phone uses the web UI (same features,
 works on a phone screen).

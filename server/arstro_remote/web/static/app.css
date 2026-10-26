@@ -584,6 +584,25 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .term-keys { display: flex; gap: 6px; overflow-x: auto; }
 .term-keys .btn { height: 34px; min-width: 44px; padding: 0 10px; font-family: var(--mono); font-size: 12.5px; }
 .term-keys .btn.on { background: var(--accent); color: var(--accent-ink); }
+.term-tabs .term-fullbtn { margin-left: auto; flex: none; }
+/* TERM-05: full screen - the shell and its key row only, over everything */
+.term-exitfull { display: none; }
+.term-wrap.full { position: fixed; inset: 0; z-index: 60; height: auto; min-height: 0; gap: 0;
+                  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+                  background: #0c0d10; animation: term-full-in var(--t) var(--ease); }
+.term-wrap.full .term-tabs { display: none; }
+.term-wrap.full .term-box { border: 0; border-radius: 0; }
+.term-wrap.full .term-keys { padding: 6px 8px; background: #0c0d10; }
+@media (hover: hover) and (pointer: fine) { .term-wrap.full .term-keys { display: none; } }
+.term-wrap.full .term-exitfull { display: grid; place-items: center; position: absolute; z-index: 2;
+                  top: calc(10px + env(safe-area-inset-top)); right: calc(14px + env(safe-area-inset-right));
+                  width: 34px; height: 34px; border-radius: 10px; border: 1px solid var(--line-2);
+                  background: rgba(27, 31, 37, .72); color: var(--muted); backdrop-filter: blur(8px);
+                  opacity: .55; transition: opacity var(--t) var(--ease), color var(--t) var(--ease); }
+.term-wrap.full .term-exitfull:hover, .term-wrap.full .term-exitfull:focus-visible { opacity: 1; color: var(--text); }
+.term-wrap.full .term-exitfull svg.i { width: 18px; height: 18px; }
+body.term-fullscreen { overflow: hidden; }
+@keyframes term-full-in { from { opacity: 0; transform: scale(.985); } to { opacity: 1; transform: none; } }
 .xterm .xterm-viewport { background: transparent !important; }
 .xterm-viewport::-webkit-scrollbar-thumb { background: var(--line-2); }
 

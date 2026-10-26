@@ -5,9 +5,9 @@ Rockchip's g24p0 driver (Vulkan 1.3) and an FFmpeg 9 build with the ffv1_vulkan 
 in ~/.local/share/hdmi-recorder/gpu. Only the encoder process loads that driver, through
 VK_ICD_FILENAMES; the desktop keeps its own.
 
-Measured on 4K 4:2:2 camera footage: GPU 5 fps using 0.2 CPU cores, CPU FFV1 14 fps using
-6.3 cores - the GPU is slower but leaves the CPU (and power budget) to the capture.
-Both produce identical, bit-exact output.
+Measured on 4K 4:2:2 camera footage: GPU 5 fps using 0.2 CPU cores, CPU FFV1 ~11 fps on all
+8 cores (Golomb-Rice coder, as here) - the GPU is slower but leaves the CPU (and power budget)
+to the capture. Both are lossless: they decode to exactly the RAW's frames.
 """
 import os
 

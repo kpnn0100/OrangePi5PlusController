@@ -349,7 +349,7 @@ test("verified_ffv1_replaces_the_raw", ["GAL-08", "REC-04", "ARC-03"], async () 
   }
 });
 
-test("terminal_shared_between_browsers", ["TERM-01", "TERM-02", "TERM-04", "ARC-03"], async () => {
+test("terminal_shared_between_browsers", ["TERM-01", "TERM-02", "TERM-04", "TERM-05", "ARC-03"], async () => {
   const a = await newPage();
   await go(a, "terminal");
   await a.waitForSelector(".term-tabs .btn");
@@ -374,6 +374,26 @@ test("terminal_shared_between_browsers", ["TERM-01", "TERM-02", "TERM-04", "ARC-
   const t = (await op("term.list")).terminals.find((x) => x.term === id);
   check(t && t.viewers >= 2, "server does not show 2 viewers");
   await shot(a, "terminal");
+  // TERM-05: full screen by the button, out by F11, in by F11, out by the corner button
+  const filled = (p) => p.evaluate(() => {
+    const w = document.querySelector(".term-wrap.full"), r = w && w.getBoundingClientRect();
+    return !!r && r.left <= 0 && r.top <= 0 && r.width >= innerWidth - 1 && r.height >= innerHeight - 1 &&
+           getComputedStyle(document.querySelector(".term-tabs")).display === "none";
+  });
+  check(await clickText(a, ".term-tabs .btn", "Full screen"), "no Full screen button");
+  check(await until(() => filled(a), 3000), "the shell does not fill the screen");
+  await shot(a, "terminal-full");
+  const cols = (await op("term.list")).terminals.find((x) => x.term === id).cols;
+  await a.keyboard.press("F11");
+  check(await until(() => a.evaluate(() => !document.querySelector(".term-wrap.full")), 3000), "F11 did not leave full screen");
+  await a.keyboard.press("F11");
+  check(await until(() => filled(a), 3000), "F11 did not enter full screen");
+  await a.click(".term-exitfull");
+  check(await until(() => a.evaluate(() => !document.querySelector(".term-wrap.full")), 3000), "the corner button did not leave");
+  await a.click(".term-box .xterm");
+  await a.keyboard.type("echo AFTER_$((1+1))\n");          // F11 never reached the shell: the line is clean
+  check(await until(() => a.$eval(".term-box .xterm-rows", (e) => /AFTER_2/.test(e.textContent)), 8000), "shell broken after F11");
+  check(typeof cols === "number", "term.list has no size");
   await op("term.close", { term: id }).catch(() => {});
   await a.close();
   await b.close();

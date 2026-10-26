@@ -68,6 +68,7 @@ IDs are stable: never renumber, mark removed ones `(withdrawn)`.
 | TERM-02 | **Shared shells.** All controllers see the same list of shells and can attach to any; several viewers mirror one shell live. |
 | TERM-03 | Shells survive a dropped link: a shell nobody views is kept `term_keep_sec` (600 s); re-attaching replays exactly the missed output. `ephemeral` shells die with their opener. |
 | TERM-04 | The shell list (opened, closed, exited, viewers) is pushed to all controllers. |
+| TERM-05 | **Full screen.** A shell can fill the whole screen - no tabs, no app chrome; the browser's own full screen where it allows it, otherwise the whole window; on touch screens the key row stays. **F11** (never passed to the shell while the terminal is shown) or a small button in the top-right corner leaves it; the shell keeps its size in step (resize). |
 
 ## INP – Mouse and keyboard
 
@@ -98,7 +99,7 @@ IDs are stable: never renumber, mark removed ones `(withdrawn)`.
 | GAL-01 | List takes newest first, **grouped by month and by day** - the board's date of the take, published with each take (`day`, `month`) so every controller groups alike, each group with its count and size. A take groups its files (variants: RAW, H.265, H.264, FFV1, other) with size, resolution, fps, duration, audio and problems. Filter by kind. |
 | GAL-02 | A thumbnail per take. |
 | GAL-03 | Play a variant where the controller can decode it (HTTP with Range); download any variant. |
-| GAL-04 | Convert a variant to a target format – H.264 MP4 (VPU, "share", optional downscale), H.265 (VPU or x265; quality or bitrate), FFV1 (CPU or GPU) – as a background job. The VPU targets run at the encoder's own speed, faster than real time (a 4K H.265 recording to a 1080p H.264 copy: ~100 fps; 4K H.264: ~30 fps), every frame and the audio kept. A bitrate is checked when the job is asked for: the VPU encodes at most 200 Mbit/s (a job saved with more - before this check - is encoded at 200 and says so). |
+| GAL-04 | Convert a variant to a target format – H.264 MP4 (VPU, "share", optional downscale), H.265 (VPU or x265; quality or bitrate), FFV1 (CPU or GPU) – as a background job. The VPU targets run at the encoder's own speed, faster than real time (a 4K H.265 recording to a 1080p H.264 copy: ~100 fps; 4K H.264: ~30 fps), every frame and the audio kept. A bitrate is checked when the job is asked for: the VPU encodes at most 200 Mbit/s (a job saved with more - before this check - is encoded at 200 and says so). FFV1 on the CPU uses every core and reaches **≥ 10 fps for 4K 4:2:2** (Golomb-Rice coder; ~17% larger than the range coder, which cannot reach 10 fps on this CPU; still lossless). |
 | GAL-05 | Jobs: list with progress, speed and ETA; cancel; clear finished. Pushed live. |
 | GAL-06 | Delete one variant (format) of a take, or the whole take. Refused while that file is being recorded or converted. |
 | GAL-07 | Gallery changes (new recording, finished conversion, deletion – from any controller) are pushed to all controllers. |

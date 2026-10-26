@@ -138,7 +138,11 @@ def _encoder_desc(codec, fmt, fps, quality, preset, chroma, bitrate=None, rc="vb
                 f"option-string=crf={X265_CRF[quality]}")
         return (fsrc if chroma == "source" else f420,
                 f"x265enc speed-preset={preset} key-int-max={gop} {rate} ! h265parse")
-    return fffv1, "avenc_ffv1 slices=24 slicecrc=1 threads=0 gop-size=1 coder=range_def context=1"
+    # Every core (threads=0, 24 slices) with the Golomb-Rice coder: 4K 4:2:2 from RAW at 11 fps.
+    # The range coder made ~17% smaller files but topped out at ~8 fps on this CPU - even with two
+    # encoders on alternate frames (measured 9.1): it is compute-bound, not idle. Same coder as
+    # the GPU path; both stay lossless (GAL-08 checks every frame).
+    return fffv1, "avenc_ffv1 slices=24 slicecrc=1 threads=0 gop-size=1 coder=rice context=0"
 
 
 def _default_layout(v):
