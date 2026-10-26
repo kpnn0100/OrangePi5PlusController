@@ -13,11 +13,17 @@ librockchip-mpp, which the VPU elements depend on anyway. Two pieces:
     Bridge    puts an Encoder between `appsink name=mppin` and `appsrc name=mppout` of a
               pipeline, so a conversion keeps its GStreamer decode, scale, mux and audio
 
+Zero copy (GAL-04): a frame the VPU decoder made (mppvideodec: one DMA-BUF, NV12) is handed to
+the encoder BY ITS FD (mpp_buffer_import) - the VPU reads it where the decoder wrote it. Copying
+it instead costs the CPU two passes over uncached memory, ~19 + ~10 ms a 4K frame, which held a
+4K H.265 -> H.264 conversion at 29 fps; the VPU alone encodes 4K H.264 at ~71 fps, 1080p at ~260.
+
 `fragment(codec, ...)` returns the pipeline text for the place of the encoder element.
 """
 import ctypes
 import ctypes.util
 import logging
+import os
 import threading
 
 log = logging.getLogger("arstro.mpp")
@@ -26,6 +32,7 @@ log = logging.getLogger("arstro.mpp")
 MPP_CTX_ENC = 1
 CODING = {"h264": 7, "h265": 0x01000004}          # MPP_VIDEO_CodingAVC / CodingHEVC
 MPP_FMT_YUV420SP = 0                              # NV12
+MPP_BUFFER_TYPE_EXT_DMA = 2
 MPP_BUFFER_TYPE_DRM = 3
 MPP_BUFFER_INTERNAL = 0
 MPP_SET_INPUT_TIMEOUT = 0x00200006
@@ -44,6 +51,11 @@ TAG = b"arstro"
 
 class MppError(RuntimeError):
     pass
+
+
+class _MppBufferInfo(ctypes.Structure):           # mpp_buffer.h MppBufferInfo
+    _fields_ = [("type", ctypes.c_int), ("size", ctypes.c_size_t), ("ptr", ctypes.c_void_p),
+                ("hnd", ctypes.c_void_p), ("fd", ctypes.c_int), ("index", ctypes.c_int)]
 
 
 class _MppApi(ctypes.Structure):
@@ -90,6 +102,8 @@ def _load():
         "mpp_buffer_get_with_tag": (i32, [vp, ctypes.POINTER(vp), ctypes.c_size_t, ctypes.c_char_p,
                                           ctypes.c_char_p]),
         "mpp_buffer_put_with_caller": (i32, [vp, ctypes.c_char_p]),
+        "mpp_buffer_import_with_tag": (i32, [vp, ctypes.POINTER(_MppBufferInfo), ctypes.POINTER(vp),
+                                             ctypes.c_char_p, ctypes.c_char_p]),
         "mpp_buffer_get_ptr_with_caller": (vp, [vp, ctypes.c_char_p]),
         "mpp_frame_init": (i32, [ctypes.POINTER(vp)]),
         "mpp_frame_deinit": (i32, [ctypes.POINTER(vp)]),
@@ -143,13 +157,16 @@ def _keyframe(au, codec):
 class Encoder:
     """One VPU encoder context. Not thread-safe: one thread calls encode()/close()."""
 
-    def __init__(self, codec, width, height, fps, gop=None, qp=None, bps=None, rc="vbr", nbuf=2):
+    def __init__(self, codec, width, height, fps, gop=None, qp=None, bps=None, rc="vbr", nbuf=2,
+                 hor_stride=None, ver_stride=None):
         lib = _load()
         if lib is None:
             raise MppError("VPU library not available: %s" % _lib_error)
         self.lib, self.codec = lib, codec
         self.width, self.height = width, height
-        self.hs, self.vs = _align(width), _align(height)
+        # the frame layout the encoder reads: its own buffers' (16-aligned), or - when frames come
+        # as the decoder's DMA-BUFs (encode_dmabuf) - the decoder's
+        self.hs, self.vs = hor_stride or _align(width), ver_stride or _align(height)
         self.ctx = ctypes.c_void_p()
         self.api = ctypes.POINTER(_MppApi)()
         self.cfg = ctypes.c_void_p()
@@ -241,6 +258,28 @@ class Encoder:
         i = self._next
         self._next = (i + 1) % len(self.bufs)
         self._fill(self.ptrs[i], data, strides, offsets)
+        return self._encode(self.bufs[i])
+
+    def needed_bytes(self):
+        """How much of a frame buffer the VPU reads: whole 16-line macroblock rows of both planes,
+        so a 2160-line frame is read as 2176 - past the end of a buffer cut to 2160 lines."""
+        return self.hs * self.vs + self.hs * _align(self.height) // 2
+
+    def encode_dmabuf(self, fd, size):
+        """Encode the NV12 frame in DMA-BUF `fd` (`size` bytes, laid out as hor/ver_stride) in
+        place - no CPU copy. The caller keeps the buffer alive until this returns."""
+        lib = self.lib
+        info = _MppBufferInfo(type=MPP_BUFFER_TYPE_EXT_DMA, size=size, fd=fd)
+        buf = ctypes.c_void_p()
+        self._check(lib.mpp_buffer_import_with_tag(None, ctypes.byref(info), ctypes.byref(buf), TAG,
+                                                   b"Encoder"), "import frame")
+        try:
+            return self._encode(buf)
+        finally:
+            lib.mpp_buffer_put_with_caller(buf, b"Encoder")
+
+    def _encode(self, mppbuf):
+        lib = self.lib
         frame = ctypes.c_void_p()
         self._check(lib.mpp_frame_init(ctypes.byref(frame)), "frame init")
         try:
@@ -249,7 +288,7 @@ class Encoder:
             lib.mpp_frame_set_hor_stride(frame, self.hs)
             lib.mpp_frame_set_ver_stride(frame, self.vs)
             lib.mpp_frame_set_fmt(frame, MPP_FMT_YUV420SP)
-            lib.mpp_frame_set_buffer(frame, self.bufs[i])
+            lib.mpp_frame_set_buffer(frame, mppbuf)
             lib.mpp_frame_set_eos(frame, 0)
             self._check(self._put(self.ctx, frame), "put frame")
         finally:
@@ -321,6 +360,7 @@ class Bridge:
         self.stop_flag = threading.Event()
         self.thread = threading.Thread(target=self._run, name="mpp-encoder", daemon=True)
         self.frames = 0
+        self.direct = None              # after the first frame: True when frames go to the VPU in place
 
     def start(self):
         self.thread.start()
@@ -349,8 +389,11 @@ class Bridge:
                 buf = sample.get_buffer()
                 if enc is None:
                     vi = GstVideo.VideoInfo.new_from_caps(sample.get_caps())
-                    strides, offsets = list(vi.stride)[:2], list(vi.offset)[:2]
-                    enc = Encoder(self.codec, vi.width, vi.height, **self.opts)
+                    meta = GstVideo.buffer_get_video_meta(buf)
+                    src = meta or vi
+                    strides, offsets = list(src.stride)[:2], list(src.offset)[:2]
+                    enc, direct = self._encoder(buf, vi, strides, offsets)
+                    self.direct = direct
                     fmt = "video/x-h264" if self.codec == "h264" else "video/x-h265"
                     self.src.set_property("caps", Gst.Caps.from_string(
                         f"{fmt},stream-format=byte-stream,alignment=au,width={vi.width},height={vi.height},"
@@ -359,7 +402,10 @@ class Bridge:
                     if enc.capped and self.on_note:
                         self.on_note("%g Mbit/s is more than the VPU encodes - encoded at %d Mbit/s"
                                      % (enc.capped / 1e6, MAX_BPS // 1000000))
-                for au, key in enc.encode(buf.extract_dup(0, buf.get_size()), strides, offsets):
+                fd = _dmabuf(buf) if direct else None
+                aus = (enc.encode_dmabuf(fd[0], fd[1]) if fd and fd[1] >= enc.needed_bytes() else
+                       enc.encode(buf.extract_dup(0, buf.get_size()), strides, offsets))
+                for au, key in aus:
                     out = gst_buffer(au)
                     out.pts = out.dts = buf.pts
                     out.duration = buf.duration
@@ -376,3 +422,42 @@ class Bridge:
             if enc is not None:
                 enc.close()
         self.src.emit("end-of-stream")
+
+    def _encoder(self, buf, vi, strides, offsets):
+        """The Encoder for this stream, and whether its frames go to the VPU in place: they do when
+        each is ONE DMA-BUF with NV12's planes back to back at a 16-byte-aligned stride (what the
+        VPU decoder hands out) - otherwise every frame is copied into the encoder's own buffers."""
+        fd = _dmabuf(buf)
+        hs = strides[0]
+        direct = bool(fd) and strides[1] == hs and hs % 16 == 0 and offsets[0] == 0 and offsets[1] % hs == 0
+        if direct:
+            enc = Encoder(self.codec, vi.width, vi.height, hor_stride=hs, ver_stride=offsets[1] // hs, **self.opts)
+            if fd[1] >= enc.needed_bytes():
+                log.info("VPU %s: frames go to the encoder in place (DMA-BUF, stride %d)", self.codec, hs)
+                return enc, True
+            enc.close()
+            log.info("VPU %s: decoder buffers are %d bytes, the encoder reads %d - copying frames",
+                     self.codec, fd[1], enc.needed_bytes())
+        return Encoder(self.codec, vi.width, vi.height, **self.opts), False
+
+
+def _dmabuf(buf):
+    """(fd, size of the whole DMA-BUF) when `buf` is one DMA-BUF memory, else None."""
+    try:
+        import gi
+        gi.require_version("GstAllocators", "1.0")
+        from gi.repository import GstAllocators
+    except (ImportError, ValueError):
+        return None
+    if buf.n_memory() != 1:
+        return None
+    mem = buf.peek_memory(0)
+    if not GstAllocators.is_dmabuf_memory(mem):
+        return None
+    fd = GstAllocators.dmabuf_memory_get_fd(mem)
+    try:
+        size = os.lseek(fd, 0, os.SEEK_END)     # the buffer's real size, not the frame's
+        os.lseek(fd, 0, os.SEEK_SET)
+    except OSError:
+        return None
+    return fd, size

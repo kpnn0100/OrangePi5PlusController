@@ -553,6 +553,7 @@ def transcode_media(args):
         return 2
     pipe.get_by_name("fsrc").set_property("location", args.input)
     pipe.get_by_name("fsink").set_property("location", part)
+    _scale_in_decoder(pipe, args.scale)
 
     loop = GLib.MainLoop()
     result = {"code": 1, "error": None}
@@ -610,6 +611,22 @@ def transcode_media(args):
         emit(state="cancelled" if result["code"] == 3 else "failed",
              error=result["error"] or "unknown error")
     return result["code"]
+
+
+def _scale_in_decoder(pipe, scale):
+    """A clip the VPU decodes (H.264 / H.265) is scaled by the decoder itself (mppvideodec's
+    width/height, done by the RGA): the frames stay DMA-BUFs the VPU encoder reads in place and
+    the CPU videoscale after it passes them through (GAL-04). Other decoders keep videoscale."""
+    wh = SCALES.get(scale or "source")
+    if not wh:
+        return
+
+    def added(_pipe, _bin, el):
+        f = el.get_factory()
+        if f and f.get_name() == "mppvideodec":
+            el.set_property("width", wh[0])
+            el.set_property("height", wh[1])
+    pipe.connect("deep-element-added", added)
 
 
 def _audio_tail(codec):

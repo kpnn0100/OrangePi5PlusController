@@ -6,7 +6,8 @@
 Runs only where librockchip_mpp is installed (the Rockchip boards); elsewhere every test
 passes as "skipped". It checks that frames go through the VPU unchanged in number and
 order (also with a width whose rows need re-striding), that keyframes come at the GOP,
-that a whole conversion keeps every frame and the audio, runs faster than real time, and
+that a whole conversion keeps every frame and the audio, runs faster than real time, that a
+frame the VPU decoded reaches the encoder in place (no CPU copy) with its picture intact, and
 that a failing encoder fails the job instead of hanging it.
 """
 
@@ -96,15 +97,15 @@ def frames_go_through_the_vpu_unchanged(_t):
             check(n == 75, "%s %dx%d: the stream decodes to %d frames" % (codec, w, h, n))
 
 
-def make_clip(path, seconds=6):
-    """A 1080p30 H.264 + AAC clip to convert (x264, so the test does not depend on the VPU)."""
+def make_clip(path, seconds=6, audio=True):
+    """A 1080p30 H.264 (+ AAC) clip to convert (x264, so the test does not depend on the VPU)."""
     n = seconds * 30
     aac = "voaacenc" if Gst.ElementFactory.find("voaacenc") else "avenc_aac"
     p = Gst.parse_launch(
         f"videotestsrc pattern=ball num-buffers={n} ! video/x-raw,width=1920,height=1080,framerate=30/1 ! "
-        f"x264enc speed-preset=ultrafast key-int-max=30 ! h264parse ! mp4mux name=m ! filesink location={path} "
-        f"audiotestsrc num-buffers={seconds * 44100 // 1024} samplesperbuffer=1024 ! audio/x-raw,rate=44100 ! "
-        f"audioconvert ! {aac} ! aacparse ! m.")
+        f"x264enc speed-preset=ultrafast key-int-max=30 ! h264parse ! mp4mux name=m ! filesink location={path} " +
+        (f"audiotestsrc num-buffers={seconds * 44100 // 1024} samplesperbuffer=1024 ! audio/x-raw,rate=44100 ! "
+         f"audioconvert ! {aac} ! aacparse ! m." if audio else ""))
     p.set_state(Gst.State.PLAYING)
     p.get_bus().timed_pop_filtered(120 * Gst.SECOND, Gst.MessageType.EOS | Gst.MessageType.ERROR)
     p.set_state(Gst.State.NULL)
@@ -150,6 +151,67 @@ def a_conversion_keeps_every_frame_and_beats_real_time(_t):
             check(audio and abs(audio[0][2] - video[0][2]) < 0.1, "%s %s: audio %s vs video %s" % (codec, opts, audio, video))
             # 6 s of 1080p30 - the old one-frame-at-a-time element needed ~20 s for this
             check(secs < 6, "%s %s: took %.1f s, slower than real time" % (codec, opts, secs))
+
+
+def frame_at(path, index, demux):
+    """Luma bytes of frame `index` of a file, decoded by the CPU (avdec), as the reference."""
+    p = Gst.parse_launch(f"filesrc location={path} ! {demux} ! decodebin ! videoconvert ! "
+                         f"video/x-raw,format=GRAY8 ! appsink name=s sync=false")
+    s = p.get_by_name("s")
+    p.set_state(Gst.State.PLAYING)
+    data = None
+    for _ in range(index + 1):
+        sample = s.emit("try-pull-sample", 10 * Gst.SECOND)
+        if sample is None:
+            break
+        b = sample.get_buffer()
+        data = b.extract_dup(0, b.get_size())
+    p.set_state(Gst.State.NULL)
+    return data
+
+
+def run_bridge(desc, codec, **opts):
+    """Run a pipeline holding mppenc.fragment(codec); returns (bridge, the bus message it ended on)."""
+    p = Gst.parse_launch(desc)
+    bridge = mppenc.Bridge(p, codec, 30, **opts)
+    p.set_state(Gst.State.PLAYING)
+    bridge.start()
+    msg = p.get_bus().timed_pop_filtered(60 * Gst.SECOND, Gst.MessageType.EOS | Gst.MessageType.ERROR)
+    bridge.stop()
+    p.set_state(Gst.State.NULL)
+    return bridge, msg
+
+
+def ended(msg):
+    return msg is not None and msg.type == Gst.MessageType.EOS
+
+
+@test("GAL-04")
+def a_decoded_frame_goes_to_the_vpu_in_place(_t):
+    # a 4K H.265 -> H.264 conversion ran at 29 fps: every frame the VPU decoded was copied twice by
+    # the CPU on its way back into the VPU. Now its DMA-BUF is handed over; the picture must survive.
+    if skip() or not Gst.ElementFactory.find("mppvideodec"):
+        return
+    with tempfile.TemporaryDirectory() as d:
+        # the source is what the recorder makes: H.265 from the VPU (mppvideodec refuses some x264 clips)
+        src, out, n = os.path.join(d, "src.h265"), os.path.join(d, "out.h264"), 180
+        _b, msg = run_bridge(f"videotestsrc pattern=ball num-buffers={n} ! video/x-raw,format=NV12,width=1920,"
+                             f"height=1080,framerate=30/1 ! " + mppenc.fragment("h265") + f" ! filesink location={src}",
+                             "h265", qp=18)
+        check(ended(msg), "could not make the H.265 source")
+        # the conversion worker's chain (jobs.transcode_media)
+        bridge, msg = run_bridge(f"filesrc location={src} ! h265parse ! decodebin ! queue max-size-buffers=4 "
+                                 f"max-size-bytes=0 max-size-time=0 ! videoconvert ! video/x-raw,format=NV12 ! " +
+                                 mppenc.fragment("h264") + f" ! filesink location={out}", "h264", qp=18)
+        check(ended(msg), "the conversion did not finish: %s" % (msg.parse_error()[1] if msg else "timeout"))
+        check(bridge.direct is True, "the decoder's frames were copied, not handed over (direct=%s)" % bridge.direct)
+        check(decoded_frames(out) == n, "the stream does not decode to %d frames" % n)
+        a, b = frame_at(src, 90, "h265parse"), frame_at(out, 90, "h264parse")
+        check(a and b and len(a) == len(b), "frame 90 missing or of another size")
+        if a and b and len(a) == len(b):
+            step = range(0, len(a), 61)
+            diff = sum(abs(a[i] - b[i]) for i in step) / len(step)
+            check(diff < 3, "frame 90 differs from the source by %.2f per pixel" % diff)
 
 
 @test("GAL-04")
