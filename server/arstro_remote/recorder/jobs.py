@@ -21,7 +21,7 @@ gi.require_version("Gst", "1.0")
 gi.require_version("GstVideo", "1.0")
 from gi.repository import GLib, Gst, GstVideo  # noqa: E402
 
-from . import arh  # noqa: E402
+from . import arh, mppenc  # noqa: E402
 from .gstutil import gst_buffer  # noqa: E402
 
 CODECS = {
@@ -77,18 +77,42 @@ def _scale_desc(scale, fmt="I420"):
 
 # ---------------------------------------------------------------- worker process
 
+H264_QP = {"high": 23, "higher": 20, "max": 17}
+
+
+def _vpu_rate(codec, quality, bitrate, rc):
+    """Encoder rate settings of a VPU job: {"qp"} (constant quality) or {"bps", "rc"}."""
+    if bitrate:
+        return {"bps": int(bitrate * 1e6), "rc": "cbr" if rc == "cbr" else "vbr"}
+    return {"qp": (H264_QP if codec == "h264-vpu" else VPU_QP)[quality]}
+
+
+def _vpu_bridge(pipe, args, fps):
+    """The VPU encoder between `mppin` and `mppout` when the pipeline has them (made before
+    the pipeline starts, started after)."""
+    if not pipe.get_by_name("mppin"):
+        return None
+    return mppenc.Bridge(pipe, "h264" if args.codec == "h264-vpu" else "h265", fps,
+                         **_vpu_rate(args.codec, args.quality, args.bitrate, args.rc))
+
+
 def _encoder_desc(codec, fmt, fps, quality, preset, chroma, bitrate=None, rc="vbr"):
     """Return (input format the encoder needs, encoder pipeline fragment).
-    bitrate (Mbit/s): target bitrate instead of constant quality (H.265 only)."""
+    bitrate (Mbit/s): target bitrate instead of constant quality.
+
+    The VPU codecs go through mppenc (librockchip_mpp directly, ~20x the frame rate of
+    gst-rockchip's one-frame-at-a-time mpph26xenc here); the elements are the fallback."""
     gop = max(1, round(fps))
     f420, fsrc, fffv1 = FORMATS.get(fmt, ("I420", "I420", "I420"))
+    if codec in ("h264-vpu", "h265-vpu") and mppenc.available():
+        return "NV12", mppenc.fragment("h264" if codec == "h264-vpu" else "h265")
     if codec == "h264-vpu":
         if bitrate:
             bps = int(bitrate * 1e6)
             rate = (f"rc-mode=cbr bps={bps}" if rc == "cbr" else
                     f"rc-mode=vbr bps={bps} bps-max={int(bps * 1.25)} bps-min={bps // 2}")
         else:
-            qp = {"high": 23, "higher": 20, "max": 17}[quality]
+            qp = H264_QP[quality]
             rate = f"rc-mode=fixqp qp-init={qp} qp-min={qp} qp-max={qp}"
         return "I420" if fmt == "NV12" else "NV12", (
             f"capssetter caps=\"video/x-raw,framerate={max(1, round(fps))}/1\" ! "
@@ -313,7 +337,10 @@ def _transcode(args):
     bus = pipe.get_bus()
     bus.add_signal_watch()
     bus.connect("message", on_message)
+    vpu = _vpu_bridge(pipe, args, fps)
     pipe.set_state(Gst.State.PLAYING)
+    if vpu:
+        vpu.start()
     threads = [threading.Thread(target=feed_video, daemon=True)]
     if a:
         threads.append(threading.Thread(target=feed_audio, daemon=True))
@@ -323,6 +350,8 @@ def _transcode(args):
     emit(state="running", frames=0, total=reader.estimate_frames(), fps=0, output=out)
     loop.run()
     stop.set()
+    if vpu:
+        vpu.stop()
     pipe.set_state(Gst.State.NULL)
 
     if result["code"] == 0:
@@ -502,7 +531,7 @@ def transcode_media(args):
     part = out + ".part"
     mux = _mux(args.codec)
     # the source format is only known after decoding: always convert (this also keeps
-    # mpph265enc away from plain system memory, see gstutil)
+    # the mpph265enc fallback away from plain system memory, see gstutil)
     need, enc = _encoder_desc(args.codec, "decoded", fps, args.quality, args.preset, args.chroma,
                                args.bitrate, args.rc)
     desc = (f"filesrc name=fsrc ! decodebin name=dec "
@@ -556,9 +585,14 @@ def transcode_media(args):
     bus.add_signal_watch()
     bus.connect("message", on_message)
     emit(state="running", frames=0, total=total, fps=0, output=out)
+    vpu = _vpu_bridge(pipe, args, fps)
     pipe.set_state(Gst.State.PLAYING)
+    if vpu:
+        vpu.start()
     GLib.timeout_add(500, report)
     loop.run()
+    if vpu:
+        vpu.stop()
     pipe.set_state(Gst.State.NULL)
     if result["code"] == 0:
         os.replace(part, out)

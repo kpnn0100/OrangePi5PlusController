@@ -139,6 +139,12 @@ log in the slot's state dir.
 - HDMI RX: avoid stress tests; automated tests use the test pattern and switch back.
 - GStreamer: two capsfilters in a row do not parse; swscale cannot read NV16; `mp4mux` takes
   no PCM; fractional fps confuse MPP rate control.
+- VPU encode speed: gst-rockchip 1.14's `mpph264enc`/`mpph265enc` take one frame at a time
+  (~9 fps for 1080p from system memory, ~12 fps 4K even from the decoder's dmabuf) - the VPU
+  itself does ~190 fps at 1080p. For throughput use `recorder/mppenc.py` (librockchip_mpp via
+  ctypes, `appsink name=mppin` -> `Bridge` -> `appsrc name=mppout`); check the VPU alone with
+  `mpi_enc_test` before blaming it. A pipeline with the Bridge needs every sink `async=false`
+  (the Bridge does it) or it deadlocks in PAUSED.
 - Terminals: `term.attach` replies **before** the replayed bytes; output frames carry absolute
   offsets. Serial consoles are terminals too (`kind: "serial"`).
 - Web: ETag + `no-cache` statics, strict CSP (no inline scripts), WebCodecs only in secure

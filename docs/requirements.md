@@ -98,7 +98,7 @@ IDs are stable: never renumber, mark removed ones `(withdrawn)`.
 | GAL-01 | List takes newest first. A take groups its files (variants: RAW, H.265, H.264, FFV1, other) with size, resolution, fps, duration, audio and problems. Filter by kind. |
 | GAL-02 | A thumbnail per take. |
 | GAL-03 | Play a variant where the controller can decode it (HTTP with Range); download any variant. |
-| GAL-04 | Convert a variant to a target format – H.264 MP4 (VPU, "share", optional downscale), H.265 (VPU or x265; quality or bitrate), FFV1 (CPU or GPU) – as a background job. |
+| GAL-04 | Convert a variant to a target format – H.264 MP4 (VPU, "share", optional downscale), H.265 (VPU or x265; quality or bitrate), FFV1 (CPU or GPU) – as a background job. The VPU targets run at the encoder's own speed, faster than real time (a 4K H.265 recording to a 1080p H.264 copy: ~100 fps; 4K H.264: ~30 fps), every frame and the audio kept. |
 | GAL-05 | Jobs: list with progress, speed and ETA; cancel; clear finished. Pushed live. |
 | GAL-06 | Delete one variant (format) of a take, or the whole take. Refused while that file is being recorded or converted. |
 | GAL-07 | Gallery changes (new recording, finished conversion, deletion – from any controller) are pushed to all controllers. |

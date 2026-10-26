@@ -30,6 +30,9 @@ def gst_buffer(data):
 # board has no OOM escape - it freezes. Decoder output straight into the encoder at the same
 # size is fine (~450 MB, flat). Whether HDMI RX dmabuf + encoder RGA scaling (capture.py's
 # zero-copy preview) leaks too is not measured yet.
+#
+# Conversions avoid all of this: they scale on the CPU (videoscale, no leak) and encode through
+# mppenc (librockchip_mpp directly), which never sees GStreamer memory - flat ~300 MB, ~100 fps.
 
 
 def is_dmabuf(buf):

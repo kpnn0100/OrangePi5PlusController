@@ -141,6 +141,12 @@ HDMI RX (`rk_hdmirx`, V4L2) → GStreamer tee in the worker:
   `SurfaceProducer` texture.
 * **recording**: `mpph265enc` to MP4/MKV, or RAW `.arh` (uncompressed frames + audio) with
   optional HQ H.265 / FFV1 copies made during or after recording by transcode jobs.
+* **conversions on the VPU** (`recorder/mppenc.py`): the H.264 / H.265 jobs drive the encoder
+  through `librockchip_mpp` (ctypes) between an `appsink` and an `appsrc` of the job's own
+  pipeline (decode, scale, mux and audio stay in GStreamer). gst-rockchip 1.14's
+  `mpph264enc` keeps one frame in the encoder at a time and waits ~20 ms per 1080p frame for
+  its packet: 7-9 fps for a 4K -> 1080p copy, against ~100 fps this way (the VPU alone: ~190
+  fps at 1080p). The elements stay as the fallback when the library cannot be loaded.
 
 The app gets the web addresses and the password over Bluetooth (`web.info`), probes
 `/api/ping` on each address and uses the first that answers; if none does it says why.
