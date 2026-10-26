@@ -5,9 +5,10 @@ import '../../media.dart';
 import '../../remote_client.dart';
 import 'common.dart';
 
-/// Gallery (GAL-01..07): takes grid with thumbnails, jobs, and a sheet per take to play,
-/// download, convert or delete its files. The list comes over Bluetooth; thumbnails and
-/// playback come over Wi-Fi.
+/// Gallery (GAL-01..09): takes grouped by month and day with thumbnails, jobs, a sheet per take
+/// to play, download, convert or delete its files, and many takes at once - a day, a month or any
+/// set - saved to the phone. The list comes over Bluetooth; thumbnails, playback and downloads
+/// come over Wi-Fi.
 class GalleryView extends StatefulWidget {
   const GalleryView({super.key, required this.client, required this.active});
   final RemoteClient client;
@@ -19,9 +20,49 @@ class GalleryView extends StatefulWidget {
 
 const _kinds = {'all': 'All', 'RAW': 'RAW', 'H.265': 'H.265', 'H.264': 'H.264', 'FFV1': 'FFV1', 'VIDEO': 'Other'};
 
+/// The board's date of a take ("2026-09-30", GAL-01) - published by the server; computed from
+/// `created` for a server that predates it.
+String dayOf(Map<String, dynamic> t) {
+  final d = t['day'];
+  if (d is String && d.length == 10) return d;
+  final c = DateTime.fromMillisecondsSinceEpoch(((t['created'] as num?) ?? 0).toInt() * 1000);
+  String two(int v) => v.toString().padLeft(2, '0');
+  return '${c.year}-${two(c.month)}-${two(c.day)}';
+}
+
+const _months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October',
+                 'November', 'December'];
+const _weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+String monthLabel(String month) {
+  final p = month.split('-');
+  return '${_months[int.parse(p[1]) - 1]} ${p[0]}';
+}
+
+String dayLabel(String day) {
+  final p = day.split('-').map(int.parse).toList();
+  final d = DateTime(p[0], p[1], p[2]);
+  return '${_weekdays[d.weekday - 1]} ${d.day} ${_months[d.month - 1].substring(0, 3)}';
+}
+
+/// Takes by month, then by day, in list order (newest first).
+List<(String, List<(String, List<Map<String, dynamic>>)>)> groupTakes(List<Map<String, dynamic>> takes) {
+  final months = <(String, List<(String, List<Map<String, dynamic>>)>)>[];
+  for (final t in takes) {
+    final day = dayOf(t), month = day.substring(0, 7);
+    if (months.isEmpty || months.last.$1 != month) months.add((month, []));
+    final days = months.last.$2;
+    if (days.isEmpty || days.last.$1 != day) days.add((day, []));
+    days.last.$2.add(t);
+  }
+  return months;
+}
+
 class _GalleryViewState extends State<GalleryView> {
   List<Map<String, dynamic>>? _takes;
   String _filter = 'all';
+  bool _selecting = false;
+  final Set<String> _selected = {};              // this phone's own choice, never shared
   int _version = -1;
   bool _loading = false;
   String? _error;
@@ -52,6 +93,47 @@ class _GalleryViewState extends State<GalleryView> {
     final g = asMap(_gallery.value);
     if (!widget.active) return;
     if (_takes == null || g['version'] != _version) _load();
+  }
+
+  void _toggleGroup(List<Map<String, dynamic>> ts) {
+    setState(() {
+      _selecting = true;
+      final on = !ts.every((t) => _selected.contains(t['id']));
+      for (final t in ts) {
+        on ? _selected.add(t['id'] as String) : _selected.remove(t['id']);
+      }
+    });
+  }
+
+  void _toggleTake(String id) => setState(() {
+        _selecting = true;
+        _selected.contains(id) ? _selected.remove(id) : _selected.add(id);
+      });
+
+  /// GAL-12: the server picks the files (and leaves out what is still being written); each one
+  /// goes to the phone's download queue, into Downloads/Arstro like a single download.
+  Future<void> _downloadSelected() async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final r = asMap(await client.request(
+          'gallery.bundle', {'takes': _selected.toList(), 'kind': _filter}, const Duration(seconds: 20)));
+      final files = List<String>.from(r['files'] as List? ?? const []);
+      for (final f in files) {
+        await client.media.download('/api/media/$f', f);
+      }
+      final skipped = asList(r['skipped']).length;
+      messenger.showSnackBar(SnackBar(
+          content: Text('Saving ${files.length} file${files.length == 1 ? '' : 's'} (${size(r['size'] as num?)}) '
+              'to Downloads/Arstro${skipped > 0 ? ' · $skipped still being written, left out' : ''}')));
+      if (mounted) {
+        setState(() {
+          _selecting = false;
+          _selected.clear();
+        });
+      }
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(e.toString())));
+    }
   }
 
   Future<void> _load() async {
@@ -87,7 +169,7 @@ class _GalleryViewState extends State<GalleryView> {
                 ? takes
                 : takes.where((t) => asList(t['items']).any((i) => i['kind'] == _filter)).toList();
         final theme = Theme.of(context);
-        return RefreshIndicator(
+        final list = RefreshIndicator(
           onRefresh: () async {
             await _load();
             await media.refresh();
@@ -101,21 +183,32 @@ class _GalleryViewState extends State<GalleryView> {
                     Text('${g['takes']} takes · ${size(g['size'] as num?)} · ${g['folder']}',
                         maxLines: 2, overflow: TextOverflow.ellipsis, style: theme.textTheme.bodySmall),
                   const SizedBox(height: 10),
-                  SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: Row(children: [
-                      for (final e in _kinds.entries)
-                        Padding(
-                          padding: const EdgeInsets.only(right: 6),
-                          child: ChoiceChip(
-                            label: Text(e.value),
-                            selected: _filter == e.key,
-                            showCheckmark: false,
-                            onSelected: (_) => setState(() => _filter = e.key),
-                          ),
-                        ),
-                    ]),
-                  ),
+                  Row(children: [
+                    Expanded(
+                      child: SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Row(children: [
+                          for (final e in _kinds.entries)
+                            Padding(
+                              padding: const EdgeInsets.only(right: 6),
+                              child: ChoiceChip(
+                                label: Text(e.value),
+                                selected: _filter == e.key,
+                                showCheckmark: false,
+                                onSelected: (_) => setState(() => _filter = e.key),
+                              ),
+                            ),
+                        ]),
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: () => setState(() {
+                        _selecting = !_selecting;
+                        if (!_selecting) _selected.clear();
+                      }),
+                      child: Text(_selecting ? 'Done' : 'Select'),
+                    ),
+                  ]),
                   if (!media.ready) _MediaBanner(media: media),
                   if (jobs.isNotEmpty) JobsCard(client: client, jobs: jobs),
                   const SizedBox(height: 12),
@@ -143,35 +236,180 @@ class _GalleryViewState extends State<GalleryView> {
                 ),
               )
             else
-              SliverPadding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
-                // rows as tall as a 16:9 thumbnail plus the text under it, whatever the width
-                sliver: SliverLayoutBuilder(builder: (context, c) {
-                  const gap = 12.0;
-                  final cols = (c.crossAxisExtent / (280 + gap)).ceil().clamp(1, 12);
-                  final w = (c.crossAxisExtent - (cols - 1) * gap) / cols;
-                  final ts = MediaQuery.textScalerOf(context).scale(14) / 14;
-                  return SliverGrid(
-                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: cols,
-                      mainAxisSpacing: gap,
-                      crossAxisSpacing: gap,
-                      mainAxisExtent: w * 9 / 16 + 30 + 40 * ts + 24,
-                    ),
-                    delegate: SliverChildBuilderDelegate(
-                      (context, i) => _TakeCard(
-                        take: shown[i],
-                        media: media,
-                        onTap: () => showTake(context, client, shown[i]['id'] as String),
-                      ),
-                      childCount: shown.length,
-                    ),
-                  );
-                }),
-              ),
+              for (final (month, days) in groupTakes(shown)) ...[
+                SliverToBoxAdapter(
+                  child: _GroupHead(
+                    label: monthLabel(month),
+                    takes: [for (final (_, ts) in days) ...ts],
+                    selected: _selected,
+                    selecting: _selecting,
+                    big: true,
+                    onToggle: _toggleGroup,
+                  ),
+                ),
+                for (final (day, ts) in days) ...[
+                  SliverToBoxAdapter(
+                    child: _GroupHead(
+                        label: dayLabel(day), takes: ts, selected: _selected, selecting: _selecting, onToggle: _toggleGroup),
+                  ),
+                  _grid(ts, media),
+                ],
+              ],
+            SliverToBoxAdapter(child: SizedBox(height: _selecting ? 96 : 24)),
           ]),
         );
+        return Stack(children: [
+          list,
+          Positioned(
+            left: 12,
+            right: 12,
+            bottom: 12,
+            child: IgnorePointer(
+              ignoring: !_selecting,
+              child: AnimatedSlide(
+                offset: _selecting ? Offset.zero : const Offset(0, 0.4),
+                duration: const Duration(milliseconds: 200),
+                curve: Curves.easeOutCubic,
+                child: AnimatedOpacity(
+                  opacity: _selecting ? 1 : 0,
+                  duration: const Duration(milliseconds: 200),
+                  child: _SelectionBar(
+                    takes: (takes ?? const []).where((t) => _selected.contains(t['id'])).toList(),
+                    kind: _filter,
+                    canDownload: media.ready,
+                    onClear: () => setState(_selected.clear),
+                    onDownload: _downloadSelected,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ]);
       },
+    );
+  }
+
+  // rows as tall as a 16:9 thumbnail plus the text under it, whatever the width
+  Widget _grid(List<Map<String, dynamic>> ts, MediaLink media) => SliverPadding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+        sliver: SliverLayoutBuilder(builder: (context, c) {
+          const gap = 12.0;
+          final cols = (c.crossAxisExtent / (280 + gap)).ceil().clamp(1, 12);
+          final w = (c.crossAxisExtent - (cols - 1) * gap) / cols;
+          final tsc = MediaQuery.textScalerOf(context).scale(14) / 14;
+          return SliverGrid(
+            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: cols,
+              mainAxisSpacing: gap,
+              crossAxisSpacing: gap,
+              mainAxisExtent: w * 9 / 16 + 30 + 40 * tsc + 24,
+            ),
+            delegate: SliverChildBuilderDelegate(
+              (context, i) {
+                final id = ts[i]['id'] as String;
+                return _TakeCard(
+                  take: ts[i],
+                  media: media,
+                  selecting: _selecting,
+                  selected: _selected.contains(id),
+                  onTap: () => _selecting ? _toggleTake(id) : showTake(context, client, id),
+                  onLongPress: () => _toggleTake(id),
+                );
+              },
+              childCount: ts.length,
+            ),
+          );
+        }),
+      );
+}
+
+/// A month's or a day's heading: its name, count and size, and - while selecting - a checkbox
+/// that takes the whole group (ticked, empty, or mixed).
+class _GroupHead extends StatelessWidget {
+  const _GroupHead({required this.label, required this.takes, required this.selected, required this.selecting,
+                    required this.onToggle, this.big = false});
+  final String label;
+  final List<Map<String, dynamic>> takes;
+  final Set<String> selected;
+  final bool selecting;
+  final bool big;
+  final void Function(List<Map<String, dynamic>>) onToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final n = takes.where((t) => selected.contains(t['id'])).length;
+    final total = takes.fold<num>(0, (a, t) => a + ((t['size'] as num?) ?? 0));
+    return Padding(
+      padding: EdgeInsets.fromLTRB(selecting ? 4 : 16, big ? 14 : 8, 16, 6),
+      child: Row(children: [
+        AnimatedSize(
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOutCubic,
+          child: selecting
+              ? Checkbox(
+                  tristate: true,
+                  value: n == 0 ? false : n == takes.length ? true : null,
+                  onChanged: (_) => onToggle(takes),
+                  semanticLabel: 'Select $label',
+                )
+              : const SizedBox(width: 0),
+        ),
+        Flexible(
+          child: Text(label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: big
+                  ? theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700)
+                  : theme.textTheme.titleSmall?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+        ),
+        const SizedBox(width: 8),
+        Text('${takes.length} take${takes.length == 1 ? '' : 's'} · ${size(total)}', style: theme.textTheme.bodySmall),
+      ]),
+    );
+  }
+}
+
+/// The selection's sum and the one action (GAL-12): how many takes, how many files of the kind
+/// the filter shows, how big - and Download.
+class _SelectionBar extends StatelessWidget {
+  const _SelectionBar({required this.takes, required this.kind, required this.canDownload, required this.onClear,
+                       required this.onDownload});
+  final List<Map<String, dynamic>> takes;
+  final String kind;
+  final bool canDownload;
+  final VoidCallback onClear;
+  final VoidCallback onDownload;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final files = [
+      for (final t in takes)
+        for (final i in asList(t['items']))
+          if (kind == 'all' || i['kind'] == kind) i
+    ];
+    final ready = files.where((i) => i['recording'] != true && i['busy'] != true).toList();
+    final bytes = ready.fold<num>(0, (a, i) => a + ((i['size'] as num?) ?? 0));
+    final text = takes.isEmpty
+        ? 'Choose takes, a day or a month'
+        : '${takes.length} take${takes.length == 1 ? '' : 's'} · ${ready.length} file${ready.length == 1 ? '' : 's'} · ${size(bytes)}';
+    return Material(
+      elevation: 6,
+      color: theme.colorScheme.surfaceContainerHigh,
+      borderRadius: BorderRadius.circular(14),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 8, 8, 8),
+        child: Row(children: [
+          Expanded(child: Text(text, maxLines: 2, overflow: TextOverflow.ellipsis, style: theme.textTheme.bodyMedium)),
+          TextButton(onPressed: takes.isEmpty ? null : onClear, child: const Text('Clear')),
+          FilledButton.icon(
+            onPressed: ready.isEmpty || !canDownload ? null : onDownload,
+            icon: const Icon(Icons.download, size: 18),
+            label: const Text('Download'),
+          ),
+        ]),
+      ),
     );
   }
 }
@@ -252,10 +490,14 @@ class Thumb extends StatelessWidget {
 }
 
 class _TakeCard extends StatelessWidget {
-  const _TakeCard({required this.take, required this.media, required this.onTap});
+  const _TakeCard({required this.take, required this.media, required this.onTap, this.onLongPress,
+                   this.selecting = false, this.selected = false});
   final Map<String, dynamic> take;
   final MediaLink media;
   final VoidCallback onTap;
+  final VoidCallback? onLongPress;
+  final bool selecting;
+  final bool selected;
 
   @override
   Widget build(BuildContext context) {
@@ -265,14 +507,31 @@ class _TakeCard extends StatelessWidget {
     return Card(
       margin: EdgeInsets.zero,
       clipBehavior: Clip.antiAlias,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: selected ? theme.colorScheme.primary : Colors.transparent, width: 2),
+      ),
       child: InkWell(
         onTap: onTap,
+        onLongPress: onLongPress,
         child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           AspectRatio(
             aspectRatio: 16 / 9,
             child: Stack(fit: StackFit.expand, children: [
               Thumb(take: take, media: media),
-              if (take['recording'] == true) const Positioned(left: 8, top: 8, child: Tag('REC', color: kRec, dot: true)),
+              if (take['recording'] == true)
+                Positioned(left: selecting ? 40 : 8, top: 8, child: const Tag('REC', color: kRec, dot: true)),
+              Positioned(
+                left: 6,
+                top: 6,
+                child: AnimatedOpacity(
+                  opacity: selecting ? 1 : 0,
+                  duration: const Duration(milliseconds: 150),
+                  child: Icon(selected ? Icons.check_circle : Icons.radio_button_unchecked,
+                      color: selected ? theme.colorScheme.primary : Colors.white, size: 26,
+                      shadows: const [Shadow(blurRadius: 4)]),
+                ),
+              ),
               if (take['duration'] != null)
                 Positioned(
                   right: 8,

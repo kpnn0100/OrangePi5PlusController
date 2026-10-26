@@ -12,6 +12,7 @@
   GET  /api/play/<file>?mode=copy|h264&t=S   a recording as a fragmented MP4 stream from S seconds,
                               for browsers (GAL-11): copy = the video as it is, h264 = VPU re-encode
   GET  /api/thumb/<clip>      JPEG thumbnail of a take
+  GET  /api/bundle/<id>.zip   several recordings as ONE streamed ZIP (made by gallery.bundle, GAL-12)
   GET  /api/files/download?path=P    a file of the Files module (FILE-03)
   PUT  /api/files/upload?dir=D&name=N[&overwrite=1]   raw body -> D/N (FILE-02)
   GET  /apps/<id>/[file]      an NTWB app's web UI (APP-04); /apps/<id>/icon, /apps/<id>/api.json
@@ -293,6 +294,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._play(urllib.parse.unquote(path[len("/api/play/"):]), head)
             if path.startswith("/api/thumb/"):
                 return self._thumb(urllib.parse.unquote(path[len("/api/thumb/"):]), head)
+            if path.startswith("/api/bundle/") and path.endswith(".zip"):
+                return self._bundle(path[len("/api/bundle/"):-len(".zip")], head)
             if path == "/api/files/download":
                 return self._download(head)
             self.send_error(HTTPStatus.NOT_FOUND)
@@ -563,6 +566,35 @@ class Handler(BaseHTTPRequestHandler):
         if not path:
             return self.send_error(HTTPStatus.NOT_FOUND)
         self._send_file(path, os.path.basename(path), False, head, ctype="image/jpeg", cache=True)
+
+    def _bundle(self, bid, head):
+        """GAL-12: the files of a `gallery.bundle` as one STORED ZIP, streamed with its exact
+        length announced first (zipstream), so the browser shows real progress for a month of
+        recordings and the board writes no temporary copy."""
+        from ..zipstream import ChangedError
+        rec = self.web.ctx.recorder
+        got = rec.bundle_stream(bid) if rec else None
+        if not got:
+            return self._send_json({"ok": False, "error": "this download has expired or its files are gone - "
+                                    "choose them again"}, HTTPStatus.NOT_FOUND)
+        name, z = got
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Length", str(z.length))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Disposition", "attachment; filename*=UTF-8''%s" % urllib.parse.quote(name))
+        self.end_headers()
+        if head:
+            return
+        log.info("bundle %s: sending %d file(s), %d bytes to %s", name, len(z.entries), z.length, self.address_string())
+        try:
+            z.write(self.wfile)
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            log.info("bundle %s: the client stopped the download", name)
+        except ChangedError as e:                      # the length is already sent: cut the connection
+            log.warning("bundle %s: %s - download cut short", name, e)
+            self.close_connection = True
 
     def _send_file(self, path, name, download, head, ctype=None, cache=False):
         try:

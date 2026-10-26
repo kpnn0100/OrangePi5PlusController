@@ -22,10 +22,11 @@ and all three are updated live by the same state events (ARC-03).
 | Recording settings | REC-04 | Settings sheet | `rec settings`, `rec set key=value ...` | Settings sheet |
 | EDID | REC-04 | Settings sheet | `rec edid 4k60\|4k30\|1080p\|keep` | Settings sheet |
 | Test source | REC-08 | Settings sheet › Source | `rec source --test WxH@FPS \| --hdmi` | Settings sheet › Source |
-| Gallery list + filter | GAL-01 | Recorder › Gallery | `gallery list [--kind K]`, `gallery show TAKE` | Gallery |
+| Gallery list + filter, grouped by month and day | GAL-01 | Recorder › Gallery (month and day headings) | `gallery list [--kind K]` (month / day headings), `gallery show TAKE` | Gallery (month and day headings) |
 | Thumbnails | GAL-02 | Gallery | - ² | Gallery |
 | Play | GAL-03 | Take sheet (video player) | - ² (download and play locally) | Take dialog |
 | Download | GAL-03 | Take › Download to phone (Downloads/Arstro) | `gallery download FILE [--out PATH]` | Take › download |
+| Download many at once (takes, a day, a month) | GAL-12 | Gallery › Select (or long-press a take; a heading's box takes the day / month) › Download - files one after another into Downloads/Arstro | `gallery download TAKE... \| --day D \| --month M [--kind K] [--out DIR \| --zip [FILE]]` | Gallery › Select (or a heading's box) › Download ZIP - one streamed ZIP |
 | Convert (H.264 share + downscale, H.265 VPU/x265, FFV1 CPU/GPU) | GAL-04 | Take › Convert | `gallery targets`, `gallery convert FILE --to TARGET [--scale 720] [--quality Q] [--bitrate MBPS] [--wait]` | Take › Convert |
 | Jobs: progress, cancel, clear | GAL-05 | Gallery › Conversions | `jobs`, `jobs cancel ID`, `jobs clear` | Gallery › Conversions |
 | Verified lossless FFV1 replaces the RAW (setting, per conversion, on demand) | GAL-08 | Settings sheet › *Delete RAW after a verified copy*; Convert switch; FFV1 › *Check against the RAW…* | `rec set raw.ffv1_replace_raw=true`, `gallery convert … --keep-raw`, `gallery verify FFV1 [--delete-raw] [--wait]` | Settings sheet; Convert switch; FFV1 › check button |

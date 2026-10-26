@@ -91,7 +91,8 @@ Everything the app does, in the browser.
 ```bash
 arstro-remote rec status | start | stop            # recorder
 arstro-remote rec set mode=raw raw.ffv1=true       # settings (shared with app and web)
-arstro-remote gallery list                         # recordings
+arstro-remote gallery list                         # recordings, by month and day
+arstro-remote gallery download --day 2026-09-30 --zip   # a whole day as one ZIP
 arstro-remote gallery convert REC_<take>.arh --to h264-vpu --scale 720 --wait
 arstro-remote gallery verify REC_<take>_FFV1.mkv --delete-raw --wait   # prove the FFV1 is lossless, free the RAW
 arstro-remote term run "uptime"                    # one command in a fresh shell

@@ -225,6 +225,72 @@ void main() {
     });
   }
 
+  // covers: GAL-01, GAL-12
+  testWidgets('gallery: grouped by month and day, a month downloads as files', (tester) async {
+    await setSize(tester, sizes['phone portrait']!);
+    final log = ErrorLog();
+    final client = await connectedClient();
+    final asked = <Map>[];
+    final saved = <Map>[];
+    final list = client.requestOverride!;
+    client.requestOverride = (op, params) async {
+      if (op != 'gallery.bundle') return list(op, params);
+      asked.add(params);
+      return {
+        'files': ['REC_20251231_235959_H265.mov', 'REC_20251231_235959_H264_720p.mp4', 'REC_20251231_235959_FFV1.mkv'],
+        'size': 1363547145,
+        'skipped': [{'file': 'REC_20251231_235959.arh', 'why': 'still being written'}],
+      };
+    };
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(const MethodChannel('arstro/download'), (call) async {
+      saved.add(call.arguments as Map);
+      return true;
+    });
+    final prefs = await SharedPreferences.getInstance();
+    await tester.pumpWidget(ArstroApp(client: client, settings: Settings(prefs)));
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.text('Recorder').last);
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.tap(find.text('Gallery').first);
+    await tester.pump(const Duration(milliseconds: 500));
+    log.found(find.text('Select'), 'select button');
+    await tester.tap(find.text('Select'));
+    await tester.pump(const Duration(milliseconds: 400));
+    final grid = find.descendant(of: find.byType(CustomScrollView), matching: find.byType(Scrollable)).first;
+    for (final t in ['January 2026', 'Thu 1 Jan', 'December 2025', 'Wed 31 Dec']) {
+      for (var i = 0; i < 10 && find.text(t).hitTestable().evaluate().isEmpty; i++) {
+        await tester.drag(grid, const Offset(0, -150));
+        await tester.pump(const Duration(milliseconds: 200));
+      }
+      log.found(find.text(t), 'group heading $t');
+    }
+    log.found(find.byType(Checkbox), 'group checkboxes');
+    await tester.tap(find.bySemanticsLabel('Select December 2025'));
+    await tester.pump(const Duration(milliseconds: 400));
+    // the RAW is still being written (busy): three files of the take are ready
+    log.found(find.textContaining('1 take · 3 files'), 'selection sum');
+    log.check('select mode');
+
+    client.media.base = 'http://192.0.2.10:8080/';     // Wi-Fi reachable from here on
+    await tester.tap(find.bySemanticsLabel('Select December 2025'));
+    await tester.pump();
+    await tester.tap(find.bySemanticsLabel('Select December 2025'));
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.tap(find.text('Download'));
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(asked.single['takes'], ['REC_20251231_235959']);
+    expect(asked.single['kind'], 'all');
+    expect(saved.map((c) => c['name']).toList(),
+        ['REC_20251231_235959_H265.mov', 'REC_20251231_235959_H264_720p.mp4', 'REC_20251231_235959_FFV1.mkv']);
+    expect(saved.first['url'], 'http://192.0.2.10:8080/api/media/REC_20251231_235959_H265.mov');
+    log.found(find.textContaining('Saving 3 files'), 'snack bar');
+    log.found(find.textContaining('1 still being written'), 'skipped note');
+    log.check('download');
+    await tester.pump(const Duration(seconds: 5));
+    log.done();
+  });
+
   // covers: UX-03, ADM-01, ADM-02, ADM-03, CON-05
   testWidgets('settings page fits on a small phone', (tester) async {
     await setSize(tester, const Size(360, 640));

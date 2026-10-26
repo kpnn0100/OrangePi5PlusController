@@ -8,6 +8,7 @@ the app and the web page is here too (ARC-04), and changes made here show up the
     arstro-remote watch [TOPIC...]       print live state changes (recorder, jobs, ...)
     arstro-remote rec start|stop|status|settings|set KEY=VALUE|preview FILE
     arstro-remote gallery list|show|convert|delete|delete-take|download|targets
+                   gallery download FILE|TAKE... [--day D] [--month M] [--kind K] [--out DIR | --zip [FILE]]
     arstro-remote jobs list|cancel ID|clear
     arstro-remote wifi status|scan|connect SSID|disconnect|forget NAME|radio on|off
     arstro-remote term list|open|attach ID|close ID|run CMD
@@ -573,11 +574,27 @@ def cmd_gallery(ctl, a):
         def human(r):
             if not r["takes"]:
                 print("no recordings in %s" % r["folder"])
+            # GAL-01: by month, then by day - the board's date the server publishes with each take
+            month = day = None
             for t in r["takes"]:
-                print("%s  %s  %s  %s" % (t["id"], t["title"], fmt_dur(t["duration"]), fmt_size(t["size"])))
+                tday = t.get("day") or time.strftime("%Y-%m-%d", time.localtime(t["created"]))
+                if tday[:7] != month:
+                    month = tday[:7]
+                    group = [x for x in r["takes"] if (x.get("day") or "")[:7] == month]
+                    print("%s%s  (%d take%s, %s)" % ("" if day is None else "\n",
+                                                    time.strftime("%B %Y", time.strptime(month, "%Y-%m")),
+                                                    len(group), "" if len(group) == 1 else "s",
+                                                    fmt_size(sum(x["size"] for x in group))))
+                if tday != day:
+                    day = tday
+                    group = [x for x in r["takes"] if x.get("day") == day]
+                    print("  %s  (%d take%s, %s)" % (time.strftime("%a %d %b", time.strptime(day, "%Y-%m-%d")),
+                                                     len(group), "" if len(group) == 1 else "s",
+                                                     fmt_size(sum(x["size"] for x in group))))
+                print("    %s  %s  %s  %s" % (t["id"], t["title"], fmt_dur(t["duration"]), fmt_size(t["size"])))
                 for i in t["items"]:
                     res = "%dx%d@%s" % (i["width"], i["height"], ("%.2f" % i["fps"]).rstrip("0").rstrip(".")) if i["width"] else ""
-                    print("    %-6s %-40s %-18s %9s%s%s" % (i["kind"], i["id"], res, fmt_size(i["size"]),
+                    print("      %-6s %-40s %-18s %9s%s%s" % (i["kind"], i["id"], res, fmt_size(i["size"]),
                                                             "  verified lossless" if i.get("verified") else "",
                                                             "  (%s)" % i["problem"] if i.get("problem") else ""))
                     if i.get("note"):                   # GAL-09: repaired after an interruption
@@ -616,7 +633,38 @@ def cmd_gallery(ctl, a):
     elif sub == "stream":
         save_stream(ctl, a.file, a.out, a.mode, a.start)
     elif sub == "download":
-        download(ctl, a.file, a.out)
+        many = len(a.target) > 1 or a.day or a.month or a.zip is not None
+        if not many and a.target:
+            return download(ctl, a.target[0], a.out)
+        if not (a.target or a.day or a.month):
+            sys.exit("name files or takes, or --day YYYY-MM-DD / --month YYYY-MM")
+        # GAL-12: the server chooses (and leaves out what is still being recorded or written)
+        params = {"files": [x for x in a.target if "." in x], "takes": [x for x in a.target if "." not in x],
+                  "kind": a.kind or "all"}
+        if a.day:
+            params["day"] = a.day
+        if a.month:
+            params["month"] = a.month
+        b = ctl.call("gallery.bundle", **params)
+        say = sys.stderr if a.json else sys.stdout       # --json: stdout carries only the JSON
+        for s in b["skipped"]:
+            print("left out %s (%s)" % (s["file"], s["why"]), file=sys.stderr)
+        if a.zip is not None:                           # one ZIP, as the browser gets it
+            dest = a.zip or b["name"]
+            if os.path.isdir(dest):
+                dest = os.path.join(dest, b["name"])
+            fetch(ctl, b["url"], dest, say)
+            b["saved"] = [dest]
+        else:
+            dest = a.out or "."
+            if os.path.exists(dest) and not os.path.isdir(dest):
+                sys.exit("--out must be a folder when downloading several files")
+            os.makedirs(dest, exist_ok=True)
+            b["saved"] = []
+            for n, name in enumerate(b["files"], 1):
+                print("[%d/%d] %s" % (n, len(b["files"]), name), file=say)
+                b["saved"].append(download(ctl, name, dest, say))
+        out(a, b, lambda b: print("%d file(s), %s" % (len(b["files"]), fmt_size(b["size"]))))
 
 
 def wait_job(ctl, job_id):
@@ -644,13 +692,19 @@ def wait_job(ctl, job_id):
         time.sleep(1)
 
 
-def download(ctl, name, dest):
-    base, token = ctl.http_base()
-    url = "%s/api/media/%s?download=1" % (base, urllib.parse.quote(name))
-    req = urllib.request.Request(url, headers={"Authorization": "Bearer %s" % token} if token else {})
+def download(ctl, name, dest, say=None):
     dest = dest or name
     if os.path.isdir(dest):
         dest = os.path.join(dest, name)
+    fetch(ctl, "/api/media/%s?download=1" % urllib.parse.quote(name), dest, say)
+    return dest
+
+
+def fetch(ctl, path, dest, say=None):
+    """GET `path` from the server into `dest` (via dest.part), with progress on a terminal;
+    the "saved" line goes to `say` (stdout by default)."""
+    base, token = ctl.http_base()
+    req = urllib.request.Request(base + path, headers={"Authorization": "Bearer %s" % token} if token else {})
     with urllib.request.urlopen(req, timeout=30) as r, open(dest + ".part", "wb") as f:
         total, done, t0 = int(r.headers.get("Content-Length") or 0), 0, time.monotonic()
         while True:
@@ -662,10 +716,13 @@ def download(ctl, name, dest):
             if sys.stderr.isatty():
                 sys.stderr.write("\r%s / %s  %s/s   " % (fmt_size(done), fmt_size(total),
                                                           fmt_size(done / max(0.1, time.monotonic() - t0))))
-    os.replace(dest + ".part", dest)
     if sys.stderr.isatty():
         sys.stderr.write("\n")
-    print("saved %s (%s)" % (dest, fmt_size(done)))
+    if total and done != total:                     # the server cut it short (a file changed meanwhile)
+        os.unlink(dest + ".part")
+        sys.exit("download of %s stopped at %s of %s - try again" % (dest, fmt_size(done), fmt_size(total)))
+    os.replace(dest + ".part", dest)
+    print("saved %s (%s)" % (dest, fmt_size(done)), file=say or sys.stdout)
 
 
 def cmd_jobs(ctl, a):
@@ -1504,9 +1561,15 @@ def build_parser():
     st.add_argument("--mode", choices=["copy", "h264"], default="copy",
                     help="copy = the video as it is, h264 = converted by the VPU (15 fps)")
     st.add_argument("--start", type=float, default=0, help="seconds into the file")
-    dw = gs.add_parser("download")
-    dw.add_argument("file")
-    dw.add_argument("--out", help="file or folder")
+    dw = gs.add_parser("download", help="download a file - or many: takes, a day, a month (GAL-12)")
+    dw.add_argument("target", nargs="*", help="files and/or takes")
+    dw.add_argument("--out", help="file or folder (several files: a folder, default here)")
+    dw.add_argument("--day", help="every take of this day, YYYY-MM-DD")
+    dw.add_argument("--month", help="every take of this month, YYYY-MM")
+    dw.add_argument("--kind", choices=["RAW", "H.265", "H.264", "FFV1", "VIDEO"],
+                    help="only this format of the chosen takes")
+    dw.add_argument("--zip", nargs="?", const="", metavar="FILE",
+                    help="one ZIP instead of separate files (default name: the server's)")
 
     j = sub.add_parser("jobs", help="background conversions")
     js = j.add_subparsers(dest="jobs_cmd")

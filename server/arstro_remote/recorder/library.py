@@ -186,8 +186,12 @@ class Library:
         for base, items in takes.items():
             items.sort(key=lambda i: ORDER.get(i["kind"], 9))
             newest = max(i["mtime"] for i in items)
+            created = _created(base, newest)
+            # GAL-01: the board's date of the take - the same clock as the title - so every
+            # controller groups the gallery by month and day alike.
+            day = datetime.fromtimestamp(created).strftime("%Y-%m-%d")
             out.append({
-                "id": base, "title": _title(base), "created": _created(base, newest),
+                "id": base, "title": _title(base), "created": created, "day": day, "month": day[:7],
                 "size": sum(i["size"] for i in items),
                 "duration": max((i["duration"] or 0) for i in items),
                 "kinds": sorted({i["kind"] for i in items}, key=lambda k: ORDER.get(k, 9)),

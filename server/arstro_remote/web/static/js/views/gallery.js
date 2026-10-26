@@ -1,4 +1,5 @@
-// Gallery (GAL-01..07, GAL-11): takes and their variants, playback, download, convert, delete, jobs.
+// Gallery (GAL-01..12): takes grouped by month and day, their variants, playback (GAL-11),
+// download - one file, or many at once as one ZIP (GAL-12) - convert, delete, jobs.
 
 import { h, clear, icon, store, conn, run, sheet, confirmBox, toast, toggle, fmtBytes, fmtDur, busy, errText } from "../core.js";
 import { FilePlayer, streamMode } from "../fileplayer.js";
@@ -59,6 +60,55 @@ async function targets() {
   return targetsCache;
 }
 
+/** "2026-09" -> "September 2026"; "2026-09-30" -> "Wed 30 Sep" (the board's date, GAL-01) - the
+ *  words the app and the CLI use too. */
+const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
+                "November", "December"];
+function monthLabel(m) {
+  const [y, mo] = m.split("-").map(Number);
+  return `${MONTHS[mo - 1]} ${y}`;
+}
+function dayLabel(d) {
+  const [y, mo, da] = d.split("-").map(Number);
+  const wd = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][new Date(y, mo - 1, da).getDay()];
+  return `${wd} ${da} ${MONTHS[mo - 1].slice(0, 3)}`;
+}
+function dayOf(t) {
+  if (t.day) return t.day;
+  const d = new Date((t.created || 0) * 1000);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/** Takes grouped by month, then by day, in list order (newest first). */
+function groupTakes(takes) {
+  const months = [];
+  for (const t of takes) {
+    const day = dayOf(t), month = day.slice(0, 7);
+    let m = months[months.length - 1];
+    if (!m || m.key !== month) months.push(m = { key: month, days: [] });
+    let d = m.days[m.days.length - 1];
+    if (!d || d.key !== day) m.days.push(d = { key: day, takes: [] });
+    d.takes.push(t);
+  }
+  return months;
+}
+
+/** The files of `takes` that a download would carry under the kind filter (GAL-12). */
+function filesOf(takes, kind) {
+  const out = [];
+  for (const t of takes) for (const i of t.items) if (kind === "all" || i.kind === kind) out.push(i);
+  return out;
+}
+
+function checkbox(onToggle, label) {
+  const b = h("button.selbox", { type: "button", role: "checkbox", "aria-checked": "false", "aria-label": label,
+                                 onclick: (e) => { e.stopPropagation(); onToggle(); } }, icon("check"));
+  b.set = (state) => {           // true | false | "mixed"
+    b.setAttribute("aria-checked", state === "mixed" ? "mixed" : state ? "true" : "false");
+  };
+  return b;
+}
+
 export default {
   id: "gallery", title: "Gallery", icon: "gallery",
 
@@ -67,30 +117,118 @@ export default {
     let takes = null;
     let loading = false;
     let version = -1;
+    let selecting = false;
+    const selected = new Set();                 // take ids - this page's own choice, never shared
+    let refs = { cards: new Map(), groups: [] };
 
     const sub = h("div.sub");
     const chips = h("div.chips");
+    const selectBtn = h("button.btn.sm.ghost", { onclick: () => setSelecting(!selecting) });
     const jobsBox = h("div.card.hidden", { style: { marginBottom: "18px" } });
-    const grid = h("div.takes");
+    const grid = h("div.gallery");
     const empty = h("div.empty.hidden");
+    const barInfo = h("div.grow.ellipsis");
+    const dlBtn = h("button.btn.sm.primary", { onclick: (e) => downloadSelected(e.currentTarget) }, icon("download"), "Download ZIP");
+    const bar = h("div.selbar", { "aria-live": "polite" }, barInfo,
+      h("button.btn.sm.ghost", { onclick: () => { selected.clear(); sync(); } }, "Clear"), dlBtn);
     root.append(
-      h("div.view-head", null, h("div", null, h("h1", null, "Gallery"), sub), h("div.actions", null, chips)),
-      jobsBox, grid, empty);
+      h("div.view-head", null, h("div", null, h("h1", null, "Gallery"), sub), h("div.actions.chip-row", null, chips, selectBtn)),
+      jobsBox, grid, empty, bar);
 
     const renderChips = () => clear(chips, KINDS.map(([k, label]) =>
       h("button.chip", { class: k === filter ? "active" : "", onclick: () => { filter = k; renderChips(); renderTakes(); } }, label)));
 
+    function setSelecting(on) {
+      selecting = on;
+      if (!on) selected.clear();
+      root.classList.toggle("selecting", on);
+      selectBtn.replaceChildren(on ? "Done" : "Select");
+      sync();
+    }
+
+    function shownTakes() {
+      return !takes ? [] : filter === "all" ? takes : takes.filter((t) => t.items.some((i) => i.kind === filter));
+    }
+
     function renderTakes() {
       if (!takes) {
-        clear(grid, [0, 1, 2].map(() => h("div.card.take", { style: { opacity: ".5" } }, h("div.thumb"),
-                                                  h("div.take-body", null, h("div.take-title", null, " ")))));
+        clear(grid, h("div.takes", null, [0, 1, 2].map(() => h("div.card.take", { style: { opacity: ".5" } }, h("div.thumb"),
+                                                         h("div.take-body", null, h("div.take-title", null, " "))))));
         return;
       }
-      const shown = filter === "all" ? takes : takes.filter((t) => t.items.some((i) => i.kind === filter));
+      const shown = shownTakes();
+      for (const id of [...selected]) if (!shown.some((t) => t.id === id)) selected.delete(id);   // gone or filtered out
       empty.classList.toggle("hidden", shown.length > 0);
       clear(empty, icon("film"), h("div", null, takes.length ? "Nothing in this format." : "No recordings yet."),
             !takes.length ? h("div.hint", null, "Recordings appear here as soon as they start.") : null);
-      clear(grid, shown.map((t, n) => takeCard(t, n)));
+      refs = { cards: new Map(), groups: [] };
+      let n = 0;
+      clear(grid, groupTakes(shown).map((m) => {
+        const all = m.days.flatMap((d) => d.takes);
+        const mBox = checkbox(() => toggleGroup(all), "Select " + monthLabel(m.key));
+        refs.groups.push({ box: mBox, takes: all });
+        return h("section.month", null,
+          h("div.group-head.month-head", null, mBox, h("h2", null, monthLabel(m.key)), groupMeta(all)),
+          m.days.map((d) => {
+            const dBox = checkbox(() => toggleGroup(d.takes), "Select " + dayLabel(d.key));
+            refs.groups.push({ box: dBox, takes: d.takes });
+            return h("div.day", null,
+              h("div.group-head.day-head", null, dBox, h("h3", null, dayLabel(d.key)), groupMeta(d.takes)),
+              h("div.takes", null, d.takes.map((t) => takeCard(t, n++))));
+          }));
+      }));
+      sync();
+    }
+
+    function groupMeta(ts) {
+      const size = ts.reduce((a, t) => a + t.size, 0);
+      return h("span.group-meta", null, `${ts.length} take${ts.length === 1 ? "" : "s"} · ${fmtBytes(size)}`);
+    }
+
+    function toggleGroup(ts) {
+      if (!selecting) setSelecting(true);
+      const on = !ts.every((t) => selected.has(t.id));
+      for (const t of ts) on ? selected.add(t.id) : selected.delete(t.id);
+      sync();
+    }
+
+    function toggleTake(id) {
+      selected.has(id) ? selected.delete(id) : selected.add(id);
+      sync();
+    }
+
+    /** Selection state -> cards, group boxes and the bar, in place (no re-render, no reload). */
+    function sync() {
+      for (const [id, el] of refs.cards) {
+        el.classList.toggle("selected", selected.has(id));
+        el.querySelector(".selbox").set(selected.has(id));
+      }
+      for (const g of refs.groups) {
+        const k = g.takes.filter((t) => selected.has(t.id)).length;
+        g.box.set(k === 0 ? false : k === g.takes.length ? true : "mixed");
+      }
+      const chosen = (takes || []).filter((t) => selected.has(t.id));
+      const files = filesOf(chosen, filter);
+      const ready = files.filter((i) => !i.recording && !i.busy);
+      const size = ready.reduce((a, i) => a + i.size, 0);
+      bar.classList.toggle("on", selecting);
+      barInfo.textContent = !chosen.length ? "Choose takes, a day or a month"
+        : `${chosen.length} take${chosen.length === 1 ? "" : "s"} · ${ready.length} file${ready.length === 1 ? "" : "s"}` +
+          `${filter === "all" ? "" : " " + (filter === "VIDEO" ? "other" : filter)} · ${fmtBytes(size)}` +
+          (ready.length < files.length ? ` · ${files.length - ready.length} still being written` : "");
+      dlBtn.disabled = !ready.length;
+    }
+
+    async function downloadSelected(btn) {
+      const b = await busy(btn, () => conn.call("gallery.bundle", { takes: [...selected], kind: filter }));
+      if (!b) return;
+      // The board streams ONE stored ZIP with its length known, so the browser shows real progress.
+      const a = h("a", { href: b.url, download: b.name });
+      document.body.append(a);
+      a.click();
+      a.remove();
+      toast(`Downloading ${b.name} · ${b.files.length} file${b.files.length === 1 ? "" : "s"} · ${fmtBytes(b.size)}` +
+            (b.skipped.length ? ` · ${b.skipped.length} left out (still being written)` : ""), "ok");
     }
 
     function takeCard(t, n) {
@@ -101,9 +239,11 @@ export default {
         img.onload = () => { img.classList.add("loaded"); ph.remove(); };
         img.onerror = () => img.remove();
       }
-      return h("div.card.take", { style: { animationDelay: Math.min(n, 12) * 30 + "ms" }, onclick: () => openTake(t.id),
-                                  role: "button", tabindex: "0", onkeydown: (e) => e.key === "Enter" && openTake(t.id) },
+      const open = () => (selecting ? toggleTake(t.id) : openTake(t.id));
+      const card = h("div.card.take", { style: { animationDelay: Math.min(n, 12) * 30 + "ms" }, onclick: open,
+                                        role: "button", tabindex: "0", onkeydown: (e) => e.key === "Enter" && open() },
         h("div.thumb", null, ph, img,
+          checkbox(() => { if (!selecting) setSelecting(true); toggleTake(t.id); }, "Select " + t.title),
           t.recording ? h("span.flag.tag.rec.live", null, h("span.dot"), "REC") : null,
           t.duration ? h("span.dur", null, fmtDur(t.duration)) : null),
         h("div.take-body", null,
@@ -111,6 +251,8 @@ export default {
           h("div.take-meta.ellipsis", null, [titleParts(t)[1] ? titleParts(t)[0] : null,
             `${t.items.length} file${t.items.length === 1 ? "" : "s"}`, fmtBytes(t.size)].filter(Boolean).join(" · ")),
           h("div.tags", null, t.kinds.map(kindTag))));
+      refs.cards.set(t.id, card);
+      return card;
     }
 
     async function load() {
@@ -141,6 +283,7 @@ export default {
     }
 
     renderChips();
+    setSelecting(false);
     renderTakes();
     const offs = [
       store.on("gallery", (g) => {

@@ -10,6 +10,7 @@ Publishes the hub topics "recorder", "recorder.settings", "jobs" and "gallery" (
 import json
 import logging
 import os
+import secrets
 import shutil
 import subprocess
 import sys
@@ -62,6 +63,7 @@ class RecorderService:
         self._gallery = []
         self._gallery_fp = None
         self._gallery_version = 0
+        self._bundles = {}            # GAL-12: id -> {files, name, at, who}, downloadable for BUNDLE_TTL_S
         self._gallery_wake = threading.Event()
         self._planned = {}
         self._raw_to_delete = {}       # RAW path -> job whose FFV1 copy was verified (GAL-08)
@@ -650,6 +652,86 @@ class RecorderService:
 
     def op_gallery_get(self, _s, msg):
         return self._take(msg.get("take"))
+
+    # ---------------------------------------------------------- many at once (GAL-12)
+    BUNDLE_TTL_S = 3600
+    BUNDLE_MAX = 32
+
+    def op_gallery_bundle(self, session, msg):
+        """Choose files to download in one go: `files` (names), or `takes` (ids) - every file of
+        each, or only `kind` - or a whole `day` (YYYY-MM-DD) / `month` (YYYY-MM). Returns a bundle
+        whose `url` is ONE ZIP of them (web/server.py streams it); files still being recorded or
+        written are left out and listed in `skipped`."""
+        takes = self._scan()
+        self._gallery = takes
+        kind = msg.get("kind") or "all"
+        want_files = msg.get("files") or []
+        want_takes = msg.get("takes") or []
+        day, month = msg.get("day"), msg.get("month")
+        for name, v in (("files", want_files), ("takes", want_takes)):
+            if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
+                raise OpError("%s must be a list of names" % name)
+        if not (want_files or want_takes or day or month):
+            raise OpError("choose what to download: files, takes, a day or a month")
+        by_take = {t["id"]: t for t in takes}
+        by_file = {i["id"]: (t, i) for t in takes for i in t["items"]}
+        chosen = []
+        for tid in want_takes:
+            if tid not in by_take:
+                raise OpError("no take %s" % tid)
+            chosen += [(by_take[tid], i) for i in by_take[tid]["items"]]
+        for t in takes:
+            if (day and t.get("day") == day) or (month and t.get("month") == month):
+                chosen += [(t, i) for i in t["items"]]
+        if kind != "all":
+            chosen = [(t, i) for t, i in chosen if i["kind"] == kind]
+        for f in want_files:                       # named files count whatever the kind
+            if f not in by_file:
+                raise OpError("no file %s" % f)
+            chosen.append(by_file[f])
+        seen, files, skipped = set(), [], []
+        for t, i in chosen:
+            if i["id"] in seen:
+                continue
+            seen.add(i["id"])
+            if i["recording"] or i["busy"]:
+                skipped.append({"file": i["id"], "why": "still being recorded" if i["recording"] else "still being written"})
+            else:
+                files.append((t, i))
+        if not files:
+            raise OpError("nothing to download" + (" - every file is still being recorded or written" if skipped else
+                                                   " - no file matches"))
+        days = sorted({t["day"] for t, _ in files})
+        name = ("arstro-%s.zip" % days[0] if len(days) == 1 else
+                "arstro-%s.zip" % days[0][:7] if len({d[:7] for d in days}) == 1 else
+                "arstro-%s-to-%s.zip" % (days[0], days[-1]))
+        bid = secrets.token_urlsafe(12)
+        now = time.time()
+        self._bundles = {k: v for k, v in self._bundles.items() if now - v["at"] < self.BUNDLE_TTL_S}
+        while len(self._bundles) >= self.BUNDLE_MAX:
+            self._bundles.pop(min(self._bundles, key=lambda k: self._bundles[k]["at"]))
+        # Inside the ZIP each file sits in its day's folder when the bundle spans several days.
+        flat = len(days) == 1
+        self._bundles[bid] = {"files": [(i["id"] if flat else "%s/%s" % (t["day"], i["id"]), i["id"]) for t, i in files],
+                              "name": name, "at": now, "who": "session %d (%s)" % (session.num, session.controller)}
+        size = sum(i["size"] for _, i in files)
+        log.info("gallery bundle %s by session %d (%s): %d file(s), %s%s", name, session.num, session.controller,
+                 len(files), library.fmt_size(size), ", %d skipped" % len(skipped) if skipped else "")
+        return {"id": bid, "name": name, "url": "/api/bundle/%s.zip" % bid, "files": [i["id"] for _, i in files],
+                "size": size, "skipped": skipped, "expires": int(now + self.BUNDLE_TTL_S)}
+
+    def bundle_stream(self, bid):
+        """(name, ZipStream) of a live bundle, its files checked again now - or None."""
+        from ..zipstream import ZipStream
+        b = self._bundles.get(bid)
+        if not b or time.time() - b["at"] >= self.BUNDLE_TTL_S:
+            return None
+        try:
+            entries = [(arc, self._file_path(name)) for arc, name in b["files"]]
+            return b["name"], ZipStream(entries)
+        except (OpError, OSError) as e:
+            log.warning("gallery bundle %s: %s", b["name"], e)
+            return None
 
     def op_gallery_targets(self, _s, _m):
         return {"targets": [{"id": tid, "title": title, "available": bool(self.caps.get(cap)),

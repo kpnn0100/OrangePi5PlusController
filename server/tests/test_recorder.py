@@ -373,6 +373,62 @@ def h265_streams_to_any_browser(c):
                                                 capture_output=True).stdout, 10), "a play helper outlived its viewer")
 
 
+@test("GAL-01", "GAL-12", "SEC-03")
+def a_day_downloads_as_one_zip(c):
+    import io
+    import zipfile
+    t = take_with(c, lambda t: t["id"] == c.h265_take)
+    want_day = time.strftime("%Y-%m-%d", time.localtime(t["created"]))
+    check(t["day"] == want_day and t["month"] == want_day[:7], "day/month %s %s" % (t.get("day"), t.get("month")))
+    # one take, every format: the bundle names its files, the ZIP carries exactly them
+    b = c.a.call("gallery.bundle", takes=[c.h265_take])
+    check(sorted(b["files"]) == sorted(i["id"] for i in t["items"]) and b["name"] == "arstro-%s.zip" % want_day, b)
+    with http(c, b["url"]) as r:
+        blob = r.read()
+        check(r.headers["Content-Type"] == "application/zip", r.headers["Content-Type"])
+        check(int(r.headers["Content-Length"]) == len(blob), "the announced length is the real one")
+        check(want_day in r.headers["Content-Disposition"], r.headers["Content-Disposition"])
+    zf = zipfile.ZipFile(io.BytesIO(blob))
+    check(zf.testzip() is None and sorted(zf.namelist()) == sorted(b["files"]), zf.namelist())
+    for name in b["files"]:
+        with http(c, "/api/media/" + name) as r:
+            check(zf.read(name) == r.read(), "%s differs from /api/media" % name)
+        check(zf.getinfo(name).compress_type == zipfile.ZIP_STORED, "stored, never recompressed")
+    # a whole day, one format only
+    b = c.a.call("gallery.bundle", day=want_day, kind="H.264")
+    check(b["files"] and all("H264" in f for f in b["files"]) and c.h264_file in b["files"], b)
+    # what is refused
+    for params, why in (({}, "choose what to download"), ({"takes": ["no_such_take"]}, "no take"),
+                        ({"files": ["no_such.mp4"]}, "no file"), ({"day": "1999-01-01"}, "nothing to download")):
+        r = c.a.request("gallery.bundle", **params)
+        check(r["ok"] is False and why in r["error"], (params, r))
+    try:
+        urllib.request.urlopen(c.base + b["url"], timeout=5)
+        check(False, "a bundle without the password was served")
+    except urllib.error.HTTPError as e:
+        check(e.code == 401, e.code)
+    try:
+        http(c, "/api/bundle/not-a-bundle.zip")
+        check(False, "an unknown bundle was served")
+    except urllib.error.HTTPError as e:
+        check(e.code == 404, e.code)
+    # the CLI: a day into a folder, and the same as one ZIP
+    out = tempfile.mkdtemp(prefix="arstro-dl-test-")
+    try:
+        env = dict(os.environ)
+        cli = [sys.executable, "-m", "arstro_remote", "gallery", "download", "--day", want_day]
+        r = subprocess.run(cli + ["--out", out], capture_output=True, text=True, env=env, timeout=120,
+                           cwd=os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+        check(r.returncode == 0 and set(b2 for b2 in os.listdir(out)) >= set(t_i["id"] for t_i in t["items"]),
+              (r.returncode, r.stdout[-300:], r.stderr[-300:], os.listdir(out)))
+        r = subprocess.run(cli + ["--kind", "H.264", "--zip", os.path.join(out, "day.zip")], capture_output=True,
+                           text=True, env=env, timeout=120, cwd=os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+        check(r.returncode == 0 and zipfile.ZipFile(os.path.join(out, "day.zip")).testzip() is None, r.stderr[-300:])
+        check(c.h264_file in zipfile.ZipFile(os.path.join(out, "day.zip")).namelist(), "the CLI ZIP")
+    finally:
+        shutil.rmtree(out, ignore_errors=True)
+
+
 @test("REC-04", "REC-03", "GAL-05")
 def raw_recording_with_ffv1_copy_after(c):
     # keep the RAW here (replacing it is GAL-08's test): a job is "done" only after its check

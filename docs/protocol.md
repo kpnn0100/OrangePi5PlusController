@@ -107,7 +107,8 @@ Other events: `stats` `{data}` (after `stats.subscribe`), `term.exit` `{term, co
 | `camera.select` | `source`, `mode?` (V4L2: `"MJPG 1280x720@30"`), `spec?` (test: `"1920x1080@30"`) | recorder status (`source`, `camera`); saved in config.json (CAM-01) |
 | `recorder.test_signal` | `present` (test source only) | status |
 | `gallery.list` | `kind?` (RAW, H.265, H.264, FFV1, VIDEO) | `{folder, version, takes}` |
-| `gallery.get` | `take` | one take `{id, title, created, size, duration, kinds, recording, items}`; an H.265/H.264 item carries `mse` (its RFC 6381 codec string, e.g. `hvc1.1.6.L150.B0`, GAL-11) |
+| `gallery.get` | `take` | one take `{id, title, created, day, month, size, duration, kinds, recording, items}`; `day` (`YYYY-MM-DD`) and `month` (`YYYY-MM`) are the board's date of the take, so every controller groups alike (GAL-01); an H.265/H.264 item carries `mse` (its RFC 6381 codec string, e.g. `hvc1.1.6.L150.B0`, GAL-11) |
+| `gallery.bundle` | `takes?`, `files?`, `day?`, `month?`, `kind?` (default `all`) | `{id, name, url, files, size, skipped: [{file, why}], expires}`: the files to download together (GAL-12) - files still recorded or written are left out in `skipped`; `url` (`/api/bundle/<id>.zip`) serves them as one ZIP for an hour |
 | `gallery.targets` | | `{targets: [{id, title, available, description, options}]}` |
 | `gallery.convert` | `file, target, quality?, scale?, preset?, bitrate?, rc?, chroma?, replace_raw?` | the new job; `replace_raw` (FFV1 from RAW, default = setting `raw.ffv1_replace_raw`): check the copy, then delete the RAW |
 | `gallery.verify` | `file` (the take's FFV1 or RAW), `delete_raw` | a *verify* job: decodes the FFV1 and compares every frame plane and audio sample with the RAW byte for byte; with `delete_raw` the RAW is deleted only if all of it is identical (GAL-08) |
@@ -186,6 +187,7 @@ Take ids are `REC_YYYYMMDD_HHMMSS`; its files are `<take>.arh` (RAW), `<take>_H2
 | `GET /ws/screen` | the Pi's desktop, same messages as `/ws/preview`; control it with `in.move_to` (absolute desktop pixels), `in.btn`, `in.scroll`, `in.key`, `in.text` |
 | `GET /api/media/<file>` | a recording, HTTP Range; `?download=1` |
 | `GET /api/thumb/<take>` | JPEG thumbnail |
+| `GET /api/bundle/<id>.zip` | the files of a `gallery.bundle` as one ZIP, streamed: entries stored (not recompressed), ZIP64 where a value passes 32 bits, exact `Content-Length` before the first byte; 404 once expired (GAL-12) |
 | `POST /api/op/<op>` | one op, JSON body → `{ok, data \| error}` |
 | `GET /api/files/download?path=P` | a file of the Files module (HTTP Range); `&inline=1` to show instead of save |
 | `GET /apps/<id>/[file]` | an NTWB app's web UI; `/apps/<id>/icon`, `/apps/<id>/api.json`; unauthenticated → 302 to the login |

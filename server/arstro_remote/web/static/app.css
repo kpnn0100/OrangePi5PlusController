@@ -145,6 +145,9 @@ svg.i { width: 20px; height: 20px; flex: none; stroke: currentColor; fill: none;
   .view-head .actions { margin-left: 0; width: 100%; }
   .view-head .chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin: 0 -16px; padding: 0 16px; }
   .view-head .chips::-webkit-scrollbar { display: none; }
+  .view-head .actions.chip-row { flex-wrap: nowrap; align-items: center; gap: 4px; }
+  .view-head .chip-row .chips { flex: 1; min-width: 0; margin-right: 0; padding-right: 8px; }
+  .view-head .chip-row > .btn { flex: none; }
   .tabbar {
     display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
     height: calc(var(--tab-h) + env(safe-area-inset-bottom)); padding-bottom: env(safe-area-inset-bottom);
@@ -478,6 +481,46 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .take-meta { font-size: 12.5px; color: var(--muted); }
 .take .tags { display: flex; gap: 5px; flex-wrap: wrap; }
 @media (max-width: 560px) { .take-body { padding: 10px 11px 12px; } .take-title { font-size: 13.5px; } }
+
+/* Gallery grouped by month and day, many takes at once (GAL-01, GAL-12) */
+.gallery { display: flex; flex-direction: column; gap: 26px; padding-bottom: 8px; }
+.gallery .month { display: flex; flex-direction: column; gap: 14px; }
+.gallery .day { display: flex; flex-direction: column; gap: 10px; }
+.group-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.group-head h2 { font-size: 18px; font-weight: 650; margin: 0; letter-spacing: -.01em; }
+.group-head h3 { font-size: 13.5px; font-weight: 600; margin: 0; color: var(--text-2); }
+.group-meta { font-size: 12.5px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.month-head { position: sticky; top: 0; z-index: 4; padding: 6px 0; background: linear-gradient(var(--bg) 70%, transparent); }
+.selbox { flex: none; width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid var(--line-2); display: grid;
+          place-items: center; padding: 0; background: rgba(10, 11, 13, .55); color: transparent; cursor: pointer;
+          transition: background var(--t) var(--ease), border-color var(--t) var(--ease), color var(--t) var(--ease),
+                      opacity var(--t) var(--ease), transform var(--t) var(--ease); }
+.selbox .i { width: 14px; height: 14px; }
+.selbox[aria-checked="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.selbox[aria-checked="mixed"] { border-color: var(--accent); background: var(--accent-soft); }
+.selbox[aria-checked="mixed"] .i { display: none; }
+.selbox[aria-checked="mixed"]::after { content: ""; width: 10px; height: 2px; border-radius: 2px; background: var(--accent); }
+.group-head .selbox { width: 0; opacity: 0; border-width: 0; margin-right: -10px; }
+.selecting .group-head .selbox, .group-head:hover .selbox { width: 22px; opacity: 1; border-width: 1.5px; margin-right: 0; }
+.thumb .selbox { position: absolute; left: 8px; top: 8px; z-index: 2; opacity: 0; transform: scale(.85); }
+.take:hover .thumb .selbox, .selecting .thumb .selbox { opacity: 1; transform: none; }
+.selecting .thumb .flag { left: 38px; }
+.take.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.take.selected .thumb img { transform: scale(.94); border-radius: var(--r-sm); }
+.thumb img { transition: opacity 400ms var(--ease), transform var(--t) var(--ease), border-radius var(--t) var(--ease); }
+.thumb .flag { transition: left var(--t) var(--ease); }
+.selbar { position: sticky; bottom: 14px; z-index: 12; display: flex; align-items: center; gap: 10px; margin-top: 18px;
+          padding: 10px 12px 10px 16px; border: 1px solid var(--line-2); border-radius: var(--r); background: var(--card-2);
+          box-shadow: var(--shadow); font-size: 13.5px; font-variant-numeric: tabular-nums;
+          opacity: 0; transform: translateY(14px); pointer-events: none;
+          transition: opacity var(--t) var(--ease), transform var(--t) var(--ease); }
+.selbar.on { opacity: 1; transform: none; pointer-events: auto; }
+@media (max-width: 899px) { .selbar { bottom: calc(var(--tab-h) + 10px + env(safe-area-inset-bottom)); } }
+@media (max-width: 560px) {
+  .selbar { font-size: 12.5px; gap: 4px; padding: 8px 8px 8px 12px; }
+  .selbar .grow { white-space: normal; line-height: 1.3; }       /* "3 takes · 4 files" over "3.0 MB" */
+  .group-head h2 { font-size: 16px; }
+}
 
 .player { aspect-ratio: 16 / 9; background: #000; border-radius: var(--r); overflow: hidden; position: relative;
           margin-bottom: 16px; }

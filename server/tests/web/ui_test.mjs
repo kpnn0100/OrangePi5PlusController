@@ -121,7 +121,7 @@ test("pages_are_grouped_by_the_servers_modules", ["MOD-04", "CAM-03", "ADM-07"],
   const page = await newPage();
   const hello = await page.evaluate(async () => (await (await fetch("/api/ping")).json()));
   const groups = await page.$$eval(".side .nav-item span", (els) => els.map((e) => e.textContent));
-  check(groups.includes("System") && groups.length <= 8, "groups: " + groups.join(", "));
+  check(groups.includes("System") && groups.length <= 9, "groups: " + groups.join(", "));
   await go(page, "gallery");                                            // an old link still works
   const subs = await page.$$eval(".subnav button", (els) => els.map((e) => e.textContent));
   check(subs.join("/") === "Live/Gallery", "camera sub-tabs: " + subs.join("/"));
@@ -227,7 +227,7 @@ test("record_button_starts_and_stops_for_everyone", ["REC-03", "ARC-03", "UX-02"
   await page.close();
 });
 
-test("gallery_take_convert_play_delete", ["GAL-01", "GAL-02", "GAL-03", "GAL-04", "GAL-05", "GAL-06", "GAL-07"], async () => {
+test("gallery_take_convert_play_delete", ["GAL-01", "GAL-02", "GAL-03", "GAL-04", "GAL-05", "GAL-06", "GAL-07", "GAL-12"], async () => {
   check(recorded, "needs the recording of the previous test");
   const takeId = recorded.replace(/\.[^.]+$/, "").replace(/_(H265|H264.*|FFV1)$/, "");
   const page = await newPage();
@@ -236,6 +236,27 @@ test("gallery_take_convert_play_delete", ["GAL-01", "GAL-02", "GAL-03", "GAL-04"
     [...document.querySelectorAll(".take")].find((c) => c.querySelector("img")?.src.includes(id)) || null, takeId)
     .then((h) => h.asElement()), 15000);
   check(card, "new take not listed");
+  // GAL-01: under a month and a day heading; GAL-12: select it, download one ZIP
+  check(await page.evaluate((c) => !!c.closest(".day")?.querySelector(".day-head h3") &&
+                                   !!c.closest(".month")?.querySelector(".month-head h2"), card), "take is not under a month / day heading");
+  check(await clickText(page, ".view-head button", "Select"), "Select button missing");
+  await card.click();                                                   // in select mode a click selects
+  check(await until(() => page.$(".selbar.on"), 3000), "selection bar not shown");
+  check(await card.evaluate((c) => c.classList.contains("selected")), "card not marked selected");
+  const info = await page.$eval(".selbar", (b) => b.textContent);
+  check(/^1 take · \d+ files?/.test(info), "selection sum: " + info);
+  await page.evaluate(() => { window.__dl = []; HTMLAnchorElement.prototype.click = function () { window.__dl.push([this.href, this.download]); }; });
+  check(await clickText(page, ".selbar button", "Download ZIP"), "Download ZIP button missing");
+  const dl = await until(() => page.evaluate(() => window.__dl[0] || null), 8000);
+  check(dl && /\/api\/bundle\/\w+\.zip$/.test(dl[0]) && dl[1].endsWith(".zip"), "no ZIP download: " + JSON.stringify(dl));
+  const head = await page.evaluate(async (u) => {
+    const r = await fetch(u, { method: "HEAD" });
+    return [r.status, r.headers.get("content-type"), Number(r.headers.get("content-length"))];
+  }, dl[0]);
+  check(head[0] === 200 && head[1] === "application/zip" && head[2] > 0, "bundle: " + head.join(" "));
+  await shot(page, "gallery-select");
+  check(await clickText(page, ".view-head button", "Done"), "Done button missing");
+  check(await until(() => page.$(".selbar:not(.on)"), 3000), "selection bar still shown");
   await card.click();
   await page.waitForSelector(".sheet.show .variant");
   // convert to the share format (H.264 720p)
