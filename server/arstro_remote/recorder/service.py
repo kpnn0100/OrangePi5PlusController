@@ -36,6 +36,9 @@ TARGETS = [   # (id, title, needs capability, description)
 ]
 
 
+VPU_MAX_MBPS = jobs_mod.mppenc.MAX_BPS // 1_000_000   # what the VPU's rate control takes (GAL-04)
+MAX_MBPS = 1000                                        # x265: a sanity bound
+
 # GAL-11: streams at once per mode. h264 = the VPU re-encodes, which it does for one viewer only
 PLAY_LIMIT = {"copy": 4, "h264": 1}
 
@@ -738,6 +741,8 @@ class RecorderService:
                              "description": desc,
                              "options": {"quality": ["high", "higher", "max"],
                                          "bitrate": tid.startswith("h26"),
+                                         "bitrate_max": (VPU_MAX_MBPS if tid.endswith("-vpu") else
+                                                         MAX_MBPS if tid.startswith("h26") else None),
                                          "scale": list(jobs_mod.SCALES) if tid == "h264-vpu" else None,
                                          "preset": jobs_mod.X265_PRESETS if tid == "h265-x265" else None}}
                             for tid, title, cap, desc in TARGETS]}
@@ -759,8 +764,18 @@ class RecorderService:
         if opts["scale"] not in jobs_mod.SCALES:
             raise OpError("scale must be source, 1080 or 720")
         if msg.get("bitrate"):
-            opts["bitrate"] = float(msg["bitrate"])
+            try:
+                opts["bitrate"] = float(msg["bitrate"])
+            except (TypeError, ValueError):
+                raise OpError("bitrate must be a number of Mbit/s")
+            top = VPU_MAX_MBPS if target.endswith("-vpu") else MAX_MBPS
+            if not 0.1 <= opts["bitrate"] <= top:
+                raise OpError("the bitrate must be between 0.1 and %d Mbit/s%s" % (
+                    top, " - the VPU encodes at most %d (or choose a quality instead)" % top
+                    if target.endswith("-vpu") else ""))
             opts["rc"] = msg.get("rc") or "vbr"
+            if opts["rc"] not in ("vbr", "cbr"):
+                raise OpError("rc must be vbr or cbr")
         if target in ("ffv1", "ffv1-gpu") and path.lower().endswith(".arh"):
             replace = msg.get("replace_raw")
             replace = self.settings["raw"].get("ffv1_replace_raw") if replace is None else bool(replace)

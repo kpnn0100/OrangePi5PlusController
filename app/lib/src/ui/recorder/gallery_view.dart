@@ -1102,7 +1102,10 @@ class _ConvertSheetState extends State<_ConvertSheet> {
                 child: TextField(
                   controller: _bitrate,
                   keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(labelText: 'Bitrate Mb/s', hintText: 'auto', isDense: true),
+                  decoration: InputDecoration(
+                      labelText: 'Bitrate Mb/s',
+                      hintText: o['bitrate_max'] is num ? 'auto · max ${o['bitrate_max']}' : 'auto',
+                      isDense: true),
                 ),
               ),
           ]),

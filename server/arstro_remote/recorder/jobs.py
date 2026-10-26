@@ -93,6 +93,7 @@ def _vpu_bridge(pipe, args, fps):
     if not pipe.get_by_name("mppin"):
         return None
     return mppenc.Bridge(pipe, "h264" if args.codec == "h264-vpu" else "h265", fps,
+                         on_note=lambda text: print(json.dumps({"note": text}), flush=True),
                          **_vpu_rate(args.codec, args.quality, args.bitrate, args.rc))
 
 
@@ -633,7 +634,7 @@ def add_transcode_args(sp):
     sp.add_argument("--chroma", choices=["420", "source"], default="420",
                     help="x265: 4:2:0 (plays everywhere) or keep the source 4:2:2/4:4:4")
     sp.add_argument("--bitrate", type=float,
-                    help="H.265: target bitrate in Mbit/s instead of constant quality")
+                    help="target bitrate in Mbit/s instead of constant quality (VPU: at most 200)")
     sp.add_argument("--rc", choices=["vbr", "cbr"], default="vbr",
                     help="VPU with --bitrate: variable (default) or constant bitrate")
     sp.add_argument("--scale", choices=list(SCALES), default="source",
@@ -974,6 +975,8 @@ class JobManager:
                              % (r.get("frames", 0), _mb(r.get("dropped_bytes", 0))))
             if msg.get("damaged"):
                 job.add_note("skipped %s of damaged data" % _mb(msg["damaged"].get("bytes", 0)))
+            if msg.get("note"):
+                job.add_note(msg["note"])
             if job.state == "verifying":
                 if "verify" in msg:
                     job.verify = msg["verify"]

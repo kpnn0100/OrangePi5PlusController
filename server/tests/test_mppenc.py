@@ -153,6 +153,35 @@ def a_conversion_keeps_every_frame_and_beats_real_time(_t):
 
 
 @test("GAL-04")
+def a_bitrate_above_the_vpu_limit_is_capped_and_said(_t):
+    # 300 Mbit/s made the whole configuration fail (MPP_ERR_VALUE) - a job saved with it must
+    # still finish, at the VPU's 200, and say so
+    if skip():
+        return
+    frames, (strides, offsets) = nv12_frames(3840, 2160, 10)
+    for codec in ("h264", "h265"):
+        for rc in ("vbr", "cbr"):
+            enc = mppenc.Encoder(codec, 3840, 2160, 30, bps=300_000_000, rc=rc)
+            try:
+                check(enc.capped == 300_000_000, "%s %s: not marked as capped" % (codec, rc))
+                n = sum(len(enc.encode(f, strides, offsets)) for f in frames)
+            finally:
+                enc.close()
+            check(n == 10, "%s %s: %d access units for 10 frames" % (codec, rc, n))
+    notes = []
+    p = Gst.parse_launch("videotestsrc num-buffers=5 ! video/x-raw,format=NV12,width=640,height=360,"
+                         "framerate=30/1 ! " + mppenc.fragment("h264") + " ! fakesink")
+    bridge = mppenc.Bridge(p, "h264", 30, bps=300_000_000, on_note=notes.append)
+    p.set_state(Gst.State.PLAYING)
+    bridge.start()
+    msg = p.get_bus().timed_pop_filtered(15 * Gst.SECOND, Gst.MessageType.EOS | Gst.MessageType.ERROR)
+    bridge.stop()
+    p.set_state(Gst.State.NULL)
+    check(msg is not None and msg.type == Gst.MessageType.EOS, "the capped stream did not finish")
+    check(notes and "encoded at 200 Mbit/s" in notes[0], "no note for the job: %s" % notes)
+
+
+@test("GAL-04")
 def a_failing_encoder_fails_the_job(_t):
     if skip():
         return

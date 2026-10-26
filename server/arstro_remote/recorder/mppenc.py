@@ -36,6 +36,9 @@ MPP_ENC_SET_HEADER_MODE = 0x00328001
 MPP_ENC_HEADER_MODE_EACH_IDR = 1
 MPP_POLL_BLOCK = -1
 RC_MODES = {"vbr": 0, "cbr": 1, "fixqp": 2}
+# The rate control refuses a target or peak above 200 Mi bit/s (measured: 209.7 Mbit/s accepted,
+# 210 refused, H.264 and H.265 alike) - the whole configuration then fails with MPP_ERR_VALUE.
+MAX_BPS = 200_000_000
 TAG = b"arstro"
 
 
@@ -153,6 +156,7 @@ class Encoder:
         self.group = ctypes.c_void_p()
         self.bufs, self.ptrs = [], []
         self._next = 0
+        self.capped = None              # the bitrate asked for, when it was above MAX_BPS
         try:
             self._check(lib.mpp_create(ctypes.byref(self.ctx), ctypes.byref(self.api)), "create")
             api = self.api.contents
@@ -202,8 +206,10 @@ class Encoder:
             values["rc:qp_ip"] = 0
         else:
             bps = int(bps or self.width * self.height * fps / 8)
+            if bps > MAX_BPS:
+                self.capped, bps = bps, MAX_BPS
             values["rc:bps_target"] = bps
-            values["rc:bps_max"] = bps if mode == "cbr" else bps * 5 // 4
+            values["rc:bps_max"] = bps if mode == "cbr" else min(bps * 5 // 4, MAX_BPS)
             values["rc:bps_min"] = bps if mode == "cbr" else bps // 2
         if self.codec == "h264":
             values.update({"h264:profile": 100, "h264:level": 41 if self.width * self.height <= 1920 * 1088 else 51,
@@ -299,7 +305,7 @@ class Bridge:
     sink waiting for its first buffer (preroll) would hold the pipeline in PAUSED forever -
     the file sink's data has to come through this thread - so every sink is made async=false."""
 
-    def __init__(self, pipe, codec, fps, gop=None, qp=None, bps=None, rc="vbr"):
+    def __init__(self, pipe, codec, fps, gop=None, qp=None, bps=None, rc="vbr", on_note=None):
         from gi.repository import Gst  # Gst.init() is the caller's
         it = pipe.iterate_sinks()
         while True:
@@ -309,6 +315,7 @@ class Bridge:
             sink.set_property("async", False)
         self.pipe, self.codec = pipe, codec
         self.opts = dict(fps=fps, gop=gop, qp=qp, bps=bps, rc=rc)
+        self.on_note = on_note          # on_note(text): something the job should show
         self.sink = pipe.get_by_name("mppin")
         self.src = pipe.get_by_name("mppout")
         self.stop_flag = threading.Event()
@@ -349,6 +356,9 @@ class Bridge:
                         f"{fmt},stream-format=byte-stream,alignment=au,width={vi.width},height={vi.height},"
                         f"framerate={vi.fps_n}/{vi.fps_d}"))
                     log.info("VPU %s encoder %dx%d via librockchip_mpp", self.codec, vi.width, vi.height)
+                    if enc.capped and self.on_note:
+                        self.on_note("%g Mbit/s is more than the VPU encodes - encoded at %d Mbit/s"
+                                     % (enc.capped / 1e6, MAX_BPS // 1000000))
                 for au, key in enc.encode(buf.extract_dup(0, buf.get_size()), strides, offsets):
                     out = gst_buffer(au)
                     out.pts = out.dts = buf.pts

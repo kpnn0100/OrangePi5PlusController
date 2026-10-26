@@ -272,6 +272,12 @@ def record_h265_synced_everywhere(c):
 
 @test("GAL-04", "GAL-05", "GAL-01", "ARC-03")
 def convert_to_h264_share_with_live_progress(c):
+    # a bitrate the VPU refuses is refused when asked for, not after three failed attempts
+    for bitrate, why in ((300, "at most 200"), ("fast", "number"), (0.01, "between")):
+        r = c.a.request("gallery.convert", file=c.h265_file, target="h264-vpu", bitrate=bitrate)
+        check(r["ok"] is False and why in r["error"], (bitrate, r))
+    t = c.a.call("gallery.targets")["targets"]
+    check(next(x for x in t if x["id"] == "h264-vpu")["options"]["bitrate_max"] == 200, t)
     job = c.a.call("gallery.convert", file=c.h265_file, target="h264-vpu", scale="720")
     check(job["output"].endswith("_H264_720p.mp4"), job)
     saw_running = c.b.wait_state("jobs", lambda js: any(j["id"] == job["id"] and j["state"] in ("running", "done")
