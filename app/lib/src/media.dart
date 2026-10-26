@@ -23,6 +23,12 @@ class MediaLink extends ChangeNotifier {
   /// e.g. `http://<pi-address>:8080/`; null while the phone can't reach the Pi.
   String? base;
   String? _token;
+
+  /// The last `web.info` (its `slots` lead [SlotLinks] to the other A/B slots, TERM-06).
+  Map<String, dynamic>? info;
+
+  /// The web password of this link's slot (null in open mode).
+  String? get token => _token;
   String? error;
   bool checking = false;
   List<String> tried = const [];
@@ -49,7 +55,7 @@ class MediaLink extends ChangeNotifier {
     checking = true;
     notifyListeners();
     try {
-      final info = Map<String, dynamic>.from(await client.request('web.info') as Map);
+      final info = this.info = Map<String, dynamic>.from(await client.request('web.info') as Map);
       if (info['enabled'] == false) {
         base = null;
         error = "The Pi's web server is switched off.";

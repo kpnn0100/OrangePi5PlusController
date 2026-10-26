@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'bt/bluetooth.dart';
 import 'media.dart';
 import 'proto/frames.dart';
+import 'slot_links.dart';
 import 'terminal_hub.dart';
 import 'transport.dart';
 
@@ -21,19 +22,28 @@ class RemoteError implements Exception {
   String toString() => message;
 }
 
-const String kAppVersion = '2.0.3';
+const String kAppVersion = '2.1.0';
 
 /// Owns the link to one Pi: handshake, request/response matching, server
 /// events, stats, terminal routing, input coalescing and auto-reconnect.
+///
+/// The [primary] client is the phone's own link (Bluetooth, remembered, with stats and media).
+/// The other A/B slots of the same Pi get a client each over Wi-Fi ([SlotLinks], TERM-06):
+/// same protocol, nothing remembered, no stats.
 class RemoteClient extends ChangeNotifier {
-  RemoteClient(this.prefs) {
+  RemoteClient(this.prefs, {this.primary = true}) {
     _clientId = prefs.getString('client_id') ?? _newClientId();
+    if (!primary) return;
     _eventSub = bt.events.listen(_onBtEvent);
     final addr = prefs.getString('last_address');
     if (addr != null) lastDevice = BtDevice(address: addr, name: prefs.getString('last_name'), bonded: true);
   }
 
   final SharedPreferences prefs;
+  final bool primary;
+
+  /// The other slots of this Pi, over Wi-Fi (primary client only).
+  late final SlotLinks slots = SlotLinks(this);
   final Bluetooth bt = Bluetooth.instance;
   late final TerminalHub terminals = TerminalHub(this);
 
@@ -92,14 +102,14 @@ class RemoteClient extends ChangeNotifier {
   }
 
   // ------------------------------------------------------------ connection
-  Future<void> connect(BtDevice d) async {
+  Future<void> connect(BtDevice d, {Transport? transport}) async {
     _userDisconnect = false;
     _retryTimer?.cancel();
     reconnectAttempt = 0;
     device = d;
     await _dataSub?.cancel();
     await _closedSub?.cancel();
-    final t = _transport = transportFor(d.address);
+    final t = _transport = transport ?? transportFor(d.address);
     _dataSub = t.data.listen(_onData);
     _closedSub = t.closed.listen(_onClosed);
     await _attempt(first: true);
@@ -117,9 +127,11 @@ class RemoteClient extends ChangeNotifier {
       if (token != _connectToken) return;
       reconnectAttempt = 0;
       nextRetryAt = null;
-      lastDevice = d;
-      prefs.setString('last_address', d.address);
-      prefs.setString('last_name', d.name ?? hostname);
+      if (primary) {
+        lastDevice = d;
+        prefs.setString('last_address', d.address);
+        prefs.setString('last_name', d.name ?? hostname);
+      }
       _setState(LinkState.connected);
       _startPing();
     } catch (e) {
@@ -163,7 +175,7 @@ class RemoteClient extends ChangeNotifier {
         topic(e.key as String).value = e.value;
       }
     }
-    await request('stats.subscribe', {'interval_ms': 2000});
+    if (primary) await request('stats.subscribe', {'interval_ms': 2000});
     await terminals.onConnected(List<Map<String, dynamic>>.from(
         (server!['terminals'] as List? ?? []).map((e) => Map<String, dynamic>.from(e as Map))));
   }

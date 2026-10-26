@@ -295,6 +295,24 @@ def web_info_and_cli(c):
     check(code == 1 and "CLI_25" in out, (code, out, err))
 
 
+@test("TERM-06", "SEC-03")
+def every_slot_is_listed_and_reachable(c):
+    info = c.local.call("web.info")
+    mine = [x for x in info["slots"] if x["self"]]
+    check(len(mine) == 1 and mine[0]["port"] == c.port and mine[0].get("token") == c.token, info["slots"])
+    # the shared state (every browser gets it) never carries a password
+    web = c.local.call("state.get", topics=["web"])["web"]
+    check(all("token" not in x for x in web.get("slots", [])), web)
+    others = [x for x in info["slots"] if not x["self"] and x["running"]]
+    for o in others:      # the app opens the other slot with exactly this: its port and password
+        base = "http://127.0.0.1:%d/" % o["port"]
+        code, out, err = cli("--url", base, "--token", o.get("token") or "", "term", "run",
+                             "echo SLOT_%s_$((40+2))" % o["slot"].upper())
+        check(code == 0 and "SLOT_%s_42" % o["slot"].upper() in out, (o["slot"], code, out, err))
+    print("      slots: %s" % ", ".join("%s:%d%s" % (x["slot"], x["port"], " (this)" if x["self"] else
+                                                        "" if x["running"] else " stopped") for x in info["slots"]))
+
+
 @test("CON-04", "ARC-04")
 def remote_cli_with_url_and_token(c):
     code, out, err = cli("--url", c.base, "--token", c.token, "--json", "rec", "status")

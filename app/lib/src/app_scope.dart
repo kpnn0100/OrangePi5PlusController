@@ -29,6 +29,10 @@ class Settings extends ChangeNotifier {
   double get terminalFontSize => _prefs.getDouble('term_font') ?? 14;
   set terminalFontSize(double v) => _set(() => _prefs.setDouble('term_font', v));
 
+  /// Full screen (TERM-07): the shell over everything, the system bars hidden. Not saved -
+  /// the app always starts with its normal chrome.
+  final ValueNotifier<bool> immersive = ValueNotifier(false);
+
   void _set(Future<bool> Function() write) {
     write();
     notifyListeners();

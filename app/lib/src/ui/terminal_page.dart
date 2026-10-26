@@ -3,8 +3,20 @@ import 'package:flutter/services.dart';
 import 'package:xterm/xterm.dart';
 
 import '../app_scope.dart';
+import '../remote_client.dart';
+import '../slot_links.dart';
 import '../terminal_hub.dart';
 import 'widgets.dart';
+
+/// Shortcuts a terminal keeps (TERM-07): copy / paste with Shift like a desktop terminal, so
+/// Ctrl+A, Ctrl+C, Ctrl+V still reach the shell (start of line, interrupt, literal next).
+final Map<ShortcutActivator, Intent> terminalShortcuts = {
+  const SingleActivator(LogicalKeyboardKey.keyC, control: true, shift: true): CopySelectionTextIntent.copy,
+  const SingleActivator(LogicalKeyboardKey.keyV, control: true, shift: true):
+      const PasteTextIntent(SelectionChangedCause.keyboard),
+  const SingleActivator(LogicalKeyboardKey.insert, control: true): CopySelectionTextIntent.copy,
+  const SingleActivator(LogicalKeyboardKey.insert, shift: true): const PasteTextIntent(SelectionChangedCause.keyboard),
+};
 
 class TerminalPage extends StatefulWidget {
   const TerminalPage({super.key, required this.active});
@@ -18,6 +30,9 @@ class _TerminalPageState extends State<TerminalPage> {
   final FocusNode _focus = FocusNode();
   bool _autoOpened = false;
 
+  /// The slot whose shells are shown (TERM-06); null = the Bluetooth link's own.
+  String? _slot;
+
   static const _snippets = <String, String>{
     'IP addresses': 'ip -br addr\n',
     'System monitor (htop)': 'htop\n',
@@ -30,9 +45,22 @@ class _TerminalPageState extends State<TerminalPage> {
   };
 
   @override
+  void initState() {
+    super.initState();
+    HardwareKeyboard.instance.addHandler(_onKey);
+  }
+
+  @override
   void didUpdateWidget(TerminalPage old) {
     super.didUpdateWidget(old);
-    if (widget.active && !old.active) _ensureShell();
+    if (widget.active && !old.active) {
+      // after this frame: both notify listeners all over the tree (the slots, the media link)
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _ensureShell();
+        AppScope.of(context).client.slots.refresh();
+      });
+    }
   }
 
   void _ensureShell() {
@@ -43,8 +71,19 @@ class _TerminalPageState extends State<TerminalPage> {
     }
   }
 
+  /// F11 enters / leaves full screen while the terminal is shown; the shell never gets it.
+  bool _onKey(KeyEvent e) {
+    if (!widget.active || e.logicalKey != LogicalKeyboardKey.f11 || !mounted) return false;
+    if (e is KeyDownEvent) {
+      final full = AppScope.of(context).settings.immersive;
+      full.value = !full.value;
+    }
+    return true;
+  }
+
   @override
   void dispose() {
+    HardwareKeyboard.instance.removeHandler(_onKey);
     _focus.dispose();
     super.dispose();
   }
@@ -53,78 +92,190 @@ class _TerminalPageState extends State<TerminalPage> {
   Widget build(BuildContext context) {
     final scope = AppScope.of(context);
     final client = scope.client;
-    final hub = client.terminals;
+    final links = client.slots;
     return ListenableBuilder(
-      listenable: Listenable.merge([hub, client, scope.settings]),
+      listenable: Listenable.merge([links, client, scope.settings, scope.settings.immersive]),
       builder: (context, _) {
-        final session = hub.current;
+        final entries = links.entries;
+        final entry = entries.firstWhere((e) => e.slot == _slot, orElse: () => entries.first);
+        final c = entry.client;
+        final full = scope.settings.immersive.value;
         return Column(children: [
-          _TabsBar(
-            hub: hub,
-            canOpen: client.isConnected,
-            snippets: _snippets,
-            onSnippet: (cmd) => session?.sendText(cmd),
-            fontSize: scope.settings.terminalFontSize,
-            onFont: (d) => scope.settings.terminalFontSize = (scope.settings.terminalFontSize + d).clamp(9, 24),
-          ),
+          if (entries.length > 1 && !full)
+            _SlotBar(entries: entries, selected: entry, onSelect: (e) => setState(() => _slot = e.slot)),
           Expanded(
-            child: session == null
+            child: c == null
                 ? EmptyState(
-                    icon: Icons.terminal,
-                    text: client.isConnected ? 'No shell open' : 'Connect to open a shell',
-                    action: client.isConnected
-                        ? FilledButton.icon(
-                            onPressed: hub.open, icon: const Icon(Icons.add), label: const Text('Open shell'))
-                        : null,
+                    icon: Icons.wifi_off,
+                    text: entry.note ?? '${entry.label} is not reachable',
+                    action: OutlinedButton.icon(
+                        onPressed: links.refresh, icon: const Icon(Icons.refresh), label: const Text('Try again')),
                   )
-                : Stack(children: [
-                    Positioned.fill(
-                      child: Container(
-                        color: TerminalThemes.defaultTheme.background,
-                        padding: const EdgeInsets.all(4),
-                        child: TerminalView(
-                          session.terminal,
-                          key: ObjectKey(session),
-                          focusNode: _focus,
-                          textStyle: TerminalStyle(fontSize: scope.settings.terminalFontSize),
-                          keyboardType: TextInputType.visiblePassword,
-                          deleteDetection: true,
-                          readOnly: session.status != TermStatus.live,
-                        ),
-                      ),
-                    ),
-                    if (session.status == TermStatus.ended)
-                      Positioned(
-                        right: 16,
-                        bottom: 16,
-                        child: FilledButton.icon(
-                          onPressed: client.isConnected ? () => hub.restart(session) : null,
-                          icon: const Icon(Icons.restart_alt),
-                          label: const Text('Restart shell'),
-                        ),
-                      ),
-                    if (session.status == TermStatus.detached)
-                      const Positioned(
-                        right: 16,
-                        top: 12,
-                        child: Chip(avatar: Icon(Icons.link_off, size: 18), label: Text('Waiting for link…')),
-                      ),
-                  ]),
+                : ListenableBuilder(
+                    listenable: Listenable.merge([c, c.terminals]),
+                    builder: (context, _) => _shells(context, scope, entry, c, full),
+                  ),
           ),
-          if (session != null)
-            _ExtraKeys(
-              session: session,
-              onKeyboard: () {
-                if (_focus.hasFocus) {
-                  _focus.unfocus();
-                } else {
-                  _focus.requestFocus();
-                  SystemChannels.textInput.invokeMethod('TextInput.show');
-                }
-              },
-            ),
         ]);
       },
+    );
+  }
+
+  Widget _shells(BuildContext context, AppScope scope, SlotEntry entry, RemoteClient client, bool full) {
+    final hub = client.terminals;
+    final session = hub.current;
+    final connecting = !client.isConnected && !entry.self;
+    return Column(children: [
+      if (!full)
+        _TabsBar(
+          hub: hub,
+          canOpen: client.isConnected,
+          snippets: _snippets,
+          onSnippet: (cmd) => session?.sendText(cmd),
+          fontSize: scope.settings.terminalFontSize,
+          onFont: (d) => scope.settings.terminalFontSize = (scope.settings.terminalFontSize + d).clamp(9, 24),
+          onFull: session == null ? null : () => scope.settings.immersive.value = true,
+        ),
+      Expanded(
+        child: session == null
+            ? EmptyState(
+                icon: connecting ? Icons.wifi_find : Icons.terminal,
+                text: connecting
+                    ? (client.error != null ? '${entry.label}: ${client.error}' : 'Connecting to ${entry.label} over Wi-Fi…')
+                    : client.isConnected
+                        ? 'No shell open on ${entry.label}'
+                        : 'Connect to open a shell',
+                action: client.isConnected
+                    ? FilledButton.icon(onPressed: hub.open, icon: const Icon(Icons.add), label: const Text('Open shell'))
+                    : null,
+              )
+            : Stack(children: [
+                Positioned.fill(
+                  child: Container(
+                    color: TerminalThemes.defaultTheme.background,
+                    padding: EdgeInsets.fromLTRB(4, full ? MediaQuery.paddingOf(context).top + 4 : 4, 4, 4),
+                    child: TerminalView(
+                      session.terminal,
+                      key: ObjectKey(session),
+                      controller: session.controller,
+                      focusNode: _focus,
+                      shortcuts: terminalShortcuts,
+                      textStyle: TerminalStyle(fontSize: scope.settings.terminalFontSize),
+                      keyboardType: TextInputType.visiblePassword,
+                      deleteDetection: true,
+                      readOnly: session.status != TermStatus.live,
+                    ),
+                  ),
+                ),
+                if (session.status == TermStatus.ended)
+                  Positioned(
+                    right: 16,
+                    bottom: 16,
+                    child: FilledButton.icon(
+                      onPressed: client.isConnected ? () => hub.restart(session) : null,
+                      icon: const Icon(Icons.restart_alt),
+                      label: const Text('Restart shell'),
+                    ),
+                  ),
+                if (session.status == TermStatus.detached)
+                  const Positioned(
+                    right: 16,
+                    top: 12,
+                    child: Chip(avatar: Icon(Icons.link_off, size: 18), label: Text('Waiting for link…')),
+                  ),
+                if (full)
+                  Positioned(
+                    top: MediaQuery.paddingOf(context).top + 8,
+                    right: 10,
+                    child: _CornerButton(
+                      icon: Icons.fullscreen_exit,
+                      tooltip: 'Leave full screen (F11)',
+                      onTap: () => scope.settings.immersive.value = false,
+                    ),
+                  ),
+              ]),
+      ),
+      if (session != null)
+        _ExtraKeys(
+          session: session,
+          onKeyboard: () {
+            if (_focus.hasFocus) {
+              _focus.unfocus();
+            } else {
+              _focus.requestFocus();
+              SystemChannels.textInput.invokeMethod('TextInput.show');
+            }
+          },
+        ),
+    ]);
+  }
+}
+
+/// TERM-06: which slot's shells are shown - the Bluetooth link's own, or another slot over Wi-Fi.
+class _SlotBar extends StatelessWidget {
+  const _SlotBar({required this.entries, required this.selected, required this.onSelect});
+  final List<SlotEntry> entries;
+  final SlotEntry selected;
+  final ValueChanged<SlotEntry> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    Color dot(SlotEntry e) {
+      final c = e.client;
+      if (c == null) return scheme.outline;
+      if (c.isConnected) return const Color(0xFF4CAF50);
+      return c.state == LinkState.failed ? const Color(0xFFEF5350) : const Color(0xFFFFB300);
+    }
+
+    return Material(
+      color: scheme.surfaceContainerLow,
+      child: SizedBox(
+        height: 44,
+        child: ListView(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          children: [
+            for (final e in entries)
+              Padding(
+                padding: const EdgeInsets.only(right: 6),
+                child: ChoiceChip(
+                  selected: identical(e, selected) || e.slot == selected.slot,
+                  showCheckmark: false,
+                  avatar: Icon(Icons.circle, size: 10, color: dot(e)),
+                  label: Text('${e.label} · ${e.via}'),
+                  tooltip: e.note ?? (e.self ? 'This phone\'s Bluetooth link' : 'Reached over Wi-Fi'),
+                  onSelected: (_) => onSelect(e),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CornerButton extends StatelessWidget {
+  const _CornerButton({required this.icon, required this.tooltip, required this.onTap});
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: scheme.surfaceContainerHigh.withValues(alpha: 0.72),
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10), side: BorderSide(color: scheme.outlineVariant)),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(10),
+          onTap: onTap,
+          child: SizedBox(width: 40, height: 40, child: Icon(icon, size: 22, color: scheme.onSurfaceVariant)),
+        ),
+      ),
     );
   }
 }
@@ -137,6 +288,7 @@ class _TabsBar extends StatelessWidget {
     required this.onSnippet,
     required this.fontSize,
     required this.onFont,
+    required this.onFull,
   });
 
   final TerminalHub hub;
@@ -145,6 +297,7 @@ class _TabsBar extends StatelessWidget {
   final ValueChanged<String> onSnippet;
   final double fontSize;
   final ValueChanged<double> onFont;
+  final VoidCallback? onFull;
 
   @override
   Widget build(BuildContext context) {
@@ -192,6 +345,7 @@ class _TabsBar extends StatelessWidget {
           ),
           IconButton(tooltip: 'Smaller text', onPressed: () => onFont(-1), icon: const Icon(Icons.text_decrease)),
           IconButton(tooltip: 'Larger text', onPressed: () => onFont(1), icon: const Icon(Icons.text_increase)),
+          IconButton(tooltip: 'Full screen (F11)', onPressed: onFull, icon: const Icon(Icons.fullscreen)),
           const SizedBox(width: 4),
         ]),
       ),
@@ -232,10 +386,24 @@ class _ExtraKeys extends StatelessWidget {
     session.terminal.textInput(s);
   }
 
+  /// TERM-07: what was selected (long-press, then drag) goes to the phone's clipboard.
+  Future<void> _copy(BuildContext context) async {
+    final sel = session.controller.selection;
+    if (sel == null) return;
+    final text = session.terminal.buffer.getText(sel).trimRight();
+    await Clipboard.setData(ClipboardData(text: text));
+    session.controller.clearSelection();
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Copied ${text.length} character${text.length == 1 ? '' : 's'}'),
+          duration: const Duration(milliseconds: 1400)));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    Widget btn(String label, VoidCallback onTap, {bool on = false, String? tooltip, IconData? icon}) => Padding(
+    Widget btn(String label, VoidCallback? onTap, {bool on = false, String? tooltip, IconData? icon}) => Padding(
           padding: const EdgeInsets.symmetric(horizontal: 2),
           child: Tooltip(
             message: tooltip ?? label,
@@ -251,7 +419,13 @@ class _ExtraKeys extends StatelessWidget {
                   alignment: Alignment.center,
                   padding: const EdgeInsets.symmetric(horizontal: 10),
                   child: icon != null
-                      ? Icon(icon, size: 20, color: on ? scheme.onPrimary : scheme.onSurface)
+                      ? Icon(icon,
+                          size: 20,
+                          color: on
+                              ? scheme.onPrimary
+                              : onTap == null
+                                  ? scheme.onSurface.withValues(alpha: 0.35)
+                                  : scheme.onSurface)
                       : Text(label,
                           style: TextStyle(
                             fontWeight: FontWeight.w600,
@@ -273,6 +447,15 @@ class _ExtraKeys extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
             children: [
               btn('', onKeyboard, icon: Icons.keyboard, tooltip: 'Show / hide keyboard'),
+              ListenableBuilder(
+                listenable: session.controller,
+                builder: (context, _) => btn('', session.controller.selection == null ? null : () => _copy(context),
+                    icon: Icons.content_copy, tooltip: 'Copy the selection (Ctrl+Shift+C)'),
+              ),
+              btn('', () async {
+                final data = await Clipboard.getData(Clipboard.kTextPlain);
+                if (data?.text != null) session.terminal.paste(data!.text!);
+              }, icon: Icons.content_paste, tooltip: 'Paste (Ctrl+Shift+V)'),
               btn('ESC', () => _key(TerminalKey.escape)),
               btn('TAB', () => _key(TerminalKey.tab)),
               btn('CTRL', () {
@@ -296,10 +479,6 @@ class _ExtraKeys extends StatelessWidget {
               btn('PGDN', () => _key(TerminalKey.pageDown)),
               for (final c in const ['|', '/', '-', '~', '_', '&', ';', '>', '*'])
                 btn(c, () => _text(c)),
-              btn('', () async {
-                final data = await Clipboard.getData(Clipboard.kTextPlain);
-                if (data?.text != null) session.terminal.paste(data!.text!);
-              }, icon: Icons.content_paste, tooltip: 'Paste'),
             ],
           ),
         ),

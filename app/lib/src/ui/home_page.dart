@@ -1,10 +1,12 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../app_scope.dart';
 import '../bt/bluetooth.dart';
 import '../remote_client.dart';
+import 'apps_page.dart';
 import 'dashboard_page.dart';
 import 'recorder/recorder_page.dart';
 import 'remote_page.dart';
@@ -36,6 +38,26 @@ const _dests = [
 
 class _HomePageState extends State<HomePage> {
   int _index = 0;
+  ValueNotifier<bool>? _immersive;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final scope = AppScope.of(context);
+    if (_immersive != scope.settings.immersive) {
+      _immersive?.removeListener(_onImmersive);
+      _immersive = scope.settings.immersive..addListener(_onImmersive);
+    }
+    scope.client.slots; // start following the other A/B slots (TERM-06)
+  }
+
+  /// TERM-07: full screen hides the system bars too; leaving gives them back.
+  void _onImmersive() {
+    SystemChrome.setEnabledSystemUIMode(
+            _immersive!.value ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge)
+        .catchError((_) {});
+    if (mounted) setState(() {});
+  }
 
   void _select(int i) {
     setState(() => _index = i);
@@ -46,6 +68,8 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void dispose() {
+    _immersive?.removeListener(_onImmersive);
+    if (_immersive?.value == true) SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge).catchError((_) {});
     Bluetooth.instance.keepScreenOn(false).catchError((_) {});
     super.dispose();
   }
@@ -54,6 +78,8 @@ class _HomePageState extends State<HomePage> {
   Widget build(BuildContext context) {
     final client = AppScope.of(context).client;
     final wide = MediaQuery.sizeOf(context).width >= 840;
+    // full screen belongs to the terminal (TERM-07): nothing but the shell and its keys
+    final full = (_immersive?.value ?? false) && _index == 3;
     final pages = [
       const DashboardPage(),
       RecorderPage(active: _index == 1),
@@ -62,7 +88,7 @@ class _HomePageState extends State<HomePage> {
       RemotePage(active: _index == 4),
     ];
     final body = Column(children: [
-      _LinkBanner(client: client),
+      if (!full) _LinkBanner(client: client),
       // hidden tabs keep their state but stop animating (battery)
       Expanded(
         child: IndexedStack(index: _index, children: [
@@ -77,10 +103,15 @@ class _HomePageState extends State<HomePage> {
         // the Bluetooth link (and the shells) stay up.
         canPop: false,
         onPopInvokedWithResult: (didPop, _) {
-          if (!didPop) Bluetooth.instance.moveToBack().catchError((_) {});
+          if (didPop) return;
+          if (full) {
+            _immersive!.value = false; // back leaves full screen first
+          } else {
+            Bluetooth.instance.moveToBack().catchError((_) {});
+          }
         },
         child: Scaffold(
-        appBar: AppBar(
+        appBar: full ? null : AppBar(
           titleSpacing: wide ? 24 : null,
           title: Row(children: [
             _LinkDot(state: client.state),
@@ -96,6 +127,11 @@ class _HomePageState extends State<HomePage> {
           ]),
           actions: [
             IconButton(
+              tooltip: 'Apps',
+              icon: const Icon(Icons.apps_outlined),
+              onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const AppsPage())),
+            ),
+            IconButton(
               tooltip: 'Settings',
               icon: const Icon(Icons.settings_outlined),
               onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SettingsPage())),
@@ -108,7 +144,7 @@ class _HomePageState extends State<HomePage> {
             const SizedBox(width: 4),
           ],
         ),
-        body: wide
+        body: wide && !full
             ? Row(children: [
                 NavigationRail(
                   selectedIndex: _index,
@@ -124,7 +160,7 @@ class _HomePageState extends State<HomePage> {
                 Expanded(child: body),
               ])
             : body,
-        bottomNavigationBar: wide
+        bottomNavigationBar: wide || full
             ? null
             : NavigationBar(
                 selectedIndex: _index,

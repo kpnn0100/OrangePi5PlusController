@@ -43,6 +43,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import psutil
 
 from .. import __version__
+from .. import slots as slots_mod
 from ..paths import app_apk, slot
 from ..session import RestSession
 from . import auth, ws
@@ -120,7 +121,31 @@ class WebServer:
         d["app"] = {"path": "/app.apk", "version": apk_version} if apk else None
         if include_token:
             d["token"] = self.token
+        d["slot"] = slot()
+        d["slots"] = self.slot_list(include_token)
         return d
+
+    def slot_list(self, include_token):
+        """Every A/B slot of this machine (TERM-06): the app reaches the others over Wi-Fi with
+        these ports and - only for a controller that is already in (include_token) - passwords."""
+        me, out = slot(), []
+        try:
+            found = slots_mod.slots()
+        except OSError:
+            found = []
+        for s in found:
+            if s["slot"] == slots_mod.LEGACY or not (s["installed"] or s["running"]):
+                continue
+            mine = s["slot"] == me
+            d = {"slot": s["slot"], "port": self.port if mine else s["port"],
+                 "running": True if mine else s["running"], "self": mine}
+            if include_token:
+                tok, opened = (self.token, self.open) if mine else auth.read_for(s["slot"])
+                d["auth"] = "open" if opened else "password"
+                if tok and not opened:
+                    d["token"] = tok
+            out.append(d)
+        return out
 
     def authorized(self, token):
         return self.open or auth.check(token, self.token)

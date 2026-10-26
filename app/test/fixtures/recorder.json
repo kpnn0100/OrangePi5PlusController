@@ -110,7 +110,7 @@
   },
   {
    "id": 2,
-   "title": "FFV1 lossless \u00b7 GPU",
+   "title": "FFV1 lossless · GPU",
    "codec": "ffv1-gpu",
    "state": "failed",
    "source": "REC_20251231_235959.arh",
@@ -318,7 +318,7 @@
   "targets": [
    {
     "id": "h264-vpu",
-    "title": "H.264 MP4 \u00b7 share",
+    "title": "H.264 MP4 · share",
     "available": true,
     "description": "Plays everywhere.",
     "options": {
@@ -338,7 +338,7 @@
    },
    {
     "id": "h265-vpu",
-    "title": "H.265 \u00b7 VPU",
+    "title": "H.265 · VPU",
     "available": true,
     "description": "Small high-quality files.",
     "options": {
@@ -354,7 +354,7 @@
    },
    {
     "id": "h265-x265",
-    "title": "H.265 \u00b7 x265",
+    "title": "H.265 · x265",
     "available": true,
     "description": "Best quality per MB.",
     "options": {
@@ -378,7 +378,7 @@
    },
    {
     "id": "ffv1",
-    "title": "FFV1 lossless \u00b7 CPU",
+    "title": "FFV1 lossless · CPU",
     "available": true,
     "description": "Lossless .mkv.",
     "options": {
@@ -394,7 +394,7 @@
    },
    {
     "id": "ffv1-gpu",
-    "title": "FFV1 lossless \u00b7 GPU",
+    "title": "FFV1 lossless · GPU",
     "available": false,
     "description": "Lossless on the GPU.",
     "options": {
@@ -456,7 +456,26 @@
   "urls": [
    "http://10.0.0.42:8080/"
   ],
-  "token": "example-password"
+  "token": "example-password",
+  "slot": "a",
+  "slots": [
+   {
+    "slot": "a",
+    "port": 8080,
+    "running": true,
+    "self": true,
+    "auth": "password",
+    "token": "example-password"
+   },
+   {
+    "slot": "b",
+    "port": 8081,
+    "running": true,
+    "self": false,
+    "auth": "password",
+    "token": "example-password-b"
+   }
+  ]
  },
  "screen": {
   "available": true,
@@ -477,5 +496,47 @@
   "quality": "medium",
   "error": null,
   "path": "/ws/screen"
+ },
+ "apps.list": {
+  "apps": [
+   {
+    "id": "cosmo",
+    "name": "Cosmo",
+    "description": "Photo editor - the same project on every screen",
+    "icon": true,
+    "state": "running",
+    "clients": 2,
+    "problem": null,
+    "single": false,
+    "sessions": [
+     {
+      "session": "main",
+      "state": "running",
+      "clients": 2
+     }
+    ]
+   },
+   {
+    "id": "hello",
+    "name": "Hello",
+    "description": "The NTWB example app",
+    "icon": null,
+    "state": "stopped",
+    "clients": 0,
+    "problem": null,
+    "single": true,
+    "sessions": [
+     {
+      "session": "main",
+      "state": "stopped",
+      "clients": 0
+     }
+    ]
+   }
+  ],
+  "ntwb": "1.1.0"
+ },
+ "term.open": {
+  "term": 1
  }
 }

@@ -89,6 +89,62 @@ class TcpTransport implements Transport {
   }
 }
 
+/// Another A/B slot of the same Pi (TERM-06): its `/ws` carries exactly the frames the
+/// Bluetooth link does (binary messages form one byte stream), so [RemoteClient] works over it
+/// unchanged. The slot's password goes in the Authorization header.
+class WebSocketTransport implements Transport {
+  WebSocketTransport(this.url, this.token);
+  final Uri url;
+  final String? token;
+  WebSocket? _ws;
+  final _data = StreamController<Uint8List>.broadcast();
+  final _closed = StreamController<String>.broadcast();
+
+  @override
+  Stream<Uint8List> get data => _data.stream;
+
+  @override
+  Stream<String> get closed => _closed.stream;
+
+  @override
+  Future<void> connect() async {
+    await disconnect();
+    final ws = await WebSocket.connect(url.toString(),
+            headers: {if (token != null) 'Authorization': 'Bearer $token'})
+        .timeout(const Duration(seconds: 6));
+    ws.pingInterval = const Duration(seconds: 10);
+    _ws = ws;
+    ws.listen((m) {
+      if (m is Uint8List) {
+        _data.add(m);
+      } else if (m is List<int>) {
+        _data.add(Uint8List.fromList(m));
+      }
+    }, onDone: () => _lost(ws, 'connection closed by the Pi'), onError: (Object e) => _lost(ws, '$e'),
+        cancelOnError: true);
+  }
+
+  void _lost(WebSocket ws, String reason) {
+    if (_ws != ws) return;
+    _ws = null;
+    _closed.add(reason);
+  }
+
+  @override
+  Future<void> write(Uint8List bytes) async {
+    final ws = _ws;
+    if (ws == null) throw const SocketException('not connected');
+    ws.add(bytes);
+  }
+
+  @override
+  Future<void> disconnect() async {
+    final ws = _ws;
+    _ws = null;
+    await ws?.close();
+  }
+}
+
 Transport transportFor(String address) {
   if (address.startsWith('tcp:')) {
     final parts = address.split(':');

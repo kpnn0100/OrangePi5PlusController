@@ -34,6 +34,9 @@ class TermSession {
   final TerminalHub hub;
   final int localNumber;
   late final Terminal terminal;
+
+  /// The view's selection (long-press / drag), kept with the shell so Copy reads it (TERM-07).
+  final TerminalController controller = TerminalController();
   int? termId;
   TermStatus status = TermStatus.opening;
   String? title;

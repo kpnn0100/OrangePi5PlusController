@@ -80,6 +80,20 @@ def is_open():
     return os.path.exists(_open_flag())
 
 
+def read_for(slot):
+    """(password, open) of another slot on this machine (TERM-06), read - never created - from
+    its config dir. Same user, same files its own daemon uses. (None, False) when unreadable."""
+    from ..paths import config_dir
+    d = config_dir(slot)
+    opened = os.path.exists(os.path.join(d, "web_open"))
+    try:
+        with open(os.path.join(d, "web_token")) as f:
+            tok = f.read().rstrip("\n")
+        return (tok if len(tok) >= MIN_LEN else None), opened
+    except OSError:
+        return None, opened
+
+
 def set_open(on):
     path = _open_flag()
     if on:

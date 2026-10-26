@@ -291,6 +291,72 @@ void main() {
     log.done();
   });
 
+  // covers: TERM-06, TERM-07
+  testWidgets('terminal: both slots, copy and paste keys, full screen in and out', (tester) async {
+    await setSize(tester, sizes['phone portrait']!);
+    final log = ErrorLog();
+    final client = await connectedClient();
+    final prefs = await SharedPreferences.getInstance();
+    await tester.pumpWidget(ArstroApp(client: client, settings: Settings(prefs)));
+    await tester.pump(const Duration(milliseconds: 300));
+    // web.info names slot B; no Pi answers over Wi-Fi here, so slot B says why it is out of reach
+    await tester.runAsync(() => client.media.refresh());
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.text('Terminal').last);
+    await tester.pump(const Duration(milliseconds: 500));
+    log.found(find.text('Slot A · Bluetooth'), 'slot A chip');
+    log.found(find.text('Slot B · Wi-Fi'), 'slot B chip');
+    // (the test font is far wider than a phone's: chip B lies past the edge here, so select it directly)
+    tester.widget<ChoiceChip>(find.widgetWithText(ChoiceChip, 'Slot B · Wi-Fi')).onSelected!(true);
+    await tester.pump(const Duration(milliseconds: 300));
+    log.found(find.textContaining('slot B is reached over Wi-Fi'), 'why slot B is out of reach');
+    tester.widget<ChoiceChip>(find.widgetWithText(ChoiceChip, 'Slot A · Bluetooth')).onSelected!(true);
+    await tester.pump(const Duration(milliseconds: 300));
+    log.found(find.byTooltip('Copy the selection (Ctrl+Shift+C)'), 'copy key');
+    log.found(find.byTooltip('Paste (Ctrl+Shift+V)'), 'paste key');
+    log.check('terminal with slots');
+
+    await tester.tap(find.byTooltip('Full screen (F11)'));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.byType(NavigationBar), findsNothing);
+    expect(find.byType(AppBar), findsNothing);
+    log.found(find.byTooltip('Leave full screen (F11)'), 'corner button');
+    log.found(find.byTooltip('Copy the selection (Ctrl+Shift+C)'), 'keys stay in full screen');
+    log.check('full screen');
+    await tester.sendKeyEvent(LogicalKeyboardKey.f11);
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.byType(NavigationBar), findsOneWidget);
+    await tester.sendKeyEvent(LogicalKeyboardKey.f11);
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.byType(NavigationBar), findsNothing);
+    await tester.tap(find.byTooltip('Leave full screen (F11)'));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.byType(NavigationBar), findsOneWidget);
+    log.check('left full screen');
+    await tester.pump(const Duration(seconds: 2));
+    log.done();
+  });
+
+  for (final entry in {'phone portrait': sizes['phone portrait']!, 'small phone': sizes['small phone']!}.entries) {
+    // covers: APP-10
+    testWidgets('apps: the NTWB apps of the slot are listed on ${entry.key}', (tester) async {
+      await setSize(tester, entry.value);
+      final log = ErrorLog();
+      final client = await connectedClient();
+      final prefs = await SharedPreferences.getInstance();
+      await tester.pumpWidget(ArstroApp(client: client, settings: Settings(prefs)));
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(find.byTooltip('Apps'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+      log.found(find.text('Cosmo'), 'Cosmo');
+      log.found(find.textContaining('running · 2 viewing'), 'who is viewing');
+      log.found(find.text('Hello'), 'a stopped app');
+      log.check('apps');
+      log.done();
+    });
+  }
+
   // covers: UX-03, ADM-01, ADM-02, ADM-03, CON-05
   testWidgets('settings page fits on a small phone', (tester) async {
     await setSize(tester, const Size(360, 640));

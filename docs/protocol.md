@@ -120,7 +120,7 @@ Other events: `stats` `{data}` (after `stats.subscribe`), `term.exit` `{term, co
 | `admin.status` | | `{version, bluetooth, input, web, recorder, sessions}` |
 | `admin.pair` | `seconds` (0 closes) | status |
 | `admin.unpair` | `address` | |
-| `web.info` | | `{enabled, port, urls, auth, app, token}` - `token` is the password |
+| `web.info` | | `{enabled, port, urls, auth, app, token, slot, slots}` - `token` is the password; `slots`: every A/B slot of the machine `[{slot, port, running, self, auth, token}]` (TERM-06: the app opens the others over Wi-Fi; the shared `web` state carries `slots` without `auth`/`token`) |
 | `web.set_password` | `password` (5..256 chars) | info; signs out the other web/remote sessions |
 | `web.rotate_token` | | a new random password |
 | `web.set_auth` | `required` (bool) | info; `false` = open mode |
@@ -187,6 +187,7 @@ Take ids are `REC_YYYYMMDD_HHMMSS`; its files are `<take>.arh` (RAW), `<take>_H2
 | `GET /ws/screen` | the Pi's desktop, same messages as `/ws/preview`; control it with `in.move_to` (absolute desktop pixels), `in.btn`, `in.scroll`, `in.key`, `in.text` |
 | `GET /api/media/<file>` | a recording, HTTP Range; `?download=1` |
 | `GET /api/thumb/<take>` | JPEG thumbnail |
+| `GET /ws` with `Authorization: Bearer <password>` | the control channel for programs (CLI `--url`, the app's link to another slot, TERM-06): binary messages carry exactly the Bluetooth frames |
 | `GET /api/bundle/<id>.zip` | the files of a `gallery.bundle` as one ZIP, streamed: entries stored (not recompressed), ZIP64 where a value passes 32 bits, exact `Content-Length` before the first byte; 404 once expired (GAL-12) |
 | `POST /api/op/<op>` | one op, JSON body → `{ok, data \| error}` |
 | `GET /api/files/download?path=P` | a file of the Files module (HTTP Range); `&inline=1` to show instead of save |

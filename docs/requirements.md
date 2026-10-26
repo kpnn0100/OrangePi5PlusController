@@ -69,6 +69,8 @@ IDs are stable: never renumber, mark removed ones `(withdrawn)`.
 | TERM-03 | Shells survive a dropped link: a shell nobody views is kept `term_keep_sec` (600 s); re-attaching replays exactly the missed output. `ephemeral` shells die with their opener. |
 | TERM-04 | The shell list (opened, closed, exited, viewers) is pushed to all controllers. |
 | TERM-05 | **Full screen.** A shell can fill the whole screen - no tabs, no app chrome; the browser's own full screen where it allows it, otherwise the whole window; on touch screens the key row stays. **F11** (never passed to the shell while the terminal is shown) or a small button in the top-right corner leaves it; the shell keeps its size in step (resize). |
+| TERM-06 | **Every slot from the app.** The app manages the shells of every A/B slot of the Pi it is connected to, not only the slot its Bluetooth link reaches: `web.info` lists the machine's slots (port, running; to a controller that is already in, also each slot's password) and the app reaches the others over Wi-Fi - the same protocol on `/ws` - with a switch between the slots in the Terminal tab. A slot that is stopped, or out of reach without Wi-Fi, says why. A link to another slot is never remembered as the phone's own. |
+| TERM-07 | **A native terminal on the phone.** The app's shell takes the phone's own keyboard (no autocorrect) and a hardware keyboard; a key row adds what a phone lacks (Esc, Tab, sticky Ctrl/Alt, arrows, ^C/^D/^Z, Home/End/PgUp/PgDn, symbols). **Copy**: long-press and drag selects, the Copy key or Ctrl+Shift+C puts it on the clipboard; **Paste**: the Paste key or Ctrl+Shift+V (Ctrl+A, Ctrl+C, Ctrl+V stay with the shell). **Full screen**: only the shell and its key row, the system bars hidden; the corner button, Back or F11 leave it. |
 
 ## INP – Mouse and keyboard
 
@@ -203,6 +205,7 @@ IDs are stable: never renumber, mark removed ones `(withdrawn)`.
 | APP-06 | Opening an app that is not running starts it. |
 | APP-07 | Security: app pages and app WebSockets need the server's password; the app socket is private (0600); a launched app must present its one-time token; attaching without one needs the manifest's `attach` capability. |
 | APP-08 | Every app method is reachable without a browser (`apps call`, `apps state`, `apps api`) by the same path a browser uses - so apps are scriptable and testable. |
+| APP-10 | **Apps on the phone.** The app lists the NTWB apps of each slot as the server has them now - a newly installed app appears without an app update - and opens one's own web UI inside the app (logged in with that slot's password): one more view of the app's session, with its own layout (NTWB-11). |
 | APP-09 | An app's sessions are visible and controllable from every controller: the Apps page lists each session with its run state and number of viewers and can open it, start a new one and stop one; the CLI has `apps sessions ID`, `apps launch ID --session new` and `--session` on `info`/`stop`/`call`/`state`; topic `apps` carries every app's sessions. |
 
 ## NTWB – The native-to-web bridge protocol
