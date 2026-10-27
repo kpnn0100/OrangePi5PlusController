@@ -126,16 +126,21 @@ class _TerminalPageState extends State<TerminalPage> {
     final session = hub.current;
     final connecting = !client.isConnected && !entry.self;
     return Column(children: [
-      if (!full)
-        _TabsBar(
-          hub: hub,
-          canOpen: client.isConnected,
-          snippets: _snippets,
-          onSnippet: (cmd) => session?.sendText(cmd),
-          fontSize: scope.settings.terminalFontSize,
-          onFont: (d) => scope.settings.terminalFontSize = (scope.settings.terminalFontSize + d).clamp(9, 24),
-          onFull: session == null ? null : () => scope.settings.immersive.value = true,
-        ),
+      // TERM-08: the tabs stay in full screen too (a slim bar: switch, + new shell, leave)
+      _TabsBar(
+        hub: hub,
+        canOpen: client.isConnected,
+        snippets: _snippets,
+        onSnippet: (cmd) => session?.sendText(cmd),
+        fontSize: scope.settings.terminalFontSize,
+        onFont: (d) => scope.settings.terminalFontSize = (scope.settings.terminalFontSize + d).clamp(9, 24),
+        full: full,
+        onFull: full
+            ? () => scope.settings.immersive.value = false
+            : session == null
+                ? null
+                : () => scope.settings.immersive.value = true,
+      ),
       Expanded(
         child: session == null
             ? EmptyState(
@@ -153,7 +158,7 @@ class _TerminalPageState extends State<TerminalPage> {
                 Positioned.fill(
                   child: Container(
                     color: TerminalThemes.defaultTheme.background,
-                    padding: EdgeInsets.fromLTRB(4, full ? MediaQuery.paddingOf(context).top + 4 : 4, 4, 4),
+                    padding: const EdgeInsets.all(4),
                     child: TerminalView(
                       session.terminal,
                       key: ObjectKey(session),
@@ -182,16 +187,6 @@ class _TerminalPageState extends State<TerminalPage> {
                     right: 16,
                     top: 12,
                     child: Chip(avatar: Icon(Icons.link_off, size: 18), label: Text('Waiting for link…')),
-                  ),
-                if (full)
-                  Positioned(
-                    top: MediaQuery.paddingOf(context).top + 8,
-                    right: 10,
-                    child: _CornerButton(
-                      icon: Icons.fullscreen_exit,
-                      tooltip: 'Leave full screen (F11)',
-                      onTap: () => scope.settings.immersive.value = false,
-                    ),
                   ),
               ]),
       ),
@@ -255,31 +250,6 @@ class _SlotBar extends StatelessWidget {
   }
 }
 
-class _CornerButton extends StatelessWidget {
-  const _CornerButton({required this.icon, required this.tooltip, required this.onTap});
-  final IconData icon;
-  final String tooltip;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Tooltip(
-      message: tooltip,
-      child: Material(
-        color: scheme.surfaceContainerHigh.withValues(alpha: 0.72),
-        shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10), side: BorderSide(color: scheme.outlineVariant)),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(10),
-          onTap: onTap,
-          child: SizedBox(width: 40, height: 40, child: Icon(icon, size: 22, color: scheme.onSurfaceVariant)),
-        ),
-      ),
-    );
-  }
-}
-
 class _TabsBar extends StatelessWidget {
   const _TabsBar({
     required this.hub,
@@ -289,6 +259,7 @@ class _TabsBar extends StatelessWidget {
     required this.fontSize,
     required this.onFont,
     required this.onFull,
+    this.full = false,
   });
 
   final TerminalHub hub;
@@ -299,18 +270,23 @@ class _TabsBar extends StatelessWidget {
   final ValueChanged<double> onFont;
   final VoidCallback? onFull;
 
+  /// Full screen: a slim bar on the terminal's own background, under the status bar - the tabs,
+  /// + and the way out; the quick commands and text size wait for the normal view.
+  final bool full;
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return Material(
-      color: scheme.surfaceContainer,
-      child: SizedBox(
-        height: 48,
+      color: full ? TerminalThemes.defaultTheme.background : scheme.surfaceContainer,
+      child: Container(
+        padding: EdgeInsets.only(top: full ? MediaQuery.paddingOf(context).top : 0),
+        height: (full ? 40 : 48) + (full ? MediaQuery.paddingOf(context).top : 0),
         child: Row(children: [
           Expanded(
             child: ListView(
               scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              padding: EdgeInsets.symmetric(horizontal: 8, vertical: full ? 3 : 6),
               children: [
                 for (var i = 0; i < hub.sessions.length; i++)
                   Padding(
@@ -334,6 +310,7 @@ class _TabsBar extends StatelessWidget {
               ],
             ),
           ),
+          if (!full) ...[
           PopupMenuButton<String>(
             tooltip: 'Quick commands',
             icon: const Icon(Icons.bolt),
@@ -345,7 +322,10 @@ class _TabsBar extends StatelessWidget {
           ),
           IconButton(tooltip: 'Smaller text', onPressed: () => onFont(-1), icon: const Icon(Icons.text_decrease)),
           IconButton(tooltip: 'Larger text', onPressed: () => onFont(1), icon: const Icon(Icons.text_increase)),
-          IconButton(tooltip: 'Full screen (F11)', onPressed: onFull, icon: const Icon(Icons.fullscreen)),
+          ],
+          full
+              ? IconButton(tooltip: 'Leave full screen (F11)', onPressed: onFull, icon: const Icon(Icons.fullscreen_exit))
+              : IconButton(tooltip: 'Full screen (F11)', onPressed: onFull, icon: const Icon(Icons.fullscreen)),
           const SizedBox(width: 4),
         ]),
       ),

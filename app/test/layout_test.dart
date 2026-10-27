@@ -337,7 +337,8 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
     expect(find.byType(NavigationBar), findsNothing);
     expect(find.byType(AppBar), findsNothing);
-    log.found(find.byTooltip('Leave full screen (F11)'), 'corner button');
+    log.found(find.byTooltip('Leave full screen (F11)'), 'leave button');
+    log.found(find.byTooltip('New shell'), 'TERM-08: new shell (tab) in full screen');
     log.found(find.byTooltip('Copy the selection (Ctrl+Shift+C)'), 'keys stay in full screen');
     log.check('full screen');
     await tester.sendKeyEvent(LogicalKeyboardKey.f11);

@@ -411,7 +411,7 @@ test("terminal_shared_between_browsers", ["TERM-01", "TERM-02", "TERM-04", "TERM
   const filled = (p) => p.evaluate(() => {
     const w = document.querySelector(".term-wrap.full"), r = w && w.getBoundingClientRect();
     return !!r && r.left <= 0 && r.top <= 0 && r.width >= innerWidth - 1 && r.height >= innerHeight - 1 &&
-           getComputedStyle(document.querySelector(".term-tabs")).display === "none";
+           getComputedStyle(document.querySelector(".term-tabs")).display !== "none";   // TERM-08: the tabs stay
   });
   check(await clickText(a, ".term-tabs .btn", "Full screen"), "no Full screen button");
   check(await until(() => filled(a), 3000), "the shell does not fill the screen");
@@ -430,6 +430,64 @@ test("terminal_shared_between_browsers", ["TERM-01", "TERM-02", "TERM-04", "TERM
   await op("term.close", { term: id }).catch(() => {});
   await a.close();
   await b.close();
+});
+
+test("terminal_tabs_and_splits", ["TERM-08", "TERM-05", "TERM-02"], async () => {
+  // like Tilix: a tab holds panes split right / down, dividers drag, keys split / move / maximize,
+  // and the tab strip (+, the splits) stays in full screen. The layout is this page's own.
+  const a = await newPage();
+  const opened = [];
+  try {
+    await go(a, "terminal");
+    await a.waitForSelector(".term-tabs .btn");
+    await clickText(a, ".term-tabs .btn, .term-box .btn", "shell");
+    await a.waitForSelector(".term-box .xterm", { timeout: 10000 });
+    const panes = () => a.evaluate(() => [...document.querySelectorAll(".term-box .term-pane")].map((p) => {
+      const r = p.getBoundingClientRect();
+      return { term: +p.dataset.term, w: r.width, h: r.height, focus: p.classList.contains("focus") };
+    }));
+    await a.evaluate(() => document.querySelector('.term-split[data-split="row"]').click());
+    check(await until(async () => (await panes()).length === 2, 8000), "split right made no second pane");
+    await a.keyboard.down("Control"); await a.keyboard.down("Alt"); await a.keyboard.press("KeyD");
+    await a.keyboard.up("Alt"); await a.keyboard.up("Control");
+    check(await until(async () => (await panes()).length === 3, 8000), "Ctrl+Alt+D made no third pane");
+    let p = await panes();
+    opened.push(...p.map((x) => x.term));
+    check(p[1].w > 100 && Math.abs(p[1].h - p[2].h) < 4 && p[0].h > p[1].h * 1.8, "panes not laid out right + down: " + JSON.stringify(p));
+    const listed = (await op("term.list")).terminals.map((t) => t.term);
+    check(p.every((x) => listed.includes(x.term)), "a pane's shell is not on the server");
+    await a.keyboard.type("echo SPLIT_$((6*7))\n");
+    check(await until(() => a.evaluate(() => /SPLIT_42/.test(document.querySelector(".term-pane.focus")?.textContent || "")), 8000),
+          "the focused pane did not get the typing");
+    // drag the vertical divider (away from the junction with the right column's divider)
+    const d = await a.evaluate(() => { const r = document.querySelector(".term-split.sp-row > .term-div").getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 4]; });
+    await a.mouse.move(d[0], d[1]); await a.mouse.down(); await a.mouse.move(d[0] - 150, d[1], { steps: 8 }); await a.mouse.up();
+    check(await until(async () => (await panes())[0].w < p[0].w - 100, 3000), "dragging the divider did not resize the panes");
+    await a.keyboard.down("Alt"); await a.keyboard.press("ArrowLeft"); await a.keyboard.up("Alt");
+    check(await until(async () => (await panes())[0].focus, 2000), "Alt+Left did not move to the left pane");
+    await a.keyboard.press("F11");
+    check(await until(() => a.evaluate(() => {
+      const w = document.querySelector(".term-wrap.full"), t = w && w.querySelector(".term-tabs");
+      return !!t && getComputedStyle(t).display !== "none" && !!w.querySelector(".term-new") && !!w.querySelector(".term-split");
+    }), 3000), "full screen hides the tabs, + or the splits");
+    await a.keyboard.down("Control"); await a.keyboard.down("Shift"); await a.keyboard.press("KeyX");
+    await a.keyboard.up("Shift"); await a.keyboard.up("Control");
+    check(await until(async () => (await panes()).length === 1, 2000), "Ctrl+Shift+X did not maximize the pane");
+    await a.keyboard.down("Control"); await a.keyboard.down("Shift"); await a.keyboard.press("KeyX");
+    await a.keyboard.up("Shift"); await a.keyboard.up("Control");
+    check(await until(async () => (await panes()).length === 3, 2000), "Ctrl+Shift+X did not restore the panes");
+    const tabs0 = await a.evaluate(() => document.querySelectorAll(".term-tab").length);
+    await a.evaluate(() => document.querySelector(".term-wrap.full .term-new").click());
+    check(await until(() => a.evaluate((n) => document.querySelectorAll(".term-tab").length === n + 1, tabs0), 8000), "+ in full screen made no tab");
+    p = await panes();
+    opened.push(...p.map((x) => x.term));
+    check(p.length === 1, "a new tab is not one pane");
+    await shot(a, "terminal-splits");
+    await a.keyboard.press("F11");
+  } finally {
+    for (const id of new Set(opened)) await op("term.close", { term: id }).catch(() => {});
+    await a.close();
+  }
 });
 
 test("remote_screen_is_live_and_the_mouse_lands_on_the_same_spot", ["SCR-01", "SCR-02", "SCR-03", "SCR-05"], async () => {
