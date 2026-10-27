@@ -9,6 +9,12 @@
 // screen, with + (new tab) and the split buttons. Keys (as Tilix): Ctrl+Alt+R split right,
 // Ctrl+Alt+D split down, Ctrl+Shift+T new tab, Ctrl+Shift+W close the pane's shell,
 // Ctrl+Shift+X maximize the pane, Alt+arrows move between panes.
+//
+// Drag and drop (TERM-09, as Tilix): a pane dragged by its title bar drops on another pane's
+// left / right / top / bottom half (the shell moves there, splitting it), on a tab (the shell
+// joins that tab; holding over a tab opens it) or on the strip's free space (its own tab). A
+// tab dragged along the strip reorders it; a one-shell tab dropped on a pane joins it. Pointer
+// events, so a finger can do it too; Esc cancels.
 
 import { h, clear, icon, store, conn, toast, confirmBox, errText, loadScript, loadStyle, isNarrow, CONTROLLER_NAMES } from "../core.js";
 
@@ -184,6 +190,129 @@ export default {
       mgr.active = id;
     }
 
+    /** TERM-09: move shell `id` to `to` - {pane, side: left|right|top|bottom} (split that pane),
+     *  {tab} (join that tab, on its right) or {newTab: true}. */
+    function moveShell(id, to) {
+      if (to.pane === id) return;
+      const from = tabOf(id);
+      for (const tb of L.tabs) tb.root = without(tb.root, id);
+      if (to.pane !== undefined) {
+        const target = tabOf(to.pane);
+        if (!target) return reconcile();
+        const lead = to.side === "left" || to.side === "top";
+        const dir = to.side === "left" || to.side === "right" ? "row" : "col";
+        target.root = replaceLeaf(target.root, to.pane, (leaf) => ({ dir, r: 0.5, a: lead ? { t: id } : leaf, b: lead ? leaf : { t: id } }));
+        target.zoom = undefined;
+        L.current = target.key;
+      } else if (to.tab !== undefined && L.tabs.some((tb) => tb.key === to.tab && tb.root)) {
+        const target = L.tabs.find((tb) => tb.key === to.tab);
+        target.root = { dir: "row", r: 0.5, a: target.root, b: { t: id } };
+        target.zoom = undefined;
+        L.current = target.key;
+      } else {
+        const nt = { key: tabSeq++, root: { t: id } };
+        L.tabs.splice(from ? L.tabs.indexOf(from) + 1 : L.tabs.length, 0, nt);
+        L.current = nt.key;
+      }
+      L.tabs = L.tabs.filter((tb) => tb.root);
+      mgr.active = id;
+      render();
+    }
+    function moveTab(key, beforeKey) {
+      const tb = L.tabs.find((t) => t.key === key);
+      if (!tb || key === beforeKey) return;
+      L.tabs = L.tabs.filter((t) => t !== tb);
+      const i = beforeKey === null ? L.tabs.length : L.tabs.findIndex((t) => t.key === beforeKey);
+      L.tabs.splice(i < 0 ? L.tabs.length : i, 0, tb);
+      renderTabs();
+    }
+
+    // ------------------------------------------------------------ drag and drop (TERM-09)
+    let justDragged = false;
+    /** Start watching a press on a pane bar ({term}) or a tab ({tab}); it becomes a drag after 6 px. */
+    function dragFrom(e, src) {
+      if (e.button !== 0 || e.target.closest("button:not(.term-tab), .x")) return;
+      const x0 = e.clientX, y0 = e.clientY;
+      let on = false, ghost = null, mark = null, drop = null, hoverTab = null, hoverAt = 0;
+      const srcTab = src.tab !== undefined ? L.tabs.find((t) => t.key === src.tab) : null;
+      const srcShell = src.term !== undefined ? src.term : srcTab && leaves(srcTab.root).length === 1 ? leaves(srcTab.root)[0] : null;
+      const clearMarks = () => {
+        mark?.remove(); mark = null;
+        for (const el of tabs.querySelectorAll(".drop-before, .drop-after, .drop-into")) el.classList.remove("drop-before", "drop-after", "drop-into");
+        tabs.classList.remove("drop-new");
+      };
+      const move = (ev) => {
+        if (!on) {
+          if (Math.hypot(ev.clientX - x0, ev.clientY - y0) < 6) return;
+          on = true;
+          wrap.classList.add("dragging");
+          ghost = h("div.term-ghost", null, icon(serial ? "plug" : "cmd"),
+                    srcShell !== null ? nameOf(srcShell) : `${leaves(srcTab.root).length} shells`);
+          document.body.append(ghost);
+        }
+        ev.preventDefault();
+        ghost.style.transform = `translate(${ev.clientX + 12}px, ${ev.clientY + 10}px)`;
+        clearMarks();
+        drop = null;
+        const el = document.elementFromPoint(ev.clientX, ev.clientY);
+        const tabEl = el && el.closest(".term-tab");
+        const paneEl = el && el.closest(".term-box .term-pane");
+        if (tabEl) {
+          const key = +tabEl.dataset.key, r = tabEl.getBoundingClientRect();
+          if (srcTab) {                                   // a tab: reorder along the strip
+            const after = ev.clientX > r.left + r.width / 2;
+            tabEl.classList.add(after ? "drop-after" : "drop-before");
+            const i = L.tabs.findIndex((t) => t.key === key);
+            drop = { before: after ? (L.tabs[i + 1] ? L.tabs[i + 1].key : null) : key };
+          } else if (!leaves(L.tabs.find((t) => t.key === key)?.root).includes(srcShell)) {
+            tabEl.classList.add("drop-into");             // a pane: join that tab
+            drop = { tab: key };
+          }
+          if (hoverTab !== key) { hoverTab = key; hoverAt = performance.now(); }
+          else if (!srcTab && key !== L.current && performance.now() - hoverAt > 550) { selectTab(key); hoverAt = Infinity; }
+        } else {
+          hoverTab = null;
+          if (paneEl && srcShell !== null && +paneEl.dataset.term !== srcShell) {
+            const r = paneEl.getBoundingClientRect(), b = box.getBoundingClientRect();
+            const fx = (ev.clientX - r.left) / r.width, fy = (ev.clientY - r.top) / r.height;
+            const side = Math.min(fx, 1 - fx) < Math.min(fy, 1 - fy) ? (fx < 0.5 ? "left" : "right") : (fy < 0.5 ? "top" : "bottom");
+            const half = { left: [0, 0, 0.5, 1], right: [0.5, 0, 0.5, 1], top: [0, 0, 1, 0.5], bottom: [0, 0.5, 1, 0.5] }[side];
+            mark = h("div.term-drop", { style: { left: r.left - b.left + half[0] * r.width + "px", top: r.top - b.top + half[1] * r.height + "px",
+                                                 width: half[2] * r.width + "px", height: half[3] * r.height + "px" } });
+            box.append(mark);
+            drop = { pane: +paneEl.dataset.term, side };
+          } else if (el && el.closest(".term-tabs") && srcShell !== null && !srcTab) {
+            tabs.classList.add("drop-new");               // the strip's free space: a tab of its own
+            drop = { newTab: true };
+          } else if (el && el.closest(".term-tabs") && srcTab) {
+            drop = { before: null };
+          }
+        }
+      };
+      const end = (commit) => {
+        window.removeEventListener("pointermove", move, true);
+        window.removeEventListener("pointerup", up, true);
+        window.removeEventListener("pointercancel", cancel, true);
+        window.removeEventListener("keydown", esc, true);
+        if (!on) return;
+        justDragged = true;
+        setTimeout(() => { justDragged = false; }, 0);
+        clearMarks();
+        ghost.remove();
+        wrap.classList.remove("dragging");
+        if (!commit || !drop) return;
+        if (drop.before !== undefined) moveTab(src.tab, drop.before);
+        else if (srcShell !== null) moveShell(srcShell, drop);
+      };
+      const up = () => end(true);
+      const cancel = () => end(false);
+      const esc = (ev) => { if (ev.key === "Escape" && on) { ev.preventDefault(); ev.stopPropagation(); end(false); } };
+      window.addEventListener("pointermove", move, true);
+      window.addEventListener("pointerup", up, true);
+      window.addEventListener("pointercancel", cancel, true);
+      window.addEventListener("keydown", esc, true);
+    }
+
     // ------------------------------------------------------------ the tab strip
     function renderTabs() {
       const tb = current();
@@ -193,7 +322,9 @@ export default {
           const ids = leaves(t.root);
           const first = info(ids[0]) || { term: ids[0] };
           const viewers = Math.max(0, ...ids.map((id) => (info(id) || {}).viewers || 0));
-          return h("button.term-tab", { class: t.key === L.current ? "active" : "", onclick: () => selectTab(t.key),
+          return h("button.term-tab", { class: t.key === L.current ? "active" : "", "data-key": String(t.key),
+                                        onclick: () => { if (!justDragged) selectTab(t.key); },
+                                        onpointerdown: (e) => dragFrom(e, { tab: t.key }),
                                         title: ids.map((id) => `${nameOf(id)} - opened by ${CONTROLLER_NAMES[(info(id) || {}).opened_by] || (info(id) || {}).opened_by || "?"}`).join("\n") },
             icon(serial ? "plug" : "cmd"), label(first),
             ids.length > 1 ? h("span.n", { title: ids.length + " panes" }, "+" + (ids.length - 1)) : null,
@@ -264,7 +395,7 @@ export default {
     function pane(id, many, tb) {
       const t = mgr.terms.get(id) || makeXterm(id);
       const zoomed = tb.zoom === id;
-      const bar = many ? h("div.term-pane-bar", null,
+      const bar = many ? h("div.term-pane-bar", { title: "Drag to move this shell", onpointerdown: (e) => dragFrom(e, { term: id }) },
         h("span.name", null, nameOf(id)),
         serial ? null : h("button", { title: "Split right (Ctrl+Alt+R)", "aria-label": "Split right", onclick: () => { focusPane(id); split("row"); } }, splitIcon("row")),
         serial ? null : h("button", { title: "Split down (Ctrl+Alt+D)", "aria-label": "Split down", onclick: () => { focusPane(id); split("col"); } }, splitIcon("col")),

@@ -629,6 +629,21 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .term-tabs .term-split svg.i { width: 17px; height: 17px; }
 .term-tabs .term-fullbtn { margin-left: auto; flex: none; }
 .term-tabs .term-exitfull { display: none; }
+/* TERM-09: drag and drop - the ghost under the pointer, where the shell would land */
+.term-pane-bar { cursor: grab; touch-action: none; }
+.term-tab { touch-action: pan-x; }
+.term-wrap.dragging, .term-wrap.dragging * { cursor: grabbing !important; user-select: none; }
+.term-wrap.dragging .xterm { pointer-events: none; }
+.term-ghost { position: fixed; left: 0; top: 0; z-index: 200; pointer-events: none; display: inline-flex; gap: 6px; align-items: center;
+              padding: 5px 10px; border-radius: var(--r-sm); background: var(--card-2); border: 1px solid var(--accent);
+              color: var(--text); font-size: 12.5px; font-weight: 550; box-shadow: 0 8px 24px rgba(0, 0, 0, .45); }
+.term-ghost svg.i { width: 14px; height: 14px; }
+.term-drop { position: absolute; z-index: 20; pointer-events: none; background: rgba(124, 156, 255, .16);
+             border: 2px solid var(--accent); border-radius: 4px; transition: all .08s ease; }
+.term-tab.drop-into { border-color: var(--accent); background: rgba(124, 156, 255, .14); }
+.term-tab.drop-before { box-shadow: inset 3px 0 0 var(--accent); }
+.term-tab.drop-after { box-shadow: inset -3px 0 0 var(--accent); }
+.term-tabs.drop-new { box-shadow: inset 0 -2px 0 var(--accent); }
 /* TERM-05: full screen - over everything, with a slim tab strip (TERM-08: + and the splits stay at hand) */
 .term-wrap.full { position: fixed; inset: 0; z-index: 60; height: auto; min-height: 0; gap: 0;
                   padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);

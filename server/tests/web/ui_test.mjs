@@ -490,6 +490,75 @@ test("terminal_tabs_and_splits", ["TERM-08", "TERM-05", "TERM-02"], async () => 
   }
 });
 
+test("terminal_drag_and_drop", ["TERM-09", "TERM-08"], async () => {
+  // a pane dragged by its bar lands on another pane's half, or on the strip as a tab of its own;
+  // a tab dragged along the strip reorders; a one-shell tab dropped on a pane joins it
+  const a = await newPage();
+  const opened = new Set();
+  try {
+    await go(a, "terminal");
+    await a.waitForSelector(".term-tabs .btn");
+    await clickText(a, ".term-tabs .btn, .term-box .btn", "shell");
+    await a.waitForSelector(".term-box .xterm", { timeout: 10000 });
+    const panes = () => a.evaluate(() => [...document.querySelectorAll(".term-box .term-pane")].map((p) => {
+      const r = p.getBoundingClientRect();
+      return { term: +p.dataset.term, x: r.x, y: r.y, w: r.width, h: r.height };
+    }));
+    const tabKeys = () => a.evaluate(() => [...document.querySelectorAll(".term-tab")].map((t) => +t.dataset.key));
+    const rectOf = (sel) => a.evaluate((s) => { const r = document.querySelector(s).getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; }, sel);
+    const drag = async (from, to) => {
+      await a.mouse.move(from[0], from[1]); await a.mouse.down();
+      await a.mouse.move(to[0], to[1], { steps: 12 }); await sleep(120); await a.mouse.up(); await sleep(400);
+    };
+    await a.evaluate(() => document.querySelector('.term-split[data-split="row"]').click());
+    check(await until(async () => (await panes()).length === 2, 8000), "no second pane");
+    await a.evaluate(() => document.querySelector('.term-split[data-split="col"]').click());
+    check(await until(async () => (await panes()).length === 3, 8000), "no third pane");
+    let p = await panes();
+    p.forEach((x) => opened.add(x.term));
+    const [p0, , p2] = p;
+    // p2 (bottom right) by its bar onto the left half of p0: p2 | p0 | p1
+    const bar = await rectOf(`.term-pane[data-term="${p2.term}"] .term-pane-bar .name`);
+    await drag([bar.x + bar.w / 2, bar.y + bar.h / 2], [p0.x + 40, p0.y + p0.h / 2]);
+    p = await panes();
+    const at = (id) => p.find((x) => x.term === id);
+    check(p.length === 3 && at(p2.term).x < at(p0.term).x && Math.abs(at(p2.term).h - at(p0.term).h) < 4,
+          "the dragged shell did not land left of the target: " + JSON.stringify(p));
+    // the same pane onto the strip's free space: a tab of its own
+    const tabs0 = await tabKeys();
+    const bar2 = await rectOf(`.term-pane[data-term="${p2.term}"] .term-pane-bar .name`);
+    const plus = await rectOf(".term-new");
+    await drag([bar2.x + bar2.w / 2, bar2.y + bar2.h / 2], [plus.x + plus.w + 160, plus.y + plus.h / 2]);
+    const tabs1 = await tabKeys();
+    check(tabs1.length === tabs0.length + 1 && (await panes()).length === 1 && (await panes())[0].term === p2.term,
+          "the pane dropped on the strip did not become its own tab");
+    // reorder: the last tab before the first
+    const first = await rectOf(".term-tab");
+    const last = await a.evaluate(() => { const r = [...document.querySelectorAll(".term-tab")].pop().getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; });
+    await drag([last.x + last.w / 2, last.y + last.h / 2], [first.x + 6, first.y + first.h / 2]);
+    const tabs2 = await tabKeys();
+    check(tabs2[0] === tabs1[tabs1.length - 1], "dragging a tab did not reorder the strip: " + JSON.stringify([tabs1, tabs2]));
+    // the one-shell tab (now first) onto the right half of a pane of the other tab: it joins it
+    await a.evaluate(() => document.querySelectorAll(".term-tab")[1].click());
+    await sleep(400);
+    const host = (await panes())[0];
+    const t0 = await rectOf(".term-tab");
+    await drag([t0.x + t0.w / 2, t0.y + t0.h / 2], [host.x + host.w - 30, host.y + host.h / 2]);
+    check((await tabKeys()).length === tabs2.length - 1 && (await panes()).some((x) => x.term === p2.term),
+          "the one-shell tab did not join the pane it was dropped on");
+    // a drag cancelled with Esc changes nothing
+    const before = JSON.stringify(await panes());
+    const b3 = await rectOf(".term-pane-bar .name");
+    await a.mouse.move(b3.x + 5, b3.y + 5); await a.mouse.down(); await a.mouse.move(b3.x + 300, b3.y + 300, { steps: 8 });
+    await a.keyboard.press("Escape"); await a.mouse.up(); await sleep(300);
+    check(JSON.stringify(await panes()) === before, "Esc did not cancel the drag");
+    await shot(a, "terminal-dnd");
+  } finally {
+    for (const id of opened) await op("term.close", { term: id }).catch(() => {});
+    await a.close();
+  }
+});
+
 test("remote_screen_is_live_and_the_mouse_lands_on_the_same_spot", ["SCR-01", "SCR-02", "SCR-03", "SCR-05"], async () => {
   const p0 = await op("in.pointer").catch(() => null);
   const page = await newPage();
