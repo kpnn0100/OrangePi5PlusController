@@ -30,9 +30,17 @@ private const val TAG = "ArstroMedia"
  * Live preview (REC-02): H.264 access units from the Pi's /ws/preview (received in Dart)
  * are decoded by MediaCodec straight into a Flutter texture.
  *
- *   method channel "arstro/preview": create -> textureId, configure {width,height}, reset, release
- *   binary channel "arstro/preview/frames": [ver u8 = 1][flags u8: bit0 key][pts_us u64 BE][Annex-B AU]
- *   events back to Dart: playing, size {width,height}, error {message}
+ * Two independent decoders, each with its own thread, queue, codec and texture: "main" - the
+ * whole picture (stream version 1) - and "loupe" - the focus loupe's small square stream
+ * (version 3, REC-14). The loupe never touches the main decoder.
+ *
+ *   method channel "arstro/preview": create -> textureId, configure {width,height}, reset, release;
+ *     with {decoder: "loupe"} each acts on the loupe decoder (create/release of the main one
+ *     also ends the loupe: the controller that owns the bridge changed)
+ *   binary channel "arstro/preview/frames": [ver u8][flags u8: bit0 key][pts_us u64 BE][Annex-B AU]
+ *     routed by the version byte: 1 -> main, 3 -> loupe
+ *   events back to Dart: playing, size {width,height}, error {message} - the loupe's carry
+ *     decoder: "loupe"
  */
 class PreviewBridge(private val textures: TextureRegistry, messenger: BinaryMessenger) {
     private val main = Handler(Looper.getMainLooper())
@@ -40,31 +48,59 @@ class PreviewBridge(private val textures: TextureRegistry, messenger: BinaryMess
     private val frames = BasicMessageChannel(messenger, "arstro/preview/frames", BinaryCodec.INSTANCE,
                                              messenger.makeBackgroundTaskQueue())
     @Volatile private var decoder: Decoder? = null
+    @Volatile private var loupe: Decoder? = null
 
     init {
         method.setMethodCallHandler { call, result -> handle(call, result) }
         frames.setMessageHandler { msg, reply ->
-            if (msg != null) decoder?.push(msg)
+            if (msg != null && msg.remaining() > 0) {
+                when (msg.get(0).toInt()) {
+                    1 -> decoder?.push(msg)
+                    3 -> loupe?.push(msg)
+                }
+            }
             reply.reply(null)
         }
     }
 
     private fun handle(call: MethodCall, result: MethodChannel.Result) {
+        val isLoupe = (call.arguments as? Map<*, *>)?.get("decoder") == "loupe"
         when (call.method) {
             "create" -> {
-                decoder?.release()
-                val d = Decoder(textures.createSurfaceProducer(), ::event)
-                decoder = d
-                result.success(d.id)
+                if (isLoupe) {
+                    releaseLoupe()
+                    val d = Decoder(textures.createSurfaceProducer(), 3, "arstro-loupe", 480, 480) { name, args ->
+                        event(name, args + ("decoder" to "loupe"))
+                    }
+                    loupe = d
+                    result.success(d.id)
+                } else {
+                    releaseLoupe()
+                    decoder?.release()
+                    val d = Decoder(textures.createSurfaceProducer(), 1, "arstro-preview", 1280, 720, ::event)
+                    decoder = d
+                    result.success(d.id)
+                }
             }
             "configure" -> {
-                decoder?.configure(call.argument<Int>("width") ?: 0, call.argument<Int>("height") ?: 0)
+                (if (isLoupe) loupe else decoder)
+                    ?.configure(call.argument<Int>("width") ?: 0, call.argument<Int>("height") ?: 0)
                 result.success(null)
             }
-            "reset" -> { decoder?.reset(); result.success(null) }
-            "release" -> { decoder?.release(); decoder = null; result.success(null) }
+            "reset" -> { (if (isLoupe) loupe else decoder)?.reset(); result.success(null) }
+            "release" -> {
+                releaseLoupe()
+                if (!isLoupe) { decoder?.release(); decoder = null }
+                result.success(null)
+            }
             else -> result.notImplemented()
         }
+    }
+
+    private fun releaseLoupe() {
+        val l = loupe ?: return
+        loupe = null
+        l.release()
     }
 
     private fun event(name: String, args: Map<String, Any?>) {
@@ -72,6 +108,7 @@ class PreviewBridge(private val textures: TextureRegistry, messenger: BinaryMess
     }
 
     fun dispose() {
+        releaseLoupe()
         decoder?.release()
         decoder = null
         method.setMethodCallHandler(null)
@@ -81,8 +118,13 @@ class PreviewBridge(private val textures: TextureRegistry, messenger: BinaryMess
 
 private class Frame(val key: Boolean, val pts: Long, val data: ByteArray)
 
+/** One MediaCodec decoder into one texture, fed the frames of stream [version]. */
 private class Decoder(
     private val producer: TextureRegistry.SurfaceProducer,
+    private val version: Int,
+    threadName: String,
+    private var width: Int,
+    private var height: Int,
     private val emit: (String, Map<String, Any?>) -> Unit,
 ) {
     val id: Long get() = producer.id()
@@ -95,10 +137,8 @@ private class Decoder(
     private var resetRequested = false
     private var codec: MediaCodec? = null
     private var sps: ByteArray? = null
-    private var width = 1280
-    private var height = 720
     private var rendered = false
-    private val thread = Thread({ loop() }, "arstro-preview")
+    private val thread = Thread({ loop() }, threadName)
 
     init {
         producer.setSize(width, height)
@@ -116,8 +156,8 @@ private class Decoder(
     }
 
     /**
-     * A new stream size (a `config`: the preview quality changed, or the focus zoom, REC-14,
-     * switched this viewer to a crop and back). Dart holds the frames that follow until this
+     * A new stream size (main: a `config` - the preview quality changed; loupe: a `zoom` reply
+     * with a new size, REC-14). Dart holds the frames that follow until this
      * returns, so the queue holds only frames of the old stream: they are dropped, the codec
      * is restarted at the new size on the new stream's first keyframe. A new stream of the same
      * size is caught by its SPS in loop().
@@ -142,7 +182,7 @@ private class Decoder(
 
     fun push(buf: ByteBuffer) {
         val n = buf.remaining()
-        if (n <= 10 || buf.get(0).toInt() != 1) return
+        if (n <= 10 || buf.get(0).toInt() != version) return
         val key = (buf.get(1).toInt() and 1) == 1
         val pts = buf.getLong(2)
         val data = ByteArray(n - 10)

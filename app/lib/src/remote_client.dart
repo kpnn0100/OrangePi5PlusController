@@ -22,7 +22,7 @@ class RemoteError implements Exception {
   String toString() => message;
 }
 
-const String kAppVersion = '2.2.0';
+const String kAppVersion = '2.3.0';
 
 /// Owns the link to one Pi: handshake, request/response matching, server
 /// events, stats, terminal routing, input coalescing and auto-reconnect.

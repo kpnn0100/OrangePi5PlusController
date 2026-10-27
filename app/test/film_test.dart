@@ -1,4 +1,4 @@
-// Film work in the app (REC-09..REC-16, GAL-13): the live view's monitoring, focus zoom, timecode
+// Film work in the app (REC-09..REC-16, GAL-13): the live view's monitoring, focus loupe, timecode
 // and storage over a fake preview socket, the settings that drive them, and the gallery's take
 // notes and CSV sheet - all answered from test/fixtures/recorder.json.
 import 'dart:async';
@@ -11,6 +11,7 @@ import 'package:arstro_remote/src/media.dart';
 import 'package:arstro_remote/src/remote_client.dart';
 import 'package:arstro_remote/src/ui/recorder/common.dart';
 import 'package:arstro_remote/src/ui/recorder/gallery_view.dart' show avDrift;
+import 'package:arstro_remote/src/ui/recorder/loupe.dart';
 import 'package:arstro_remote/src/ui/recorder/monitor.dart';
 import 'package:arstro_remote/src/ui/recorder/record_button.dart';
 import 'package:flutter/material.dart';
@@ -39,9 +40,13 @@ class FakePreviewSocket implements PreviewSocket {
 
 TestDefaultBinaryMessenger get messenger => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
 
-/// What the app asked of the native decoder: `create`, `configure {...}`, `frame <version>`.
+/// What the app asked of the native decoders: `create`, `configure {...}`, `release {decoder:
+/// loupe}`, `frame N` (N = the version byte) (the native side routes frames to its decoders by that byte).
 final native = <String>[];
 Completer<void>? configureGate;
+
+/// The textures the native side hands out: the whole picture's and the loupe's.
+const mainTexture = 7, loupeTexture = 8;
 
 void mockDecoder() {
   native.clear();
@@ -49,7 +54,8 @@ void mockDecoder() {
   messenger.setMockMethodCallHandler(const MethodChannel('arstro/preview'), (call) async {
     native.add('${call.method}${call.arguments != null ? ' ${call.arguments}' : ''}');
     if (call.method == 'configure' && configureGate != null) await configureGate!.future;
-    return call.method == 'create' ? 7 : null;
+    if (call.method != 'create') return null;
+    return (call.arguments as Map?)?['decoder'] == 'loupe' ? loupeTexture : mainTexture;
   });
   messenger.setMockMessageHandler('arstro/preview/frames', (data) async {
     native.add('frame ${data!.getUint8(0)}');
@@ -63,6 +69,36 @@ Future<void> decoderPlays(WidgetTester tester) async {
       'arstro/preview', const StandardMethodCodec().encodeMethodCall(const MethodCall('playing')), null);
   await tester.pump(const Duration(milliseconds: 500));
 }
+
+/// The loupe decoder shows its first picture.
+Future<void> loupePlays(WidgetTester tester) async {
+  await messenger.handlePlatformMessage('arstro/preview',
+      const StandardMethodCodec().encodeMethodCall(const MethodCall('playing', {'decoder': 'loupe'})), null);
+  await tester.pump(const Duration(milliseconds: 100));
+}
+
+/// The Pi's answer to a loupe request: its stream is [side] x [side].
+Map<String, dynamic> zoomReply(double x, double y, {int side = 480, double size = 0.6}) => {
+      'type': 'zoom', 'on': true, 'ratio': 3, 'x': x, 'y': y, 'size': size, 'width': side, 'height': side,
+      'fps': 30, 'src_width': 3840, 'src_height': 2160, 'crop': [1600, 760, side, side],
+    };
+
+/// Binary preview messages: [version][flags][pts u64][Annex-B]; 1 = the picture, 3 = the loupe.
+List<int> frame(int version, {bool key = false}) =>
+    [version, key ? 1 : 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, key ? 0x67 : 0x41];
+
+/// The zoom messages the app sent.
+List<Map<String, dynamic>> zooms(FakePreviewSocket sock) => [for (final m in sock.sent) if (m['type'] == 'zoom') m];
+
+double r4(double v) => (v * 10000).roundToDouble() / 10000;
+
+/// The loupe's `size` for the picture as shown now: its circle's diameter / the picture's height.
+double loupeShare(WidgetTester tester) {
+  final r = tester.getRect(find.byKey(const Key('live-picture')));
+  return r4(loupeDiameter(r.size) / r.height);
+}
+
+Finder textureOf(int id) => find.byWidgetPredicate((w) => w is Texture && w.textureId == id);
 
 /// The app on the Recorder › Live tab, its preview connected to [sock] and showing pictures.
 Future<RemoteClient> openLive(WidgetTester tester, FakePreviewSocket sock,
@@ -147,15 +183,31 @@ void main() {
   });
 
   // covers: REC-14
-  test('a tap in the zoomed crop is the same point of the whole picture', () {
-    final z = {'crop': [1280, 720, 1280, 720], 'src_width': 3840, 'src_height': 2160};
-    expect(PreviewController.zoomTarget(z, 0.5, 0.5), (0.5, 0.5));
-    final (x, y) = PreviewController.zoomTarget(z, 0, 1);
-    expect(x, closeTo(1 / 3, 1e-9));
-    expect(y, closeTo(2 / 3, 1e-9));
-    expect(zoomBadge({'ratio': 3, 'pixels': 1.0}), 'Zoom 3× · 1:1 pixels');
-    expect(zoomBadge({'ratio': 2, 'pixels': 0.5}), 'Zoom 2× · 1:2 pixels');
-    expect(zoomBadge({'ratio': 8, 'pixels': 2.0}), 'Zoom 8× · 2:1 pixels');
+  test('the loupe sits above the point, beside it near the top, always inside the picture', () {
+    const pic = Size(800, 450);
+    final d = loupeDiameter(pic);
+    ex(d, 180, reason: '40 % of the height');
+    ex(loupeDiameter(const Size(300, 200)), 120, reason: 'at least 120');
+    ex(loupeDiameter(const Size(2000, 1000)), 280, reason: 'at most 280');
+    ex(loupeDiameter(const Size(100, 100)), 92, reason: 'never more than fits');
+    bool inside(Offset c, double d) =>
+        c.dx - d / 2 >= 0 && c.dy - d / 2 >= 0 && c.dx + d / 2 <= pic.width && c.dy + d / 2 <= pic.height;
+    // room above: straight above, its rim clear of the finger
+    var c = loupeCentre(pic, const Offset(400, 400), d);
+    ex(c.dx, 400);
+    ex(c.dy, lessThan(400 - d / 2 - 20));
+    ex(inside(c, d), true);
+    // near the top: beside the point, towards the middle
+    c = loupeCentre(pic, const Offset(100, 60), d);
+    ex(c.dx, greaterThan(100 + d / 2));
+    ex(inside(c, d), true);
+    c = loupeCentre(pic, const Offset(700, 60), d);
+    ex(c.dx, lessThan(700 - d / 2));
+    ex(inside(c, d), true);
+    // at the edges it stays inside
+    for (final p in const [Offset(0, 0), Offset(800, 450), Offset(0, 450), Offset(800, 0), Offset(400, 225)]) {
+      ex(inside(loupeCentre(pic, p, d), d), true, reason: '$p');
+    }
   });
 
   // covers: REC-13, REC-09
@@ -178,7 +230,7 @@ void main() {
   });
 
   // covers: REC-14
-  filmTest('live view: a tap zooms in at that point, moves the zoom, and back / Whole picture leave it',
+  filmTest('live view: a tap opens the loupe there, dragging moves it, a tap moves it, × and Back close it',
       (tester) async {
     await setSize(tester, sizes['phone portrait']!);
     final log = newLog();
@@ -187,87 +239,249 @@ void main() {
     await openLive(tester, sock, width: 960, height: 720);
     ex(sock.sent.first, {'type': 'hello', 'want': ['levels', 'analysis']});
     ex(native, contains('configure {width: 960, height: 720}'));
+    final pic = tester.getRect(find.byKey(const Key('live-picture')));
+    final share = loupeShare(tester);
 
-    final card = tester.getRect(find.byKey(const Key('live-picture')));
-    await tester.tapAt(Offset(card.left - 10, card.center.dy));          // the black bar is not the picture
+    await tester.tapAt(Offset(pic.left - 10, pic.center.dy));          // the black bar is not the picture
     await tester.pump();
-    ex(sock.sent.where((m) => m['type'] == 'zoom'), isEmpty);
+    ex(zooms(sock), isEmpty);
+    ex(find.byKey(const Key('loupe')), findsNothing);
 
+    // a tap opens the loupe at that point: x, y of the whole picture, size = the circle's share
     await tester.tapAt(at(tester, 0.25, 0.5));
     await tester.pump();
-    ex(sock.sent.last, {'type': 'zoom', 'on': true, 'x': 0.25, 'y': 0.5});
+    ex(sock.sent.last, {'type': 'zoom', 'on': true, 'x': 0.25, 'y': 0.5, 'size': share});
+    log.found(find.byKey(const Key('loupe')), 'the loupe circle');
+    log.found(find.byKey(const Key('loupe-close')), 'its close button');
+    log.found(find.text('3×'), 'its magnification');
+    log.found(find.byKey(const Key('loupe-dot')), 'the exact point');
+    log.found(find.byKey(const Key('loupe-waiting')), '… before its first picture');
+    final circle = tester.getRect(find.byKey(const Key('loupe')));
+    ex(circle.width, closeTo(share * pic.height, 0.5));
+    ex(pic.inflate(0.5).contains(circle.topLeft) && pic.inflate(0.5).contains(circle.bottomRight), true,
+        reason: 'inside the picture');
+    ex((circle.center - at(tester, 0.25, 0.5)).distance, greaterThan(circle.width / 2 + 20),
+        reason: 'the finger never hides it');
+    // the whole picture and its monitoring stay as they are around it
+    ex(textureOf(mainTexture), findsOneWidget);
     log.found(find.byKey(const Key('monitor-overlay')), 'overlays on the whole picture');
+    log.found(find.byKey(const Key('tally')), 'tally');
+    log.found(find.text('3840×2160 · 30 fps'), 'the signal badge');
 
-    // the Pi zooms: 3x of 3840x2160 around (0.25, 0.5) = a 1280x720 crop at its own pixels
-    sock.text({'type': 'zoom', 'on': true, 'ratio': 3, 'x': 0.25, 'y': 0.5, 'width': 1280, 'height': 720,
-               'src_width': 3840, 'src_height': 2160, 'crop': [320, 720, 1280, 720], 'pixels': 1.0});
-    sock.text({'type': 'config', 'codec': 'h264', 'width': 1280, 'height': 720, 'fps': 30, 'zoom': true});
-    await tester.pump(const Duration(milliseconds: 100));
-    log.found(find.text('Zoom 3× · 1:1 pixels'), 'zoom badge');
-    log.found(find.byKey(const Key('zoom-locator')), 'where the crop lies');
-    log.found(find.text('Whole picture'), 'way back');
-    ex(find.byKey(const Key('monitor-overlay')), findsNothing, reason: 'overlays hidden while zoomed');
-    ex(find.text('3840×2160 · 30 fps'), findsNothing, reason: 'the zoom badge takes the signal badge place');
-    ex(native.last, 'configure {width: 1280, height: 720}', reason: 'the decoder follows the new size');
+    // the Pi answers: the loupe gets its own decoder and texture
+    native.clear();
+    sock.text(zoomReply(0.25, 0.5));
+    await tester.pump(const Duration(milliseconds: 50));
+    ex(native, ['create {decoder: loupe}', 'configure {decoder: loupe, width: 480, height: 480}']);
+    ex(textureOf(loupeTexture), findsOneWidget);
+    ex(textureOf(mainTexture), findsOneWidget);
+    await loupePlays(tester);
+    ex(find.byKey(const Key('loupe-waiting')), findsNothing);
 
-    // a tap in the crop moves the zoom to that point of the whole picture
-    await tester.tapAt(at(tester, 0.75, 0.25));
+    // dragging from the point: it follows the finger - the Pi hears ~15 times a second, and once more at the end
+    var before = zooms(sock).length;
+    var g = await tester.startGesture(at(tester, 0.25, 0.5));
+    for (var i = 0; i < 12; i++) {
+      await g.moveBy(const Offset(4, 0));
+      await tester.pump(const Duration(milliseconds: 10));
+    }
+    ex(zooms(sock).length - before, inInclusiveRange(1, 3), reason: '12 moves in 120 ms, throttled');
+    await g.up();
     await tester.pump();
+    var x = 0.25 + 48 / pic.width;
     ex(sock.sent.last['on'], true);
-    ex(sock.sent.last['x'], closeTo((320 + 0.75 * 1280) / 3840, 1e-4));
-    ex(sock.sent.last['y'], closeTo((720 + 0.25 * 720) / 2160, 1e-4));
+    ex(sock.sent.last['x'], closeTo(x, 1e-3));
+    ex(sock.sent.last['y'], 0.5);
+    ex(sock.sent.last['size'], share);
+    ex((tester.getCenter(find.byKey(const Key('loupe-dot'))) - at(tester, x, 0.5)).distance, lessThan(1));
 
-    await tester.tap(find.text('Whole picture'));
+    // dragging the circle itself moves it by the finger's way
+    await tester.pump(const Duration(milliseconds: 200));
+    before = zooms(sock).length;
+    g = await tester.startGesture(tester.getCenter(find.byKey(const Key('loupe'))));
+    for (var i = 0; i < 3; i++) {
+      await g.moveBy(const Offset(-10, 5));
+      await tester.pump(const Duration(milliseconds: 30));
+    }
+    await g.up();
+    await tester.pump();
+    ex(zooms(sock).length - before, inInclusiveRange(2, 4));
+    ex(sock.sent.last['x'], closeTo(x - 30 / pic.width, 1e-3));
+    ex(sock.sent.last['y'], closeTo(0.5 + 15 / pic.height, 1e-3));
+
+    // a tap elsewhere moves it there at once; only a new zoom comes back, the stream goes on
+    await tester.pump(const Duration(milliseconds: 200));
+    await tester.tapAt(at(tester, 0.12, 0.6));
+    await tester.pump();
+    ex(sock.sent.last, {'type': 'zoom', 'on': true, 'x': 0.12, 'y': 0.6, 'size': share});
+    native.clear();
+    sock.text(zoomReply(0.12, 0.6));
+    sock.bin(frame(3));
+    sock.bin(frame(1));
+    await tester.pump(const Duration(milliseconds: 50));
+    ex(native, ['frame 3', 'frame 1'], reason: 'version 3 to the loupe decoder, 1 to the main one; no new configure');
+
+    // × closes it: zoom off, the circle and the loupe decoder go, the picture stays
+    native.clear();
+    await tester.tap(find.byKey(const Key('loupe-close')));
     await tester.pump();
     ex(sock.sent.last, {'type': 'zoom', 'on': false});
+    ex(find.byKey(const Key('loupe')), findsNothing);
+    ex(native, ['release {decoder: loupe}'], reason: 'only the loupe decoder is released');
+    ex(textureOf(mainTexture), findsOneWidget);
+    sock.text({'type': 'zoom', 'on': false, 'error': null});              // the Pi's answer changes nothing
+    sock.bin(frame(3));                                                    // nor does a late loupe frame
+    await tester.pump(const Duration(milliseconds: 50));
+    ex(native, ['release {decoder: loupe}']);
+    log.found(find.byKey(const Key('monitor-overlay')), 'overlays still there');
 
-    // Android back leaves the zoom (and does not leave the app)
-    sock.text({'type': 'zoom', 'on': true, 'ratio': 3, 'x': 0.5, 'y': 0.5, 'width': 1280, 'height': 720,
-               'src_width': 3840, 'src_height': 2160, 'crop': [1280, 720, 1280, 720], 'pixels': 1.0});
-    await tester.pump(const Duration(milliseconds: 100));
-    final before = sock.sent.length;
+    // Android back closes it (and does not leave the app)
+    await tester.tapAt(at(tester, 0.5, 0.5));
+    await tester.pump();
+    sock.text(zoomReply(0.5, 0.5));
+    await tester.pump(const Duration(milliseconds: 50));
+    log.found(find.byKey(const Key('loupe')), 'the loupe again');
+    final n = sock.sent.length;
     await tester.binding.handlePopRoute();
     await tester.pump();
-    ex(sock.sent.sublist(before), [{'type': 'zoom', 'on': false}]);
-
-    // the Pi brings the whole picture back
+    ex(sock.sent.sublist(n), [{'type': 'zoom', 'on': false}]);
+    ex(find.byKey(const Key('loupe')), findsNothing);
+    log.found(find.byKey(const Key('live-picture')), 'still in the live view');
     sock.text({'type': 'zoom', 'on': false, 'error': null});
-    sock.text({'type': 'config', 'codec': 'h264', 'width': 960, 'height': 720, 'fps': 30});
-    await tester.pump(const Duration(milliseconds: 100));
-    ex(find.text('Whole picture'), findsNothing);
-    log.found(find.byKey(const Key('monitor-overlay')), 'overlays back');
+    await tester.pump(const Duration(milliseconds: 50));
 
     // a refusal is said
     await tester.tapAt(at(tester, 0.5, 0.5));
-    sock.text({'type': 'zoom', 'on': false, 'error': '3 viewers are zoomed in already'});
+    await tester.pump();
+    log.found(find.byKey(const Key('loupe')), 'shown at once');
+    sock.text({'type': 'zoom', 'on': false, 'error': '3 loupes are open already'});
     await tester.pump(const Duration(milliseconds: 100));
-    log.found(find.text('Focus zoom: 3 viewers are zoomed in already'), 'refusal snack bar');
-    log.check('focus zoom');
+    log.found(find.text('Focus loupe: 3 loupes are open already'), 'refusal snack bar');
+    ex(find.byKey(const Key('loupe')), findsNothing);
+    log.check('focus loupe');
     await tester.pump(const Duration(seconds: 5));
     log.done();
   });
 
   // covers: REC-14
-  filmTest('decoder: frames after a new config wait until the decoder has the new size', (tester) async {
+  filmTest('decoders: version 3 waits for the loupe decoder\'s configure, version 1 goes to the main one', (tester) async {
     await setSize(tester, sizes['phone portrait']!);
     final sock = FakePreviewSocket();
     await openLive(tester, sock);
+    // the main decoder still takes a new size first (the preview quality changed)
     native.clear();
     configureGate = Completer<void>();
-    sock.text({'type': 'config', 'codec': 'h264', 'width': 1280, 'height': 720, 'fps': 30, 'zoom': true});
-    sock.text({'type': 'zoom', 'on': true, 'ratio': 3, 'x': 0.5, 'y': 0.5, 'width': 1280, 'height': 720,
-               'src_width': 3840, 'src_height': 2160, 'crop': [1280, 720, 1280, 720], 'pixels': 1.0});
-    sock.bin([1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0x67]);            // the crop's first keyframe
-    sock.bin(analysisMessage());                                           // version 2: never to the decoder
+    sock.text({'type': 'config', 'codec': 'h264', 'width': 1920, 'height': 1080, 'fps': 30});
+    sock.bin(frame(1, key: true));
+    sock.bin(analysisMessage());                                           // version 2: never to a decoder
     await tester.pump(const Duration(milliseconds: 50));
-    ex(native, ['configure {width: 1280, height: 720}'], reason: 'the keyframe waits for the decoder');
+    ex(native, ['configure {width: 1920, height: 1080}'], reason: 'the keyframe waits for the decoder');
     configureGate!.complete();
     await tester.pump(const Duration(milliseconds: 50));
-    ex(native, ['configure {width: 1280, height: 720}', 'frame 1']);
-    sock.bin([1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0x41]);
+    ex(native, ['configure {width: 1920, height: 1080}', 'frame 1']);
+
+    // the loupe's first keyframe waits for the loupe decoder; the picture goes on meanwhile
+    await tester.tapAt(at(tester, 0.5, 0.5));
+    await tester.pump();
+    native.clear();
+    configureGate = Completer<void>();
+    sock.text(zoomReply(0.5, 0.5));
+    sock.bin(frame(3, key: true));
+    sock.bin(frame(1));
     await tester.pump(const Duration(milliseconds: 50));
-    ex(native.last, 'frame 1');
+    ex(native, ['create {decoder: loupe}', 'configure {decoder: loupe, width: 480, height: 480}', 'frame 1']);
+    configureGate!.complete();
+    await tester.pump(const Duration(milliseconds: 50));
+    ex(native.last, 'frame 3');
+    sock.bin(frame(3));
+    await tester.pump(const Duration(milliseconds: 50));
+    ex(native.last, 'frame 3');
+
+    // moving: the same stream - no new configure
+    native.clear();
+    sock.text(zoomReply(0.4, 0.5));
+    sock.bin(frame(3));
+    await tester.pump(const Duration(milliseconds: 50));
+    ex(native, ['frame 3']);
+
+    // a new size (another layout, another ratio): only the loupe decoder is configured again
+    native.clear();
+    configureGate = Completer<void>();
+    sock.text(zoomReply(0.4, 0.5, side: 640));
+    sock.bin(frame(3, key: true));
+    sock.bin(frame(1));
+    await tester.pump(const Duration(milliseconds: 50));
+    ex(native, ['configure {decoder: loupe, width: 640, height: 640}', 'frame 1']);
+    configureGate!.complete();
+    await tester.pump(const Duration(milliseconds: 50));
+    ex(native.last, 'frame 3');
+
+    // the connection drops: the loupe decoder goes, the main one stays for the reconnect
+    native.clear();
+    await sock.close();
+    await tester.pump(const Duration(milliseconds: 100));
+    ex(native, contains('release {decoder: loupe}'));
+    ex(native.where((c) => c == 'release' || c == 'reset'), isEmpty);
+    ex(find.byKey(const Key('loupe')), findsNothing);
     await tester.pump(const Duration(seconds: 5));
+  });
+
+  // covers: REC-14
+  filmTest('full screen: the loupe follows the new layout; Back closes it before leaving full screen', (tester) async {
+    await setSize(tester, sizes['phone landscape']!);
+    final log = newLog();
+    final sock = FakePreviewSocket();
+    await openLive(tester, sock);
+    await tester.tapAt(at(tester, 0.5, 0.25));
+    await tester.pump();
+    ex(sock.sent.last, {'type': 'zoom', 'on': true, 'x': 0.5, 'y': 0.25, 'size': loupeShare(tester)});
+    sock.text(zoomReply(0.5, 0.25));
+    await tester.pump(const Duration(milliseconds: 50));
+
+    await tester.ensureVisible(find.byTooltip('Full screen'));
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.tap(find.byTooltip('Full screen'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    log.found(find.byKey(const Key('loupe')), 'the loupe in full screen');
+    final full = tester.getRect(find.byKey(const Key('live-picture')));
+    ex(full.height, 390);
+    ex(sock.sent.last, {'type': 'zoom', 'on': true, 'x': 0.5, 'y': 0.25, 'size': loupeShare(tester)},
+        reason: 'the circle is another share of this picture');
+    final circle = tester.getRect(find.byKey(const Key('loupe')));
+    ex(circle.width, closeTo(156, 0.5), reason: '40 % of 390');
+
+    // dragging works here too
+    final g = await tester.startGesture(at(tester, 0.5, 0.25));
+    await g.moveBy(const Offset(0, 20));
+    await g.moveBy(const Offset(0, 20));
+    await g.up();
+    await tester.pump();
+    ex(sock.sent.last['y'], closeTo(0.25 + 40 / full.height, 1e-3));
+
+    // turned to portrait: the size is sent again
+    await setSize(tester, sizes['phone portrait']!);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    ex(sock.sent.last['size'], loupeShare(tester));
+    ex(sock.sent.last['size'], isNot(0.4));
+
+    // Back closes the loupe first, then leaves full screen
+    var n = sock.sent.length;
+    await tester.binding.handlePopRoute();
+    await tester.pump();
+    ex(sock.sent.sublist(n), [{'type': 'zoom', 'on': false}]);
+    ex(find.byKey(const Key('loupe')), findsNothing);
+    ex(find.byTooltip('Leave full screen'), findsOneWidget);
+    n = sock.sent.length;
+    await tester.binding.handlePopRoute();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    ex(find.byTooltip('Leave full screen'), findsNothing);
+    ex(sock.sent.sublist(n), isEmpty);
+    log.check('full-screen loupe');
+    await tester.pump(const Duration(seconds: 5));
+    log.done();
   });
 
   for (final size in ['phone portrait', 'small phone', 'tablet']) {
@@ -459,7 +673,7 @@ void main() {
     ex(await tapFor(switchOf('mon-false-colour')), {'monitor': {'false_color': true}});
     ex(await tapFor(find.text('Histogram')), {'monitor': {'scope': 'histogram'}});
     ex(await tapFor(switchOf('mon-meters')), {'monitor': {'meters': false}});
-    // REC-14: the zoom ratio
+    // REC-14: the loupe's magnification
     ex(await tapFor(find.text('4×')), {'monitor': {'zoom': 4}});
     ex(await pick('mon-lut', 'HLG → Rec.709'), {'monitor': {'lut': 'hlg'}});
     await show(find.byTooltip('Delete this LUT'));

@@ -14,8 +14,8 @@ import 'settings_sheet.dart';
 
 /// Live tab (REC-01..07): preview over Wi-Fi, the record button, status and settings - and for
 /// film work the on-set monitoring over the picture and the tally (REC-10, REC-13), the focus
-/// zoom (tap the picture, REC-14), timecode, slate and markers (REC-11, REC-15) and the storage
-/// figures with the disk test (REC-12).
+/// loupe (tap the picture: a magnifying glass over it, REC-14), timecode, slate and markers
+/// (REC-11, REC-15) and the storage figures with the disk test (REC-12).
 class LiveView extends StatefulWidget {
   const LiveView({super.key, required this.client, required this.active, required this.onOpenGallery});
   final RemoteClient client;
@@ -28,8 +28,9 @@ class LiveView extends StatefulWidget {
 
 class _LiveViewState extends State<LiveView> with WidgetsBindingObserver {
   late final PreviewController _preview =
-      PreviewController(widget.client.media, want: const ['levels', 'analysis'])..onZoomError = _zoomRefused;
+      PreviewController(widget.client.media, want: const ['levels', 'analysis'])..onLoupeError = _loupeRefused;
   bool _previewOn = true;
+  bool _fullScreen = false;          // the full-screen picture is the one looked at (and zoomed)
   bool _pending = false;
   bool _foreground = true;
   double _elapsedBase = 0;
@@ -56,17 +57,17 @@ class _LiveViewState extends State<LiveView> with WidgetsBindingObserver {
     _onRecorder();
   }
 
-  /// Android back leaves the focus zoom first (REC-14).
+  /// Android back closes the focus loupe first (REC-14).
   bool _onBack() {
-    if (!widget.active || !_preview.zoomed) return false;
-    _preview.zoomOff();
+    if (!widget.active || !_preview.loupeOpen) return false;
+    _preview.loupeOff();
     return true;
   }
 
-  void _zoomRefused(String error) {
+  void _loupeRefused(String error) {
     if (!mounted) return;
     ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-        SnackBar(content: Text('Focus zoom: $error'), backgroundColor: const Color(0xFF5A2330)));
+        SnackBar(content: Text('Focus loupe: $error'), backgroundColor: const Color(0xFF5A2330)));
   }
 
   @override
@@ -221,7 +222,7 @@ class _LiveViewState extends State<LiveView> with WidgetsBindingObserver {
                 AnimatedOpacity(
                   opacity: playing ? 1 : 0,
                   duration: const Duration(milliseconds: 400),
-                  child: IgnorePointer(ignoring: !playing, child: _monitor(rec, settings)),
+                  child: IgnorePointer(ignoring: !playing, child: _monitor(rec, settings, canZoom: !_fullScreen)),
                 ),
               AnimatedOpacity(
                 opacity: playing ? 0 : 1,
@@ -240,7 +241,7 @@ class _LiveViewState extends State<LiveView> with WidgetsBindingObserver {
                                 : ''),
                         style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.white)),
                   ]))),
-              if (sig['present'] == true && sig['width'] != null && !(_preview.zoomed && playing))
+              if (sig['present'] == true && sig['width'] != null)
                 Positioned(right: 10, top: 10, child: _glass(Text(
                     '${sig['width']}×${sig['height']} · ${((sig['fps'] as num?) ?? 0).round()} fps',
                     style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.white)))),
@@ -358,32 +359,34 @@ class _LiveViewState extends State<LiveView> with WidgetsBindingObserver {
     });
   }
 
-  /// The picture with its monitoring (REC-13) and focus zoom (REC-14).
-  Widget _monitor(Map<String, dynamic> rec, Map<String, dynamic> settings) => MonitorLayer(
+  /// The picture with its monitoring (REC-13) and focus loupe (REC-14); [canZoom] only where
+  /// it is looked at (the full-screen one while that is open).
+  Widget _monitor(Map<String, dynamic> rec, Map<String, dynamic> settings, {required bool canZoom}) => MonitorLayer(
         preview: _preview,
         monitor: asMap(settings['monitor']),
         bands: asList(asMap(rec['monitor'])['bands']),
-        canZoom: _preview.playing,
+        canZoom: canZoom && _preview.playing,
       );
 
   void _fullscreen(BuildContext context) {
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    setState(() => _fullScreen = true);
     Navigator.of(context).push(PageRouteBuilder(
       opaque: true,
       transitionDuration: const Duration(milliseconds: 250),
       pageBuilder: (_, _, _) => ListenableBuilder(
         listenable: Listenable.merge([_preview, client.topic('recorder'), client.topic('recorder.settings')]),
         builder: (context, _) => PopScope(
-          // back leaves the focus zoom first, then full screen
-          canPop: !_preview.zoomed,
+          // back closes the focus loupe first, then full screen
+          canPop: !_preview.loupeOpen,
           onPopInvokedWithResult: (didPop, _) {
-            if (!didPop) _preview.zoomOff();
+            if (!didPop) _preview.loupeOff();
           },
           child: ColoredBox(
             color: Colors.black,
             child: Stack(fit: StackFit.expand, children: [
               if (_preview.textureId != null)
-                _monitor(_rec, asMap(client.topic('recorder.settings').value)),
+                _monitor(_rec, asMap(client.topic('recorder.settings').value), canZoom: true),
               if (asMap(_rec['recording'])['active'] == true) const _Tally(radius: 0),
               Positioned(
                 right: 8,
@@ -403,7 +406,10 @@ class _LiveViewState extends State<LiveView> with WidgetsBindingObserver {
         ),
       ),
       transitionsBuilder: (_, a, _, child) => FadeTransition(opacity: a, child: child),
-    )).then((_) => SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
+    )).then((_) {
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+      if (mounted) setState(() => _fullScreen = false);
+    });
   }
 
   // ----------------------------------------------------------------- panel

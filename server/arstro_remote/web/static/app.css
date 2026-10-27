@@ -480,7 +480,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
                   color: var(--accent-2); display: grid; place-items: center; flex: none; }
 .rec-stats .metric .v { font-size: 17px; }
 
-/* On-set monitoring (REC-10, REC-13, REC-14): overlay canvas over the picture, tally, focus zoom,
+/* On-set monitoring (REC-10, REC-13, REC-14): overlay canvas over the picture, tally, focus loupe,
    meters and scope under the picture; full screen takes the strip along */
 .live-stage { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .live-stage:fullscreen { background: #000; padding: 10px; justify-content: center; }
@@ -488,26 +488,57 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .preview .mon-ov { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 1; pointer-events: none;
                    opacity: 1; background: transparent; }
 .preview.playing { cursor: zoom-in; }
-.preview.playing.zoomed { cursor: crosshair; }
-.preview.px canvas, .preview.px video { image-rendering: pixelated; }
+.preview.playing.loupe-on { cursor: crosshair; }
 .preview::after { content: ""; position: absolute; inset: 0; z-index: 3; pointer-events: none; border-radius: inherit;
                   box-shadow: inset 0 0 0 0 var(--rec); transition: box-shadow var(--t) var(--ease); }
 .preview.tally::after { box-shadow: inset 0 0 0 4px var(--rec); }
 .preview.tally-end::after { animation: tally-blink .6s steps(2, jump-none) infinite; }
 @keyframes tally-blink { 50% { box-shadow: inset 0 0 0 4px transparent; } }
 .preview .ov.bl { flex-wrap: wrap; }
-.preview .zoom-badge { color: #fff; background: rgba(124, 156, 255, .78); }
 .preview .lut-tag { font-weight: 550; }
-.preview .zoom-out { background: rgba(10, 11, 13, .62); border-color: transparent; color: #fff; border-radius: 999px;
-                     backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); height: 34px; }
-.preview .zoom-loc { position: absolute; top: 48px; right: 12px; z-index: 2; width: 84px; border-radius: 4px;
-                     background: rgba(10, 11, 13, .55); border: 1px solid rgba(255, 255, 255, .55); pointer-events: none; }
-.preview .zoom-loc i { position: absolute; border: 1.5px solid var(--accent-2); background: rgba(124, 156, 255, .3);
-                       min-width: 3px; min-height: 3px; transition: left var(--t) var(--ease), top var(--t) var(--ease); }
+/* the focus loupe (REC-14): a magnifying glass over the whole picture, placed by onset.js
+   (translate3d in box pixels); over the overlays and corner badges, under the tally frame */
+.preview .loupe-layer { position: absolute; inset: 0; z-index: 3; pointer-events: none; overflow: hidden;
+                        border-radius: inherit; }
+.preview:not(.playing) .loupe-layer { display: none; }
+.preview .loupe { position: absolute; left: 0; top: 0; will-change: transform; }
+.preview .loupe-glass { position: absolute; inset: 0; border-radius: 50%; overflow: hidden; background: #000;
+                        border: 2px solid rgba(255, 255, 255, .94); pointer-events: auto; touch-action: none;
+                        cursor: grab; isolation: isolate;
+                        box-shadow: 0 0 0 1px rgba(0, 0, 0, .55), 0 10px 30px rgba(0, 0, 0, .55),
+                                    inset 0 0 0 1px rgba(0, 0, 0, .35); }
+.preview .loupe-layer.dragging .loupe-glass { cursor: grabbing; }
+.preview .loupe-glass > canvas, .preview .loupe-glass > video {
+  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; background: #000;
+  transition: opacity 160ms var(--ease); }
+.preview .loupe-glass > canvas.on, .preview .loupe-glass > video.on { opacity: 1; }
+.preview .loupe-glass.px > canvas, .preview .loupe-glass.px > video { image-rendering: pixelated; }
+.preview .loupe-wait { position: absolute; inset: 0; display: grid; place-items: center; z-index: 1;
+                       color: rgba(255, 255, 255, .6); font-size: 22px; letter-spacing: .1em; pointer-events: none;
+                       animation: loupe-wait 1.2s ease-in-out infinite; }
+@keyframes loupe-wait { 50% { opacity: .35; } }
+/* on the rim: the ratio at 7:30, close at 1:30 (cos 45° = .707: 50 % ± 35.4 %) */
+.preview .loupe-tag, .preview .loupe-x { position: absolute; transform: translate(-50%, -50%); z-index: 1; }
+.preview .loupe-tag { left: 14.6%; top: 85.4%; padding: 2px 7px; border-radius: 999px; font-size: 11.5px; font-weight: 700;
+                      font-variant-numeric: tabular-nums; color: #fff; background: rgba(76, 106, 220, .92);
+                      box-shadow: 0 0 0 1.5px rgba(255, 255, 255, .9), 0 2px 8px rgba(0, 0, 0, .45); pointer-events: none; }
+.preview .loupe-x { left: 85.4%; top: 14.6%; width: 28px; height: 28px; padding: 0; border-radius: 50%; display: grid;
+                    place-items: center; cursor: pointer; pointer-events: auto; color: #fff;
+                    background: rgba(10, 11, 13, .82); border: 1.5px solid rgba(255, 255, 255, .9);
+                    box-shadow: 0 2px 8px rgba(0, 0, 0, .45); transition: background var(--t) var(--ease); }
+.preview .loupe-x:hover { background: rgba(255, 77, 94, .92); }
+.preview .loupe-x:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.preview .loupe-x svg.i { width: 14px; height: 14px; stroke-width: 2.4; }
+.preview .loupe-x::before { content: ""; position: absolute; inset: -8px; border-radius: 50%; }   /* a finger-sized target */
+/* the point it magnifies, when the circle is not right over it (a finger, an edge): drag it too */
+.preview .loupe-mark { position: absolute; left: 0; top: 0; width: 40px; height: 40px; margin: -20px 0 0 -20px;
+                       border-radius: 50%; pointer-events: auto; touch-action: none; cursor: grab; }
+.preview .loupe-mark::after { content: ""; position: absolute; left: 50%; top: 50%; width: 9px; height: 9px;
+                              margin: -4.5px 0 0 -4.5px; border-radius: 50%; background: #fff;
+                              box-shadow: 0 0 0 1.5px rgba(0, 0, 0, .65), 0 1px 4px rgba(0, 0, 0, .5); }
+.preview .loupe-stem { position: absolute; left: 0; top: 0; height: 2px; margin-top: -1px; transform-origin: 0 50%;
+                       background: rgba(255, 255, 255, .9); box-shadow: 0 0 0 1px rgba(0, 0, 0, .35); pointer-events: none; }
 @media (max-width: 560px) {
-  .preview .zoom-out span { display: none; }
-  .preview .zoom-out { width: 34px; padding: 0; }
-  .preview .zoom-loc { width: 60px; top: 44px; }
   .preview .ov.tr { max-width: 46%; }
   .preview .ov.tr .glass { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
 }

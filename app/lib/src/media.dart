@@ -206,8 +206,10 @@ class Analysis {
 /// native MediaCodec decoder, which draws into a Flutter texture.
 ///
 /// Film work (REC-10, REC-13, REC-14): with [want] the viewer says hello and gets the audio
-/// [levels] and the exposure [analysis]; [zoomAt] / [zoomOff] ask for the focus zoom, which
-/// arrives as a new `config` (the decoder follows the size) and the crop's frames.
+/// [levels] and the exposure [analysis]; [loupeTo] / [loupeOff] open, move and close the focus
+/// loupe - a magnifying glass over the picture. The whole picture keeps coming (version 1, the
+/// main decoder); the loupe is its own small square stream (version 3) for a second native
+/// decoder and texture ([loupeTexture]), so the main picture is never disturbed by it.
 class PreviewController extends ChangeNotifier {
   /// [path]: `ws/preview` (HDMI input) or `ws/screen` (the Pi's desktop, SCR-01).
   PreviewController(this.link, {this.path = 'ws/preview', this.want = const []});
@@ -241,12 +243,29 @@ class PreviewController extends ChangeNotifier {
   /// Exposure data (REC-13), four times a second while zebras, false colour or a scope are on.
   final ValueNotifier<Analysis?> analysis = ValueNotifier(null);
 
-  /// The focus zoom this viewer is shown (the server's `zoom` reply), or null (REC-14).
-  Map<String, dynamic>? zoom;
-  bool get zoomed => zoom != null;
+  /// The focus loupe (REC-14) as this viewer wants it: the point (0..1 of the whole picture)
+  /// and the circle's diameter as a share of the picture's displayed height - or null (closed).
+  /// It follows the finger at once; the server's replies only bring the stream to it. Moving
+  /// notifies only [loupePoint] (the circle), opening and closing the controller too.
+  final ValueNotifier<({double x, double y, double size})?> loupePoint = ValueNotifier(null);
+  ({double x, double y, double size})? get loupeAt => loupePoint.value;
+  bool get loupeOpen => loupePoint.value != null;
 
-  /// A refused zoom (e.g. 3 viewers zoomed already) - the live view shows it.
-  void Function(String error)? onZoomError;
+  /// The server's latest `zoom` reply for the open loupe (`ratio`, the stream's `width` x
+  /// `height`, `crop`, ...), or null before the first one.
+  Map<String, dynamic>? loupe;
+
+  /// The loupe decoder's texture (made on the first reply, released when the loupe closes).
+  int? loupeTexture;
+
+  /// The loupe decoder shows pictures (before that the circle shows it is coming).
+  bool loupePlaying = false;
+
+  /// A refused loupe (e.g. 3 loupes open already) - the live view shows it.
+  void Function(String error)? onLoupeError;
+
+  /// At most this often a moving loupe tells the server where it is (~15 a second).
+  static const loupeInterval = Duration(milliseconds: 66);
 
   PreviewSocket? _ws;
   bool _wanted = false;
@@ -257,6 +276,15 @@ class PreviewController extends ChangeNotifier {
   // new stream reaches a decoder that already knows it
   Future<void>? _configuring;
   final List<Uint8List> _held = [];
+  // the same for the loupe decoder (made and sized on a `zoom` reply)
+  Future<void>? _loupeConfiguring;
+  final List<Uint8List> _loupeHeld = [];
+  (int, int)? _loupeSize;                 // what the loupe decoder was configured for
+  Future<int?>? _loupeCreate;             // the loupe decoder being made
+  int _loupeGen = 0;                      // a closed loupe's late replies are ignored
+  int _offsSent = 0;                      // `zoom off` sent, not answered yet
+  Timer? _loupeTimer;                     // the throttle window of a moving loupe
+  bool _loupeDirty = false;               // a newer point waits for the window's end
 
   bool get running => _wanted;
 
@@ -331,7 +359,8 @@ class PreviewController extends ChangeNotifier {
     }
   }
 
-  /// Binary messages: the first byte is the version - 1 = video (to the decoder), 2 = analysis.
+  /// Binary messages: the first byte is the version - 1 = the picture (main decoder),
+  /// 2 = analysis, 3 = the loupe (loupe decoder; the native side routes by the same byte).
   void _onBinary(Uint8List m) {
     if (m.isEmpty) return;
     if (m[0] == 1) {
@@ -344,6 +373,14 @@ class PreviewController extends ChangeNotifier {
     } else if (m[0] == 2) {
       final a = Analysis.parse(m);
       if (a != null) analysis.value = a;
+    } else if (m[0] == 3) {
+      if (!loupeOpen) return;                // closed: the server stops it on our `off`
+      if (_loupeConfiguring != null || loupeTexture == null) {
+        _loupeHeld.add(m);
+        if (_loupeHeld.length > 60) _loupeHeld.removeAt(0);
+        return;
+      }
+      _frames.send(ByteData.sublistView(m));
     }
   }
 
@@ -372,50 +409,133 @@ class PreviewController extends ChangeNotifier {
       case 'levels':
         levels.value = AudioLevels.from(m);
       case 'zoom':
-        if (m['on'] == true) {
-          zoom = m;
-        } else {
-          zoom = null;
-          final err = m['error'];
-          if (err != null && '$err'.isNotEmpty) onZoomError?.call('$err');
-        }
-        notifyListeners();
+        _onZoom(m);
     }
+  }
+
+  /// The server's answer about the loupe: on (its stream's size and where it is) or off.
+  void _onZoom(Map<String, dynamic> m) {
+    if (m['on'] == true) {
+      if (!loupeOpen) return;              // closed meanwhile: our `off` ends it
+      final shown = loupe?['ratio'] != m['ratio'];     // the circle's label
+      loupe = m;
+      final w = (m['width'] as num?)?.toInt() ?? 0, h = (m['height'] as num?)?.toInt() ?? 0;
+      if (w > 0 && h > 0 && _loupeSize != (w, h)) _configureLoupe(w, h);
+      if (shown) notifyListeners();
+      return;
+    }
+    final err = m['error'];
+    if (err != null && '$err'.isNotEmpty) {
+      if (!loupeOpen) return;              // refused, but closed meanwhile anyway
+      _closeLoupe();
+      onLoupeError?.call('$err');
+    } else if (_offsSent > 0) {
+      _offsSent--;                         // the answer to our own `off`
+      return;
+    } else {
+      _closeLoupe();                       // the server ended it
+    }
+    notifyListeners();
+  }
+
+  /// Makes (the first time) and sizes the loupe decoder; its frames wait until it is ready.
+  void _configureLoupe(int w, int h) {
+    final gen = _loupeGen;
+    _loupeSize = (w, h);
+    late final Future<void> f;
+    f = () async {
+      // one decoder per loupe: a second reply while it is being made waits for the same one
+      final id = await (_loupeCreate ??= _method.invokeMethod<int>('create', {'decoder': 'loupe'}));
+      if (gen != _loupeGen) return;         // closed meanwhile: the release went after it
+      if (loupeTexture == null) {
+        loupeTexture = id;
+        loupePlaying = false;
+        if (!_disposed) notifyListeners();
+      }
+      await _method.invokeMethod('configure', {'decoder': 'loupe', 'width': w, 'height': h});
+    }()
+        .then((_) {}, onError: (Object e) {
+      debugPrint('loupe decoder: $e');
+      if (gen == _loupeGen && _loupeConfiguring == f) _loupeSize = null;   // the next reply tries again
+    }).whenComplete(() {
+      if (_loupeConfiguring != f || gen != _loupeGen) return;
+      _loupeConfiguring = null;
+      final held = List.of(_loupeHeld);
+      _loupeHeld.clear();
+      if (loupeTexture == null) return;
+      for (final b in held) {
+        _frames.send(ByteData.sublistView(b));
+      }
+    });
+    _loupeConfiguring = f;
   }
 
   void _send(Map<String, dynamic> m) => _ws?.send(jsonEncode(m));
 
-  /// Zoom in around (x, y), 0..1 of the whole picture (REC-14).
-  void zoomTo(double x, double y) {
-    double r(double v) => (v.clamp(0.0, 1.0) * 10000).roundToDouble() / 10000;
-    _send({'type': 'zoom', 'on': true, 'x': r(x), 'y': r(y)});
+  /// Opens the loupe at (x, y) - 0..1 of the whole picture - or moves it there; [size] = the
+  /// circle's diameter as a share of the picture's displayed height (REC-14). The circle follows
+  /// at once; the server hears of it at most every [loupeInterval] (the latest point at the end
+  /// of each window) - or right away with [now] (a tap, the end of a drag, a new layout).
+  void loupeTo(double x, double y, double size, {bool now = false}) {
+    if (_ws == null) return;
+    final opens = !loupeOpen;
+    loupePoint.value = (x: x.clamp(0.0, 1.0), y: y.clamp(0.0, 1.0), size: size.clamp(0.02, 1.0));
+    if (opens) notifyListeners();
+    if (now) {
+      _loupeTimer?.cancel();
+      _loupeTimer = null;
+    }
+    _throttledSend();
   }
 
-  /// A tap at (fx, fy), 0..1 of the picture as shown: the whole picture, or while zoomed the
-  /// crop - then the point is moved within the whole picture.
-  void zoomAt(double fx, double fy) {
-    final z = zoom;
-    if (z == null) return zoomTo(fx, fy);
-    final (x, y) = zoomTarget(z, fx, fy);
-    zoomTo(x, y);
+  void _throttledSend() {
+    if (_loupeTimer != null) {
+      _loupeDirty = true;                  // sent when this window ends
+      return;
+    }
+    _loupeDirty = false;
+    final at = loupeAt;
+    if (at == null) return;
+    double r(double v) => (v * 10000).roundToDouble() / 10000;
+    _send({'type': 'zoom', 'on': true, 'x': r(at.x), 'y': r(at.y), 'size': r(at.size)});
+    _loupeTimer = Timer(loupeInterval, () {
+      _loupeTimer = null;
+      if (_loupeDirty) _throttledSend();
+    });
   }
 
-  /// Back to the whole picture.
-  void zoomOff() {
-    _send({'type': 'zoom', 'on': false});
+  /// Closes the loupe (the × on it, Back).
+  void loupeOff() {
+    if (!loupeOpen) return;
+    _closeLoupe();
+    if (_ws != null) {
+      _offsSent++;
+      _send({'type': 'zoom', 'on': false});
+    }
+    notifyListeners();
   }
 
-  /// A point (fx, fy) of the zoomed picture -> the same point in the whole picture (0..1),
-  /// from the reply's `crop` [left, top, w, h] and `src_width` / `src_height`.
-  static (double, double) zoomTarget(Map<String, dynamic> z, double fx, double fy) {
-    final crop = [for (final v in (z['crop'] as List? ?? const [])) (v as num).toDouble()];
-    final sw = (z['src_width'] as num?)?.toDouble() ?? 0, sh = (z['src_height'] as num?)?.toDouble() ?? 0;
-    if (crop.length < 4 || sw <= 0 || sh <= 0) return (fx, fy);
-    return (((crop[0] + fx * crop[2]) / sw).clamp(0.0, 1.0), ((crop[1] + fy * crop[3]) / sh).clamp(0.0, 1.0));
+  /// Forgets the loupe here and releases its decoder (the main one is untouched).
+  void _closeLoupe() {
+    final had = loupeTexture != null || _loupeCreate != null;
+    loupePoint.value = null;
+    loupe = null;
+    loupeTexture = null;
+    loupePlaying = false;
+    _loupeGen++;
+    _loupeConfiguring = null;
+    _loupeHeld.clear();
+    _loupeSize = null;
+    _loupeCreate = null;
+    _loupeTimer?.cancel();
+    _loupeTimer = null;
+    _loupeDirty = false;
+    if (had) _method.invokeMethod('release', {'decoder': 'loupe'}).catchError((_) => null);
   }
 
   void _resetFilm() {
-    zoom = null;
+    _closeLoupe();
+    _offsSent = 0;
     levels.value = null;
     analysis.value = null;
     _configuring = null;
@@ -443,6 +563,17 @@ class PreviewController extends ChangeNotifier {
   }
 
   Future<dynamic> _onNative(MethodCall call) async {
+    final args = call.arguments;
+    if (args is Map && args['decoder'] == 'loupe') {
+      // the loupe decoder: its first picture (it is square - the main aspect is not its own)
+      if (call.method == 'playing' && loupeTexture != null && !loupePlaying) {
+        loupePlaying = true;
+        notifyListeners();
+      } else if (call.method == 'error') {
+        debugPrint('loupe decoder: $args');
+      }
+      return null;
+    }
     switch (call.method) {
       case 'playing':
         playing = true;
@@ -485,6 +616,8 @@ class PreviewController extends ChangeNotifier {
     _wanted = false;
     _epoch++;
     _retry?.cancel();
+    _loupeTimer?.cancel();
+    _loupeGen++;
     _ws?.close();
     if (_owner == this) {
       _owner = null;
@@ -493,6 +626,7 @@ class PreviewController extends ChangeNotifier {
     }
     levels.dispose();
     analysis.dispose();
+    loupePoint.dispose();
     super.dispose();
   }
 }

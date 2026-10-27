@@ -6,7 +6,7 @@ import '../../remote_client.dart';
 import 'common.dart';
 
 /// Recording settings (REC-04, REC-07, REC-08) and the film work (REC-09 audio input and
-/// container, REC-12 storage guard, REC-13/14 monitoring and focus zoom, REC-15 slate, REC-16
+/// container, REC-12 storage guard, REC-13/14 monitoring and focus loupe, REC-15 slate, REC-16
 /// record button and tally). Every change is sent at once and the sheet follows
 /// `recorder.settings`, so edits from the web or the CLI show up live.
 Future<void> showRecorderSettings(BuildContext context, RemoteClient client) {
@@ -351,7 +351,8 @@ class _SettingsBodyState extends State<_SettingsBody> {
                 (v) => _set({'monitor': {'scope': v}}))),
         _SwitchRow('Audio meters', 'Peak and RMS per channel', m['meters'] != false,
             (v) => _set({'monitor': {'meters': v}}), key: const Key('mon-meters')),
-        _Row('Focus zoom', 'Tap the live picture to zoom in and check focus; 3× is 1:1 pixels for 4K',
+        _Row('Focus loupe', 'Tap the live picture: a magnifying glass shows that spot this many times larger, '
+            'from the full-resolution picture',
             _seg<int>({2: '2×', 3: '3×', 4: '4×', 6: '6×', 8: '8×'}, (m['zoom'] as num?)?.toInt(),
                 (v) => _set({'monitor': {'zoom': v}}))),
         _Row('LUT', 'Shows log footage as normal video (preview only)',

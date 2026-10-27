@@ -1,16 +1,19 @@
 import 'dart:math' as math;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import '../../media.dart';
 import 'common.dart';
+import 'loupe.dart';
 
 /// On-set monitoring over the live picture (REC-10, REC-13, REC-14): frame guides, safe areas,
 /// centre cross, zebras and false colour over the picture, the audio meters, a histogram or
-/// waveform, and the focus zoom (tap the picture). Everything is drawn from what the Pi sends:
-/// the settings (`recorder.settings` › monitor, shared by every viewer), the false-colour bands
-/// of the `recorder` status, and the preview socket's `levels` and `analysis`.
-class MonitorLayer extends StatelessWidget {
+/// waveform, and the focus loupe (tap the picture: a magnifying glass, drag it to move). Everything
+/// is drawn from what the Pi sends: the settings (`recorder.settings` › monitor, shared by every
+/// viewer), the false-colour bands of the `recorder` status, and the preview socket's `levels`,
+/// `analysis` and loupe stream.
+class MonitorLayer extends StatefulWidget {
   const MonitorLayer({super.key, required this.preview, required this.monitor, required this.bands,
                       this.canZoom = true});
   final PreviewController preview;
@@ -20,42 +23,134 @@ class MonitorLayer extends StatelessWidget {
 
   /// `recorder` › monitor › bands.
   final List<Map<String, dynamic>> bands;
+
+  /// Taps open the loupe (the picture is playing and this is the view looked at).
   final bool canZoom;
 
   @override
+  State<MonitorLayer> createState() => _MonitorLayerState();
+}
+
+class _MonitorLayerState extends State<MonitorLayer> {
+  PreviewController get preview => widget.preview;
+  Size _pic = Size.zero;               // the picture as shown (the black bars excluded)
+  Offset? _grab, _from;                // a drag that took hold of the circle: where, and its point then
+  Offset _last = Offset.zero;
+  bool _resync = false;
+
+  double get _share => _pic.height > 0 ? loupeDiameter(_pic) / _pic.height : 0.4;
+
+  Offset? get _point {
+    final a = preview.loupeAt;
+    return a == null ? null : Offset(a.x * _pic.width, a.y * _pic.height);
+  }
+
+  bool _onCircle(Offset p) {
+    final pt = _point;
+    if (pt == null) return false;
+    final d = loupeDiameter(_pic);
+    return (p - loupeCentre(_pic, pt, d)).distance <= d / 2 + 6;
+  }
+
+  void _moveTo(Offset p, {bool now = false}) {
+    if (_pic.isEmpty) return;
+    _last = p;
+    final x = p.dx.clamp(0.0, _pic.width) / _pic.width, y = p.dy.clamp(0.0, _pic.height) / _pic.height;
+    preview.loupeTo(x, y, _share, now: now);
+  }
+
+  /// A tap opens the loupe there, or moves it there (a tap on the glass itself does nothing).
+  void _tap(TapUpDetails d) {
+    if (preview.loupeOpen && _onCircle(d.localPosition)) return;
+    _moveTo(d.localPosition, now: true);
+  }
+
+  /// Dragging the circle moves it with the finger; dragging elsewhere puts the point under it.
+  void _panStart(DragStartDetails d) {
+    final pt = _point;
+    if (pt == null) return;
+    if (_onCircle(d.localPosition)) {
+      _grab = d.localPosition;
+      _from = pt;
+      _last = pt;
+    } else {
+      _grab = _from = null;
+      _moveTo(d.localPosition);
+    }
+  }
+
+  void _panUpdate(DragUpdateDetails d) {
+    if (!preview.loupeOpen) return;
+    final g = _grab, f = _from;
+    _moveTo(g != null && f != null ? f + (d.localPosition - g) : d.localPosition);
+  }
+
+  void _panEnd([DragEndDetails? _]) {
+    if (preview.loupeOpen) _moveTo(_last, now: true);      // where it ended, right away
+    _grab = _from = null;
+  }
+
+  /// A new layout (rotation, full screen) changes the circle's share of the picture: tell the Pi.
+  void _syncSize() {
+    final a = preview.loupeAt;
+    if (_resync || !widget.canZoom || a == null || _pic.isEmpty || (a.size - _share).abs() < 0.004) return;
+    _resync = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _resync = false;
+      final a = preview.loupeAt;
+      if (!mounted || a == null || (a.size - _share).abs() < 0.004) return;
+      preview.loupeTo(a.x, a.y, _share, now: true);
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final zoom = preview.zoom;
+    final monitor = widget.monitor;
     final scope = monitor['scope'] as String? ?? 'off';
+    final open = preview.loupeOpen;
+    final ratio = ((preview.loupe?['ratio'] ?? monitor['zoom']) as num?)?.toInt() ?? 3;
     return LayoutBuilder(builder: (context, c) {
       final sw = math.min(220.0, c.maxWidth * 0.34), sh = math.min(110.0, c.maxHeight * 0.3);
+      // the picture at its aspect, centred: the loupe's x, y and size are of this rectangle
+      final aspect = preview.aspect > 0 ? preview.aspect : 16 / 9;
+      final w = math.min(c.maxWidth, c.maxHeight * aspect), h = w / aspect;
+      final pic = Rect.fromLTWH((c.maxWidth - w) / 2, (c.maxHeight - h) / 2, w, h);
+      _pic = pic.size;
+      _syncSize();
       return Stack(fit: StackFit.expand, children: [
-        Center(
-          child: AspectRatio(
-            aspectRatio: preview.aspect,
-            child: LayoutBuilder(
-              builder: (context, box) => GestureDetector(
-                key: const Key('live-picture'),
-                behavior: HitTestBehavior.opaque,
-                // REC-14: x, y of the tap within the video itself (never the black bars around it)
-                onTapUp: canZoom
-                    ? (d) => preview.zoomAt(d.localPosition.dx / box.maxWidth, d.localPosition.dy / box.maxHeight)
-                    : null,
-                child: Stack(fit: StackFit.expand, children: [
-                  if (preview.textureId != null) Texture(textureId: preview.textureId!),
-                  // the overlays belong to the whole picture: hidden while zoomed
-                  if (zoom == null)
-                    ValueListenableBuilder<Analysis?>(
-                      valueListenable: preview.analysis,
-                      builder: (_, a, _) => IgnorePointer(
-                        child: CustomPaint(
-                          key: const Key('monitor-overlay'),
-                          painter: MonitorPainter(monitor: monitor, bands: bands, analysis: a),
-                        ),
-                      ),
-                    ),
-                ]),
+        Positioned.fromRect(
+          rect: pic,
+          child: RawGestureDetector(
+            key: const Key('live-picture'),
+            behavior: HitTestBehavior.opaque,
+            gestures: {
+              if (widget.canZoom)
+                TapGestureRecognizer: GestureRecognizerFactoryWithHandlers<TapGestureRecognizer>(
+                    TapGestureRecognizer.new, (t) => t.onTapUp = _tap),
+              // only while it is open, so the page still scrolls over a picture without a loupe
+              if (widget.canZoom && open)
+                LoupePanRecognizer: GestureRecognizerFactoryWithHandlers<LoupePanRecognizer>(
+                  LoupePanRecognizer.new,
+                  (p) => p
+                    ..dragStartBehavior = DragStartBehavior.down
+                    ..onStart = _panStart
+                    ..onUpdate = _panUpdate
+                    ..onEnd = _panEnd
+                    ..onCancel = _panEnd,
+                ),
+            },
+            child: Stack(fit: StackFit.expand, children: [
+              if (preview.textureId != null) Texture(key: const Key('main-texture'), textureId: preview.textureId!),
+              ValueListenableBuilder<Analysis?>(
+                valueListenable: preview.analysis,
+                builder: (_, a, _) => IgnorePointer(
+                  child: CustomPaint(
+                    key: const Key('monitor-overlay'),
+                    painter: MonitorPainter(monitor: monitor, bands: widget.bands, analysis: a),
+                  ),
+                ),
               ),
-            ),
+            ]),
           ),
         ),
         if (monitor['meters'] != false)
@@ -68,7 +163,7 @@ class MonitorLayer extends StatelessWidget {
               builder: (_, l, _) => l == null || l.peak.isEmpty ? const SizedBox() : AudioMeters(levels: l),
             ),
           ),
-        if (zoom == null && scope != 'off')
+        if (scope != 'off')
           Positioned(
             right: 8,
             bottom: 56,
@@ -83,105 +178,18 @@ class MonitorLayer extends StatelessWidget {
                     ),
             ),
           ),
-        if (zoom != null) ...[
-          Positioned(right: 10, top: 10, child: GlassLabel(zoomBadge(zoom))),
-          Positioned(right: 10, top: 42, child: ZoomLocator(zoom: zoom)),
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 46,                        // above the REC badge and the full-screen button
-            child: Center(
-              child: FilledButton.tonalIcon(
-                style: FilledButton.styleFrom(
-                  visualDensity: VisualDensity.compact,
-                  backgroundColor: Colors.black.withValues(alpha: 0.65),
-                  foregroundColor: Colors.white,
-                ),
-                onPressed: preview.zoomOff,
-                icon: const Icon(Icons.zoom_out_map_rounded, size: 18),
-                label: const Text('Whole picture'),
-              ),
+        // REC-14: the magnifying glass, over everything else of the picture
+        if (open)
+          Positioned.fromRect(
+            rect: pic,
+            child: ValueListenableBuilder(
+              valueListenable: preview.loupePoint,       // moving rebuilds only the loupe
+              builder: (_, _, _) => LoupeOverlay(preview: preview, pic: pic.size, ratio: ratio),
             ),
           ),
-        ],
       ]);
     });
   }
-}
-
-/// "Zoom 3× · 1:1 pixels" from the server's zoom reply (`ratio`, `pixels` = screen pixels per
-/// source pixel of the stream).
-String zoomBadge(Map<String, dynamic> z) {
-  final ratio = (z['ratio'] as num?) ?? 0;
-  final px = (z['pixels'] as num?)?.toDouble() ?? 1;
-  String one(double v) => v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(1);
-  final pixels = (px - 1).abs() < 0.02
-      ? '1:1 pixels'
-      : px < 1
-          ? '1:${one(1 / px)} pixels'
-          : '${one(px)}:1 pixels';
-  return 'Zoom ${ratio.toInt()}× · $pixels';
-}
-
-/// Small white-on-dark label over the picture.
-class GlassLabel extends StatelessWidget {
-  const GlassLabel(this.text, {super.key, this.color});
-  final String text;
-  final Color? color;
-
-  @override
-  Widget build(BuildContext context) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-        decoration: BoxDecoration(
-            color: color ?? Colors.black.withValues(alpha: 0.6), borderRadius: BorderRadius.circular(20)),
-        child: Text(text, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.white)),
-      );
-}
-
-/// Where the zoomed crop lies in the whole picture (REC-14).
-class ZoomLocator extends StatelessWidget {
-  const ZoomLocator({super.key, required this.zoom, this.width = 72});
-  final Map<String, dynamic> zoom;
-  final double width;
-
-  @override
-  Widget build(BuildContext context) {
-    final sw = (zoom['src_width'] as num?)?.toDouble() ?? 16, sh = (zoom['src_height'] as num?)?.toDouble() ?? 9;
-    return SizedBox(
-      key: const Key('zoom-locator'),
-      width: width,
-      height: width * sh / math.max(1, sw),
-      child: CustomPaint(painter: _LocatorPainter(zoom)),
-    );
-  }
-}
-
-class _LocatorPainter extends CustomPainter {
-  _LocatorPainter(this.zoom);
-  final Map<String, dynamic> zoom;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final r = Offset.zero & size;
-    canvas.drawRect(r, Paint()..color = Colors.black.withValues(alpha: 0.55));
-    final crop = [for (final v in (zoom['crop'] as List? ?? const [])) (v as num).toDouble()];
-    final sw = (zoom['src_width'] as num?)?.toDouble() ?? 0, sh = (zoom['src_height'] as num?)?.toDouble() ?? 0;
-    if (crop.length == 4 && sw > 0 && sh > 0) {
-      final c = Rect.fromLTWH(crop[0] / sw * size.width, crop[1] / sh * size.height, crop[2] / sw * size.width,
-          crop[3] / sh * size.height);
-      canvas.drawRect(c, Paint()..color = Colors.white.withValues(alpha: 0.35));
-      canvas.drawRect(c, Paint()
-        ..color = Colors.white
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.2);
-    }
-    canvas.drawRect(r.deflate(0.5), Paint()
-      ..color = Colors.white70
-      ..style = PaintingStyle.stroke);
-  }
-
-  @override
-  bool shouldRepaint(_LocatorPainter old) => old.zoom != zoom;
 }
 
 const guideRatios = {'2.39': 2.39, '1.85': 1.85, '16:9': 16 / 9, '4:3': 4 / 3, '1:1': 1.0, '9:16': 9 / 16};

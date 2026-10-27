@@ -1,11 +1,12 @@
 // On-set monitoring in the live view: audio meters (REC-10), recording tally, frame guides,
 // safe areas, centre cross, zebras, false colour, histogram / waveform (REC-13) and the focus
-// zoom (REC-14).
+// loupe (REC-14).
 //
 // Drawn here from what /ws/preview sends once the player said `hello` (levels, exposure data)
-// and from the monitoring settings every viewer shares. The zoom is this viewer's own: view
-// state, never saved. Overlays follow the picture's displayed rect (object-fit: contain, so
-// letterboxing never shifts them).
+// and from the monitoring settings every viewer shares. The loupe is this viewer's own: view
+// state, never saved - a circle over the whole picture showing the loupe stream the server
+// cuts from the full-resolution frame. Overlays and the loupe follow the picture's displayed
+// rect (object-fit: contain, so letterboxing never shifts them).
 
 import { h, clear, icon, toast } from "./core.js";
 
@@ -41,11 +42,28 @@ export function parseAnalysis(buf) {
   return { meta, hist, wave, map, at: performance.now() };
 }
 
-/** "1:1 pixels" (pixels = screen pixels per source pixel of the zoom stream). */
-export function pixelsText(p) {
-  if (!p) return "";
-  if (Math.abs(p - 1) < 0.02) return "1:1 pixels";
-  return p > 1 ? `${+p.toFixed(1)}:1 pixels` : `1:${+(1 / p).toFixed(1)} pixels`;
+const LOUPE = { share: 0.39, min: 140, max: 320 };   // the circle: 39 % of the picture's height, in CSS px
+const SEND_MS = 66;                                    // moves sent at most ~15 a second
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const r4 = (v) => Math.round(v * 10000) / 10000;
+
+/**
+ * Where the loupe goes in the picture's displayed rect r: its diameter d, its centre (cx, cy)
+ * and the point it magnifies (px, py). A finger would hide a circle under it: on touch the
+ * circle floats above the point (beside it when there is no room above).
+ */
+export function loupeGeometry(r, fx, fy, touch) {
+  const d = Math.round(Math.min(clamp(r.h * LOUPE.share, LOUPE.min, LOUPE.max), r.w, r.h));
+  const px = r.x + fx * r.w, py = r.y + fy * r.h;
+  let cx = px, cy = py;
+  if (touch) {
+    const off = d / 2 + Math.max(0.1 * d, 22);
+    if (py - off - d / 2 >= r.y) cy = py - off;
+    else cx = r.x + r.w - (px + off + d / 2) >= (px - off - d / 2) - r.x ? px + off : px - off;
+  }
+  cx = clamp(cx, r.x + d / 2, r.x + r.w - d / 2);
+  cy = clamp(cy, r.y + d / 2, r.y + r.h - d / 2);
+  return { d, cx, cy, px, py };
 }
 
 /** A band table's colour per map value (IRE x 2), RGBA, for false colour. */
@@ -84,22 +102,33 @@ export class OnSet {
     this.mon = {};                       // the monitoring settings
     this.rec = {};                       // the recorder status
     this.data = null;                    // the last exposure data
-    this.zoom = null;                    // the server's zoom reply while zoomed
-    this.asked = false;                  // a zoom request is on its way
-    this.streamZoomed = false;           // the frames now are the crop's
+    this.lp = null;                      // the loupe while open: {fx, fy} the point, 0..1 of the picture
+    this.touch = false;                  // placed by a finger: the circle floats above the point
+    this.sent = null;                    // the last zoom message sent
+    this.sentAt = 0;
+    this.offs = 0;                       // "off"s sent and not answered yet
+    this.size = 0;                       // the circle's diameter / the picture's displayed height
     this.tick = 0;
     this.lut = bandLut([]);
     this.bandsKey = "";
 
     this.canvas = h("canvas.mon-ov", { "aria-hidden": "true" });
-    this.badge = h("span.glass.zoom-badge.hidden");
     this.lutTag = h("span.glass.lut-tag.hidden");
-    this.whole = h("button.btn.sm.zoom-out.hidden", { title: "Whole picture (Esc)",
-      onclick: (e) => { e.stopPropagation(); this.unzoom(); } }, icon("shrink"), h("span", null, "Whole picture"));
-    this.locFrame = h("i");
-    this.locator = h("div.zoom-loc.hidden", { "aria-hidden": "true" }, this.locFrame);
-    box.append(this.canvas, this.locator);
-    box.setAttribute("title", "Click the picture to zoom in and check focus");
+
+    // the loupe (REC-14): a circle showing the player's loupe lane, a mark on the point it
+    // magnifies when the circle is not right over it (a finger, an edge), a line between them
+    this.wait = h("span.loupe-wait", { "aria-hidden": "true" }, "…");
+    this.glass = h("div.loupe-glass", { title: "Drag to move the loupe" },
+                   player.loupe.canvas, player.loupe.video, this.wait);
+    this.tag = h("span.loupe-tag", null, "3×");
+    this.closeBtn = h("button.loupe-x", { type: "button", title: "Close the loupe (Esc)", "aria-label": "Close the loupe",
+                                          onclick: (e) => { e.stopPropagation(); this.closeLoupe(); } }, icon("x"));
+    this.loupeEl = h("div.loupe", { role: "group", "aria-label": "Focus loupe" }, this.glass, this.tag, this.closeBtn);
+    this.stem = h("i.loupe-stem");
+    this.mark = h("i.loupe-mark", { title: "Drag to move the loupe" });
+    this.layer = h("div.loupe-layer.hidden", null, this.stem, this.mark, this.loupeEl);
+    box.append(this.canvas, this.layer);
+    box.setAttribute("title", "Click the picture for a focus loupe");
 
     // the strip under the picture: meters and the scope
     this.metersTitle = h("span.ellipsis");
@@ -112,16 +141,25 @@ export class OnSet {
     this.strip = h("div.mon-strip.hidden", null, this.meters, this.scopeBox);
 
     this.onClick = (e) => this.click(e);
+    this.onDown = (e) => { this.lastPointer = e.pointerType; };
     this.onKey = (e) => {
-      // Esc leaves the zoom - unless a sheet is open (Esc closes that first); capture phase,
+      // Esc closes the loupe - unless a sheet is open (Esc closes that first); capture phase,
       // so this runs before core.js closes it
-      if (e.key !== "Escape" || !(this.zoom || this.asked)) return;
+      if (e.key !== "Escape" || !this.lp) return;
       if (document.querySelector(".sheet.show")) return;
-      this.unzoom();
+      this.closeLoupe();
     };
     box.addEventListener("click", this.onClick);
+    box.addEventListener("pointerdown", this.onDown, true);
     window.addEventListener("keydown", this.onKey, true);
-    this.ro = new ResizeObserver(() => { this.draw(); this.drawScope(); });
+    for (const el of [this.glass, this.mark]) {          // drag the loupe (mouse, finger, pen)
+      el.addEventListener("pointerdown", (e) => this.grab(e));
+      el.addEventListener("pointermove", (e) => this.dragTo(e));
+      el.addEventListener("pointerup", (e) => this.release(e));
+      el.addEventListener("pointercancel", (e) => this.release(e));
+      el.addEventListener("lostpointercapture", (e) => this.release(e));
+    }
+    this.ro = new ResizeObserver(() => { this.draw(); this.drawScope(); this.place(); });
     this.ro.observe(box);
     this.ro.observe(this.scope);
     this.stale = setInterval(() => this.checkStale(), 1000);
@@ -129,9 +167,12 @@ export class OnSet {
 
   destroy() {
     this.box.removeEventListener("click", this.onClick);
+    this.box.removeEventListener("pointerdown", this.onDown, true);
     window.removeEventListener("keydown", this.onKey, true);
     this.ro.disconnect();
     clearInterval(this.stale);
+    clearTimeout(this.sendTimer);
+    clearTimeout(this.sizeTimer);
   }
 
   // ------------------------------------------------------------- inputs
@@ -144,6 +185,7 @@ export class OnSet {
     this.player.setWant(want);
     this.renderStrip();
     this.renderTags();
+    this.renderLoupe();
     this.draw();
     this.drawScope();
   }
@@ -161,13 +203,12 @@ export class OnSet {
     this.renderStrip();
   }
 
-  /** The socket (re)opened: a fresh viewer is never zoomed. */
+  /** The socket (re)opened or closed: a fresh viewer has no loupe. */
   reset() {
-    this.zoom = null;
-    this.asked = false;
-    this.streamZoomed = false;
+    this.offs = 0;
+    this.hideLoupe();
     this.data = null;
-    this.render();
+    this.draw();
   }
 
   levels(msg) {
@@ -207,22 +248,28 @@ export class OnSet {
     this.drawScope();
   }
 
+  /** The server's `zoom`: the loupe's stream geometry, or the loupe ended / refused. */
   onZoom(z) {
-    this.asked = false;
-    if (z.on) {
-      this.zoom = z;
-    } else {
-      this.zoom = null;
-      if (z.error) toast("Focus zoom: " + z.error, "err");
+    if (!z.on) {
+      if (z.error) toast("Focus loupe: " + z.error, "err");
+      else if (this.offs > 0) {          // the answer to a close: already closed, or open again since
+        this.offs--;
+        return;
+      }
+      this.hideLoupe();
+      return;
     }
-    // MSE (jmuxer) cannot follow a stream that changes encoder at the same size: start afresh
-    if (this.streamZoomed !== !!z.on && this.player.mode === "mse") this.player.restart();
-    this.streamZoomed = !!z.on;
-    this.render();
+    if (!this.lp) return;                // closed meanwhile: its "off" is on its way
+    this.renderLoupe();
   }
 
-  // --------------------------------------------------------------- zoom
-  /** The source size of what the picture shows now (the crop's while zoomed). */
+  /** The loupe lane shows a picture (true) or waits for its first keyframe (false). */
+  loupeShowing(on) {
+    this.wait.classList.toggle("hidden", !!on);
+  }
+
+  // -------------------------------------------------------------- loupe
+  /** The source size of the picture shown. */
   srcSize() {
     const p = this.player;
     if (p.canvas.classList.contains("on") && p.canvas.width) return [p.canvas.width, p.canvas.height];
@@ -237,54 +284,135 @@ export class OnSet {
     return fitRect(this.box.clientWidth, this.box.clientHeight, sw, sh);
   }
 
+  /** A click (tap) on the picture opens the loupe there, or moves it there. */
   click(e) {
-    if (e.target.closest("button, a, input, select, .ov")) return;
+    if (e.target.closest("button, a, input, select, .ov, .loupe-layer")) return;
     if (!this.player.playing) return;
     const b = this.box.getBoundingClientRect();
     const r = this.rect();
     const fx = (e.clientX - b.left - this.box.clientLeft - r.x) / r.w;
     const fy = (e.clientY - b.top - this.box.clientTop - r.y) / r.h;
     if (fx < 0 || fx > 1 || fy < 0 || fy > 1) return;          // on the black bars
-    let x = fx, y = fy;
-    const z = this.zoom;
-    if (z && z.crop && z.src_width && z.src_height) {           // a point in the crop -> the whole picture
-      x = (z.crop[0] + fx * z.crop[2]) / z.src_width;
-      y = (z.crop[1] + fy * z.crop[3]) / z.src_height;
+    this.touch = this.lastPointer === "touch";
+    const opening = !this.lp;
+    this.lp = { fx, fy };
+    if (opening) {
+      this.sent = null;
+      this.player.resetLoupe();
+      this.loupeShowing(false);
     }
-    const r4 = (v) => Math.round(Math.max(0, Math.min(1, v)) * 10000) / 10000;
-    if (this.player.send({ type: "zoom", on: true, x: r4(x), y: r4(y) })) {
-      this.asked = !z;
-      this.render();
-    }
+    this.renderLoupe();
+    if (!this.sendZoom() && opening) this.hideLoupe();          // not connected
   }
 
-  unzoom() {
-    this.player.send({ type: "zoom", on: false });
-    this.zoom = null;
-    this.asked = false;
-    this.render();
+  grab(e) {
+    if (!this.lp || e.button > 0 || this.drag) return;
+    e.preventDefault();
+    e.stopPropagation();
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (x) { /* gone */ }
+    this.touch = e.pointerType === "touch";
+    const r = this.rect();
+    this.drag = { id: e.pointerId, x0: e.clientX, y0: e.clientY,
+                  px0: r.x + this.lp.fx * r.w, py0: r.y + this.lp.fy * r.h };
+    this.layer.classList.add("dragging");
+    this.place();
   }
 
-  render() {
-    const z = this.zoom;
-    this.box.classList.toggle("zoomed", !!z);
-    this.badge.classList.toggle("hidden", !z && !this.asked);
-    this.badge.textContent = z ? `Zoom ${z.ratio}×` + (z.pixels ? ` · ${pixelsText(z.pixels)}` : "") : "Zooming…";
-    this.whole.classList.toggle("hidden", !z);
-    this.locator.classList.toggle("hidden", !(z && z.crop && z.src_width));
-    if (z && z.crop && z.src_width) {
-      const [l, t, w, hh] = z.crop;
-      Object.assign(this.locFrame.style, { left: (l / z.src_width) * 100 + "%", top: (t / z.src_height) * 100 + "%",
-                                           width: (w / z.src_width) * 100 + "%", height: (hh / z.src_height) * 100 + "%" });
-      this.locator.style.aspectRatio = `${z.src_width} / ${z.src_height}`;
+  dragTo(e) {
+    const g = this.drag;
+    if (!g || e.pointerId !== g.id || !this.lp) return;
+    const r = this.rect();
+    this.lp = { fx: clamp((g.px0 + e.clientX - g.x0 - r.x) / r.w, 0, 1),
+                fy: clamp((g.py0 + e.clientY - g.y0 - r.y) / r.h, 0, 1) };
+    this.place();
+    const wait = SEND_MS - (performance.now() - this.sentAt);
+    if (wait <= 0) this.sendZoom();
+    else if (!this.sendTimer) this.sendTimer = setTimeout(() => { this.sendTimer = 0; this.sendZoom(); }, wait);
+  }
+
+  release(e) {
+    if (!this.drag || e.pointerId !== this.drag.id) return;
+    this.drag = null;
+    this.layer.classList.remove("dragging");
+    this.sendZoom();                     // where it was let go
+  }
+
+  /** Tell the server where the loupe is and how big; false when not connected. */
+  sendZoom() {
+    clearTimeout(this.sendTimer);
+    this.sendTimer = 0;
+    clearTimeout(this.sizeTimer);
+    if (!this.lp) return false;
+    const msg = { type: "zoom", on: true, x: r4(clamp(this.lp.fx, 0, 1)), y: r4(clamp(this.lp.fy, 0, 1)), size: r4(this.size) };
+    const last = this.sent;
+    if (last && last.x === msg.x && last.y === msg.y && last.size === msg.size) return true;
+    if (!this.player.send(msg)) return false;
+    this.sent = msg;
+    this.sentAt = performance.now();
+    return true;
+  }
+
+  closeLoupe() {
+    if (!this.lp) return;
+    if (this.player.send({ type: "zoom", on: false })) this.offs++;
+    this.player.endLoupe();
+    this.hideLoupe();
+  }
+
+  hideLoupe() {
+    this.lp = null;
+    this.drag = null;
+    this.sent = null;
+    clearTimeout(this.sendTimer);
+    this.sendTimer = 0;
+    clearTimeout(this.sizeTimer);
+    this.renderLoupe();
+  }
+
+  renderLoupe() {
+    const on = !!this.lp;
+    this.layer.classList.toggle("hidden", !on);
+    this.box.classList.toggle("loupe-on", on);
+    if (!on) return;
+    const z = this.player.zoom;
+    this.tag.textContent = ((z && z.ratio) || Number(this.mon.zoom) || 3) + "×";
+    this.wait.classList.toggle("hidden", this.player.loupeShowing);
+    this.place();
+  }
+
+  /** Put the circle (and the mark, and the line between them) where the loupe is. */
+  place() {
+    if (!this.lp) return;
+    const r = this.rect();
+    if (!r.w || !r.h) return;
+    const g = loupeGeometry(r, this.lp.fx, this.lp.fy, this.touch);
+    const { d, cx, cy, px, py } = g;
+    Object.assign(this.loupeEl.style, { width: d + "px", height: d + "px",
+                                        transform: `translate3d(${cx - d / 2}px, ${cy - d / 2}px, 0)` });
+    const dx = px - cx, dy = py - cy, dist = Math.hypot(dx, dy);
+    const off = dist > 3;
+    this.mark.classList.toggle("hidden", !off);
+    this.stem.classList.toggle("hidden", dist - d / 2 < 6);
+    if (off) {
+      this.mark.style.transform = `translate3d(${px}px, ${py}px, 0)`;
+      const len = Math.max(0, dist - d / 2 - 4);
+      Object.assign(this.stem.style, { width: len + "px",
+        transform: `translate3d(${px}px, ${py}px, 0) rotate(${Math.atan2(-dy, -dx)}rad) translateX(4px)` });
     }
-    this.renderTags();
-    this.draw();
+    // past 2 device pixels per pixel of the loupe stream: pixels, not a blur (focus checking)
+    const z = this.player.zoom;
+    this.glass.classList.toggle("px", !!(z && z.width && (d * (window.devicePixelRatio || 1)) / z.width >= 2));
+    // a new circle size (window resized, full screen): the server cuts a new crop
+    this.size = d / r.h;
+    if (this.sent && Math.abs(r4(this.size) - this.sent.size) > 0.004 && !this.drag) {
+      clearTimeout(this.sizeTimer);
+      this.sizeTimer = setTimeout(() => this.sendZoom(), 250);
+    }
   }
 
   renderTags() {
     const lut = this.mon.lut;
-    const on = lut && lut !== "off" && !this.zoom;
+    const on = lut && lut !== "off";
     this.lutTag.classList.toggle("hidden", !on);
     if (on) {
       const l = ((this.rec.monitor || {}).luts || []).find((x) => x.id === lut);
@@ -302,11 +430,8 @@ export class OnSet {
     const ctx = cv.getContext("2d");
     ctx.clearRect(0, 0, W, H);
     const m = this.mon;
-    // pixels, not a blur, when a zoomed crop is blown up past 1.5x (focus checking)
+    if (!this.player.playing) return;
     const r0 = this.rect();
-    const [sw] = this.srcSize();
-    this.box.classList.toggle("px", !!this.zoom && r0.w * dpr >= sw * 1.5);
-    if (!this.player.playing || this.zoom) return;               // overlays are for the whole picture
     const r = { x: r0.x * dpr, y: r0.y * dpr, w: r0.w * dpr, h: r0.h * dpr };
     const d = this.data && performance.now() - this.data.at < 3000 ? this.data : null;
     if (d && m.false_color) this.drawFalseColour(ctx, r, d);

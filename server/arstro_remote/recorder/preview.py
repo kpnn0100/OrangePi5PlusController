@@ -11,12 +11,16 @@ What a viewer may ask for (text from the viewer; an old viewer asks nothing and 
       analysis  binary [version u8 = 2][kind u8 = 1][json length u16 BE][JSON][bytes], the
                 exposure data of monitor.py, 4 a second while the settings show scopes,
                 zebras or false colour (REC-13)
-  {"type": "zoom", "on": true, "x": 0.5, "y": 0.5}   focus zoom around (x, y), 0..1 of the
-      picture, at the settings' ratio (REC-14). The viewer gets {"type": "zoom", "on": true,
-      "ratio", "x", "y", "width", "height", "src_width", "src_height", "crop": [l, t, w, h],
-      "pixels"} and, when the size changes, a new "config"; from then on its video frames are
-      the crop's. Moving sends only the new "zoom". {"type": "zoom", "on": false} (or an error:
-      {"type": "zoom", "on": false, "error"}) brings the whole picture back with its "config".
+  {"type": "zoom", "on": true, "x": 0.5, "y": 0.5, "size": 0.4}   a loupe (REC-14) around (x, y),
+      0..1 of the picture; `size` = its circle's diameter as a share of the picture's height.
+      The whole picture keeps coming; next to it the viewer gets the loupe's own stream:
+      binary [version u8 = 3][flags u8: bit0 keyframe][pts_us u64 BE][Annex-B access unit] -
+      a square crop of the full-resolution frame showing what the circle covers, `ratio` (the
+      settings' monitor.zoom) times larger - and text {"type": "zoom", "on": true, "ratio",
+      "x", "y", "size", "width", "height", "fps", "src_width", "src_height", "crop": [l, t, w, h]}
+      (width x height: the loupe stream's size; it starts again with a keyframe when they
+      change). Moving sends only the new "zoom". {"type": "zoom", "on": false} (or a refusal
+      {"type": "zoom", "on": false, "error"}) ends the loupe.
 
 Every viewer has a small queue. A viewer that falls behind (slow Wi-Fi) drops what is
 queued and waits for the next keyframe instead of slowing anyone else down. A viewer
@@ -50,7 +54,8 @@ class Viewer:
         self.peer = peer
         self.id = vid
         self.want = set()                 # "levels", "analysis"
-        self.zoom = None                  # the zoom it is shown, or None
+        self.zoom = None                  # its loupe (the worker's description), or None
+        self.zoom_need_key = True
         self.queue = collections.deque()
         self.wake = threading.Event()
         self.need_key = True
@@ -107,8 +112,6 @@ class Preview:
         with self.lock:
             viewers = list(self.viewers)
         for v in viewers:
-            if v.zoom is not None:
-                continue                          # it watches its crop (zoom_frame)
             if v.need_key and not key:
                 continue
             if len(v.queue) >= MAX_QUEUE:
@@ -146,19 +149,19 @@ class Preview:
                 v.push(("bin", msg))
 
     def zoom_frame(self, vid, key, pts_us, data, request_key):
+        """A frame of a viewer's loupe: second to its whole picture - a viewer that falls behind
+        loses loupe frames first (and gets the loupe back from its next keyframe)."""
         v = self.viewer(vid)
         if v is None or v.zoom is None:
             return
-        if v.need_key and not key:
+        if v.zoom_need_key and not key:
             return
-        if len(v.queue) >= MAX_QUEUE:
-            v.queue.clear()
-            v.dropped += 1
-            v.need_key = True
+        if len(v.queue) >= MAX_QUEUE // 2:
+            v.zoom_need_key = True
             request_key()
             return
-        v.need_key = False
-        v.push(("bin", HEAD.pack(1, 1 if key else 0, pts_us) + data))
+        v.zoom_need_key = False
+        v.push(("bin", HEAD.pack(3, 1 if key else 0, pts_us) + data))
 
     def zoom_state(self, vid, z):
         """The worker's zoom for a viewer: on (with its geometry) or off (whole picture back)."""
@@ -167,23 +170,13 @@ class Preview:
             return
         if z.get("on"):
             before = v.zoom
+            if not before or (before.get("width"), before.get("height")) != (z["width"], z["height"]):
+                v.zoom_need_key = True            # a new loupe stream: wait for its keyframe
             v.zoom = z
             v.push(("text", json.dumps(dict(z, type="zoom"))))
-            if not before or (before.get("width"), before.get("height")) != (z["width"], z["height"]):
-                v.queue = collections.deque(i for i in v.queue if i[0] == "text")
-                v.need_key = True
-                v.push(("text", json.dumps({"type": "config", "codec": "h264", "width": z["width"],
-                                            "height": z["height"], "fps": z.get("fps"), "zoom": True})))
         else:
-            was = v.zoom
             v.zoom = None
             v.push(("text", json.dumps({"type": "zoom", "on": False, "error": z.get("error")})))
-            if was is not None:
-                v.queue = collections.deque(i for i in v.queue if i[0] == "text")
-                v.need_key = True
-                if self.config:
-                    v.push(("text", json.dumps(self.config)))
-                self._keyframe()
 
     def _keyframe(self):
         now = time.monotonic()

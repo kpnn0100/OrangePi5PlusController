@@ -6,6 +6,8 @@
 //
 // Optional: CHROME=/path/to/chrome, ARSTRO_URL_SECURE=http://127.0.0.1:<port>/ (an SSH tunnel to the
 // same server: localhost is a secure context, so the WebCodecs preview path is tested too).
+// ARSTRO_FORCE_MSE=1 hides WebCodecs from the pages, as plain http on the LAN does: the MSE
+// (jmuxer) path is tested against a server on localhost too.
 // The recorder is switched to its test pattern while testing (REC-08) and back afterwards;
 // the test recording it makes is deleted again.
 
@@ -19,6 +21,7 @@ const BASE = (process.env.ARSTRO_URL || "").replace(/\/?$/, "/");
 const TOKEN = process.env.ARSTRO_TOKEN || "";
 const SECURE = process.env.ARSTRO_URL_SECURE ? process.env.ARSTRO_URL_SECURE.replace(/\/?$/, "/") : null;
 const SHOTS = opt("--shots");
+const FORCE_MSE = !!process.env.ARSTRO_FORCE_MSE;
 const ONLY = opt("-k");
 
 const TESTS = [];
@@ -61,6 +64,7 @@ async function newPage(url = BASE, { width = 1280, height = 800, mobile = false,
   await page.setViewport({ width, height, isMobile: mobile, hasTouch: mobile });
   page.on("pageerror", (e) => pageErrors.push(e.message));
   page.on("console", (m) => { if (m.type() === "error" && !/status of 40[14]/.test(m.text())) pageErrors.push(m.text()); });
+  if (FORCE_MSE) await page.evaluateOnNewDocument(() => { delete window.VideoDecoder; });
   await page.goto(url, { waitUntil: "domcontentloaded" });
   if (login) {
     await page.waitForSelector(".nav-item, .login-card", { timeout: 10000 });
@@ -449,46 +453,116 @@ test("live_meters_overlays_scope_and_tally", ["REC-10", "REC-13", "REC-12"], asy
   }
 });
 
-test("focus_zoom_click_moves_and_esc", ["REC-14"], async () => {
+test("focus_loupe_click_drag_and_close", ["REC-14", "REC-13"], async () => {
+  const before = await op("recorder.settings.get");
   const page = await newPage();
   try {
+    // a 2.39 guide on the whole picture: the overlays stay around the loupe
+    await op("recorder.settings.set", { settings: { monitor: { ...MON_OFF, guides: "2.39" } } });
     check(await livePicture(page), "no live picture within 20 s");
+    // what the page sends, and how many loupe binaries (version 3) arrive
     await page.evaluate(() => {
       window.__sent = [];
-      const ws = window.arstroPreview.ws, send = ws.send.bind(ws);
+      window.__v3 = 0;
+      const ws = window.arstroPreview.ws, send = ws.send.bind(ws), onmsg = ws.onmessage;
       ws.send = (d) => { window.__sent.push(JSON.parse(d)); send(d); };
+      ws.onmessage = (e) => { if (typeof e.data !== "string" && new Uint8Array(e.data)[0] === 3) window.__v3++; onmsg(e); };
     });
-    const sig = (await op("recorder.status")).signal;
-    const whole = await page.evaluate(() => window.arstroPreview.config && window.arstroPreview.config.width);
-    // click the picture at 75 % / 30 % of the whole picture (the box is 16:9 like the test pattern)
-    const box = await page.$eval(".preview", (e) => { const r = e.getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; });
-    await page.mouse.click(box[0] + box[2] * 0.75, box[1] + box[3] * 0.3);
-    const sent = await until(() => page.evaluate(() => window.__sent.find((m) => m.type === "zoom") || null), 3000);
-    check(sent && sent.on === true && Math.abs(sent.x - 0.75) < 0.03 && Math.abs(sent.y - 0.3) < 0.03, "zoom message: " + JSON.stringify(sent));
-    check(await until(() => page.$(".preview.zoomed"), 8000), "the zoom reply did not arrive");
-    const badge = await page.$eval(".zoom-badge", (e) => e.textContent);
-    check(/^Zoom \d+× · /.test(badge), "zoom badge: " + badge);
-    // the video now is the crop's (a new config, smaller than the whole picture), at full resolution
-    const cfg = await until(() => page.evaluate(() => { const c = window.arstroPreview.config; return c && c.zoom ? c : null; }), 5000);
-    check(cfg && cfg.width < sig.width, "video is not the crop: " + JSON.stringify(cfg));
-    check(await until(() => page.$(".preview.playing.zoomed"), 8000), "the zoomed picture does not play");
-    check(await until(async () => (await op("recorder.status")).monitor.zooms === 1, 3000), "server does not count the zoom");
-    check(!(await page.$eval(".zoom-loc", (e) => e.classList.contains("hidden"))), "no locator while zoomed");
-    await shot(page, "focus-zoom");
-    // clicking the zoomed picture moves the zoom: a point inside the crop -> whole-picture coordinates
-    const z = await page.evaluate(() => window.__sent.length);
-    await page.mouse.click(box[0] + box[2] * 0.1, box[1] + box[3] * 0.5);
-    const moved = await until(() => page.evaluate((n) => window.__sent.slice(n).find((m) => m.type === "zoom") || null, z), 3000);
-    check(moved && moved.on && moved.x < sent.x && moved.x > sent.x - 0.4, "move: " + JSON.stringify(moved));
-    // Esc: the whole picture again
+    const zooms = (n = 0) => page.evaluate((n) => window.__sent.slice(n).filter((m) => m.type === "zoom"), n);
+    // the main picture's progress: pictures drawn (WebCodecs) or the video's clock (MSE)
+    const progress = () => page.evaluate(() => {
+      const p = window.arstroPreview;
+      return p.main.mode === "webcodecs" ? p.main.shown : p.video.currentTime;
+    });
+    const advances = async () => { const a = await progress(); await sleep(1200); return (await progress()) > a; };
+    const mode = await page.evaluate(() => window.arstroPreview.main.mode);
+    const whole = await page.evaluate(() => window.arstroPreview.config.width);
+    const ratio = (await op("recorder.settings.get")).monitor.zoom;
+    // click the picture at 75 % / 30 % (the box is 16:9 like the test pattern: the picture fills it)
+    const box = await page.$eval(".preview", (e) => { const r = e.getBoundingClientRect(); return [r.left + e.clientLeft, r.top + e.clientTop, e.clientWidth, e.clientHeight]; });
+    const at = (fx, fy) => [box[0] + box[2] * fx, box[1] + box[3] * fy];
+    await page.mouse.click(...at(0.75, 0.3));
+    const sent = await until(async () => (await zooms())[0], 3000);
+    check(sent && sent.on === true && Math.abs(sent.x - 0.75) < 0.02 && Math.abs(sent.y - 0.3) < 0.02, "zoom message: " + JSON.stringify(sent));
+    // a circle about 39 % of the picture's height, centred on the point (a mouse), size = its share
+    const lens = await page.$eval(".loupe-layer:not(.hidden) .loupe-glass", (e) => { const r = e.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2, r.width]; });
+    check(lens && Math.abs(lens[2] / box[3] - sent.size) < 0.01 && lens[2] >= 139 && lens[2] <= 321, `loupe ${lens} vs size ${sent.size}`);
+    check(Math.hypot(lens[0] - at(0.75, 0.3)[0], lens[1] - at(0.75, 0.3)[1]) < 3, "the loupe is not over the point: " + lens);
+    // the loupe's own stream: a square crop at the settings' ratio, its frames decoded into the circle
+    const z = await until(() => page.evaluate(() => window.arstroPreview.zoom), 8000);
+    check(z && z.on && z.width === z.height && z.ratio === ratio && z.crop && z.src_width, "zoom reply: " + JSON.stringify(z));
+    check(await until(() => page.evaluate(() => window.__v3 > 10), 8000), "no loupe frames (version 3) arrive");
+    const shows = await until(() => page.evaluate((w) => {
+      const p = window.arstroPreview, c = p.loupe.canvas, v = p.loupe.video;
+      return p.loupeShowing && document.querySelector(".loupe-wait.hidden") &&
+             (c.classList.contains("on") ? c.width === w : v.classList.contains("on") && v.videoWidth === w && v.currentTime > 0);
+    }, z.width), 10000);
+    check(shows, "the loupe shows no picture: " + JSON.stringify(await page.evaluate(() => window.arstroPreview.events.slice(-8))));
+    // ... while the whole picture keeps playing at its own size
+    check(await advances(), "the main picture stopped while the loupe is open");
+    check(await page.evaluate((w) => window.arstroPreview.config.width === w && !!document.querySelector(".preview.playing"), whole),
+          "the main picture changed");
+    check(await until(async () => (await op("recorder.status")).monitor.zooms === 1, 3000), "server does not count the loupe");
+    const covered = await page.evaluate(() => {
+      const c = document.querySelector(".preview .mon-ov");
+      const d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
+      let n = 0;
+      for (let i = 3; i < d.length; i += 16) if (d[i]) n++;
+      return n / (d.length / 16);
+    });
+    check(covered > 0.2 && covered < 0.4, "the guide is not drawn around the loupe: " + covered.toFixed(3));
+    console.log(`      loupe via ${mode}: ${z.width}x${z.height} at ${z.ratio}x, crop ${z.crop.join(",")} of ${z.src_width}x${z.src_height}`);
+    await shot(page, "focus-loupe");
+    // drag it 35 % of the picture to the left: throttled moves (~15/s), the last where it was let go
+    let n = (await page.evaluate(() => window.__sent.length));
+    const t0 = Date.now();
+    await page.mouse.move(lens[0], lens[1]);
+    await page.mouse.down();
+    for (let i = 1; i <= 20; i++) { await page.mouse.move(lens[0] - box[2] * 0.35 * i / 20, lens[1] + box[3] * 0.1 * i / 20); await sleep(25); }
+    await page.mouse.up();
+    await sleep(150);
+    const dt = (Date.now() - t0) / 1000;
+    const moves = await zooms(n);
+    const last = moves[moves.length - 1];
+    check(moves.length >= 3 && moves.length <= Math.ceil(dt * 16) + 2, `drag sent ${moves.length} moves in ${dt.toFixed(2)} s`);
+    check(moves.every((m) => m.on && m.size === sent.size), "drag moves: " + JSON.stringify(moves));
+    check(last && Math.abs(last.x - 0.4) < 0.02 && Math.abs(last.y - 0.4) < 0.02, "the last move is not where it was let go: " + JSON.stringify(last));
+    const moved = await page.$eval(".loupe-glass", (e) => { const r = e.getBoundingClientRect(); return r.left + r.width / 2; });
+    check(Math.abs(moved - at(0.4, 0.4)[0]) < 3, "the circle did not follow the drag");
+    check(await until(() => page.evaluate((x) => { const z = window.arstroPreview.zoom; return z && z.x === x; }, last.x), 3000), "the move was not answered");
+    check(await page.evaluate(() => window.arstroPreview.loupeShowing), "the loupe stream restarted on a move");
+    // another ratio in the settings: a new loupe stream (new size) - decoded afresh, the label follows
+    const other = ratio === 6 ? 4 : 6;
+    await op("recorder.settings.set", { settings: { monitor: { zoom: other } } });
+    const z2 = await until(() => page.evaluate((r) => { const z = window.arstroPreview.zoom; return z && z.ratio === r ? z : null; }, other), 5000);
+    check(z2 && z2.width === z2.height && z2.width !== z.width, "no new loupe stream for the ratio: " + JSON.stringify(z2));
+    check(await until(() => page.evaluate((w) => {
+      const p = window.arstroPreview, c = p.loupe.canvas, v = p.loupe.video;
+      return p.loupeShowing && (c.classList.contains("on") ? c.width === w : v.videoWidth === w);
+    }, z2.width), 10000), "the loupe shows no picture after the ratio changed");
+    check(await page.$eval(".loupe-tag", (e) => e.textContent) === other + "×", "the ratio label did not follow");
+    // a click elsewhere on the picture moves it there
+    n = await page.evaluate(() => window.__sent.length);
+    await page.mouse.click(...at(0.2, 0.7));
+    const jump = await until(async () => (await zooms(n))[0], 3000);
+    check(jump && jump.on && Math.abs(jump.x - 0.2) < 0.02 && Math.abs(jump.y - 0.7) < 0.02, "click move: " + JSON.stringify(jump));
+    // Esc closes it: zoom off, the circle gone, the server stops the crop, the picture plays on
     await page.keyboard.press("Escape");
-    check(await until(() => page.evaluate(() => window.__sent.some((m) => m.type === "zoom" && m.on === false)), 3000), "Esc sent no zoom off");
-    check(await until(() => page.$(".preview.playing:not(.zoomed)"), 8000), "the whole picture did not come back");
-    // the whole picture at the preview's own size again (whatever quality the board is set to)
-    check(await until(() => page.evaluate((w) => window.arstroPreview.config && window.arstroPreview.config.width === w && !window.arstroPreview.config.zoom,
-                                         whole), 5000), "video is still the crop");
-    check(await until(async () => (await op("recorder.status")).monitor.zooms === 0, 3000), "server still zooms");
+    check(await until(async () => (await zooms(n)).some((m) => m.on === false), 3000), "Esc sent no zoom off");
+    check(await page.$(".loupe-layer.hidden"), "the loupe is still shown");
+    check(await until(async () => (await op("recorder.status")).monitor.zooms === 0, 3000), "server still runs the loupe");
+    check(await advances(), "the main picture stopped after the loupe closed");
+    // open again; the close button on its rim closes it too
+    n = await page.evaluate(() => window.__sent.length);
+    await page.mouse.click(...at(0.5, 0.5));
+    check(await until(() => page.evaluate(() => window.arstroPreview.loupeShowing), 10000), "the loupe did not open again");
+    await page.click(".loupe-x");
+    check(await until(async () => (await zooms(n)).some((m) => m.on === false), 3000), "the close button sent no zoom off");
+    check(await until(() => page.$(".loupe-layer.hidden"), 2000), "the close button did not close the loupe");
+    check(await until(async () => (await op("recorder.status")).monitor.zooms === 0, 3000), "server still runs the loupe");
+    check(await page.evaluate((w) => window.arstroPreview.config.width === w && window.arstroPreview.playing, whole), "the main picture changed");
   } finally {
+    await op("recorder.settings.set", { settings: { monitor: { ...MON_OFF, ...before.monitor } } }).catch((e) => console.log("restore:", e.message));
     await page.close();
   }
 });

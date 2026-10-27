@@ -40,6 +40,9 @@ const _dests = [
 class _HomePageState extends State<HomePage> {
   int _index = 0;
   ValueNotifier<bool>? _immersive;
+  // the tabs move between the rail layout and the phone layout when the width crosses 840
+  // (turning the phone): the key keeps them - and e.g. the live view's preview and loupe - alive
+  final _bodyKey = GlobalKey();
 
   @override
   void didChangeDependencies() {
@@ -88,7 +91,7 @@ class _HomePageState extends State<HomePage> {
       TerminalPage(active: _index == 3),
       RemotePage(active: _index == 4),
     ];
-    final body = Column(children: [
+    final body = Column(key: _bodyKey, children: [
       if (!full) _LinkBanner(client: client),
       // hidden tabs keep their state but stop animating (battery)
       Expanded(
@@ -105,7 +108,7 @@ class _HomePageState extends State<HomePage> {
         canPop: false,
         onPopInvokedWithResult: (didPop, _) {
           if (didPop) return;
-          if (handleBack()) return;    // e.g. the live view leaves its focus zoom first
+          if (handleBack()) return;    // e.g. the live view closes its focus loupe first
           if (full) {
             _immersive!.value = false; // back leaves full screen first
           } else {

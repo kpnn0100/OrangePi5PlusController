@@ -3,7 +3,7 @@
     v4l2src ─ tee vt ─┬─ queue(leaky) ─ fakesink            (keeps the pipeline running)
                       ├─ [stream branch]  H.264 preview     (while someone watches; LUT, REC-13)
                       ├─ [analysis branch] exposure data    (while a viewer shows scopes, REC-13)
-                      ├─ [zoom branches]  a 1:1 crop each   (per viewer zooming, REC-14)
+                      ├─ [zoom branches]  a loupe's crop    (per viewer, REC-14)
                       └─ [recording branch]                 (while recording)
     alsasrc ─ tee at ─┬─ level ─ fakesink                   (the audio meters, REC-10)
                       └─ [recording branch]
@@ -13,7 +13,7 @@ so capture never restarts when a viewer joins or a recording starts/stops.
 
   StreamBranch      H.264 preview on the VPU (mpph264enc; x264 without one), access units to a callback
   AnalysisBranch    the luma of a small nearest-neighbour copy -> monitor.analyze
-  ZoomBranch        a crop of the full frame at its own pixels, H.264, for one viewer
+  ZoomBranch        a square crop of the full frame for one viewer's loupe, H.264
   EncodedRecording  real-time H.265 on the VPU (mpph265enc) -> MOV/MKV (PCM) or MP4 (AAC)
   RawRecording      frames copied out of the capture buffers, framed as ARH chunks
 """
@@ -43,7 +43,7 @@ SOFTWARE = "arstro-remote recorder 2.1"
 LEVEL_INTERVAL_NS = 100_000_000     # the audio meters: 10 readings a second
 ANALYSIS_EVERY = 0.25               # exposure data: 4 a second
 MAX_ZOOMS = 3                       # viewers zoomed at once (one crop encoder each)
-ZOOM_MAX = (1920, 1080)             # a crop larger than this is scaled down to it
+ZOOM_MAX = 1080                     # a loupe's crop larger than this (source pixels) is scaled down to it
 
 
 def _db(x):
@@ -479,19 +479,21 @@ class Capture:
 
     # -- focus zoom (REC-14)
 
-    def start_zoom(self, zid, x, y, ratio, on_au):
-        """Crop around (x, y) (0..1 of the picture) at `ratio` times the whole picture."""
+    def start_zoom(self, zid, x, y, ratio, size, on_au):
+        """A loupe around (x, y) (0..1 of the picture), `size` its diameter as a share of the
+        picture's height, magnifying `ratio` times. Moving keeps the branch; a new size or
+        ratio builds a new one (a new stream for the viewer)."""
         if not self.pipeline or not self.timing:
             raise RuntimeError("not capturing")
         z = self.zooms.get(zid)
-        if z and z.ratio == ratio:
+        if z and z.ratio == ratio and z.side == ZoomBranch.side_for(self.timing, ratio, size):
             z.move(x, y)
             return z
         if z:
             self.stop_zoom(zid)
         if len(self.zooms) >= MAX_ZOOMS:
             raise RuntimeError(f"{MAX_ZOOMS} viewers are zoomed in already")
-        z = ZoomBranch(self, zid, x, y, ratio, on_au)
+        z = ZoomBranch(self, zid, x, y, ratio, size, on_au)
         z.attach()
         self.zooms[zid] = z
         return z
@@ -838,27 +840,37 @@ ANALYSIS_FORMATS = VIDEOCROP_FORMATS | set(PY_CROP)    # videoscale nearest-neig
 
 
 class ZoomBranch(TeeBranch):
-    """Focus zoom for one viewer (REC-14): a crop of the FULL frame, (width / ratio) x
-    (height / ratio) around the point the viewer clicked, encoded at its own pixels (scaled
-    down only past 1920x1080), so 3x on a 4K picture is 1:1 - every source pixel on screen.
-    Moving the point changes the crop of the running branch: no new encoder, no new config.
+    """A viewer's loupe (REC-14): a square crop of the FULL frame around the point under it,
+    sent next to the whole picture. The viewer says how big its circle is (`size`, a share of
+    the picture's height); the crop is the part of the picture under the circle divided by the
+    ratio - so the circle shows what it covers, `ratio` times larger - at the source's own
+    pixels (scaled down only past ZOOM_MAX). Moving the point changes the crop of the running
+    branch: no new encoder, no new stream.
 
     videocrop crops what it can (NV12, RGB, packed YUV ...). It cannot crop NV16 / NV24 -
     the 4:2:2 most cameras send - so for those the rows the crop needs are copied out of the
     frame (a third of it at 3x) and cut into I420 here; anything else is refused, never
     linked (a branch that cannot negotiate would stop the capture and the recording)."""
 
-    def __init__(self, cap, zid, x, y, ratio, on_au):
+    def __init__(self, cap, zid, x, y, ratio, size, on_au):
         self.cap, self.zid, self.ratio, self.on_au = cap, zid, int(ratio), on_au
-        self.x, self.y = x, y
+        self.x, self.y, self.size = x, y, size
         self.frames = 0
         w, h, fps = cap.timing
         self.src = (w, h)
-        self.cw = max(16, int(w / self.ratio) & ~7)   # I420 rows then need no padding (the cut-out path)
-        self.ch = max(16, int(h / self.ratio) & ~1)
-        k = min(ZOOM_MAX[0] / self.cw, ZOOM_MAX[1] / self.ch, 1.0)
-        self.out = (max(16, int(self.cw * k) & ~1), max(16, int(self.ch * k) & ~1))
+        self.side = self.side_for(cap.timing, ratio, size)
+        self.cw = self.ch = self.side
+        o = min(self.side, ZOOM_MAX) & ~7
+        self.out = (o, o)
         self.fps = max(1, min(30, round(fps)))
+
+    @staticmethod
+    def side_for(timing, ratio, size):
+        """The crop's side in source pixels: a multiple of 8 (I420 rows need no padding on the
+        cut-out path), at least 64, at most the picture's height."""
+        w, h, _ = timing
+        side = int(max(0.02, min(1.0, float(size))) * h / max(1, int(ratio)))
+        return max(64, min(side, min(w, h))) & ~7
 
     def _crop(self):
         w, h = self.src
@@ -980,8 +992,8 @@ class ZoomBranch(TeeBranch):
         left, top, _, _ = self._crop()
         w, h = self.src
         return {"id": self.zid, "on": True, "ratio": self.ratio, "x": round(self.x, 4), "y": round(self.y, 4),
-                "width": self.out[0], "height": self.out[1], "fps": self.fps, "src_width": w, "src_height": h,
-                "crop": [left, top, self.cw, self.ch], "pixels": round(self.out[0] / self.cw, 3)}
+                "size": self.size, "width": self.out[0], "height": self.out[1], "fps": self.fps,
+                "src_width": w, "src_height": h, "crop": [left, top, self.cw, self.ch]}
 
 
 class Recording:

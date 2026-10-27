@@ -650,8 +650,9 @@ def _ws(c, want=("levels", "analysis")):
 
 
 def _collect(conn, secs, stop=None):
-    """What a viewer gets for `secs`; `after_config`: the video frames since the last config."""
-    out = {"levels": [], "analysis": [], "video": [], "text": [], "after_config": []}
+    """What a viewer gets for `secs`: `video` the whole picture's frames, `loupe` its loupe's
+    (keyframe flags), `after_config` the whole picture's frames since the last config."""
+    out = {"levels": [], "analysis": [], "video": [], "text": [], "after_config": [], "loupe": []}
     end = time.monotonic() + secs
     while time.monotonic() < end:
         op, data = conn.recv_message()
@@ -665,6 +666,8 @@ def _collect(conn, secs, stop=None):
         elif data[0] == 2:
             n = struct.unpack_from(">H", data, 2)[0]
             out["analysis"].append((json.loads(data[4:4 + n]), data[4 + n:]))
+        elif data[0] == 3:
+            out["loupe"].append(data[1] & 1)
         else:
             out["video"].append((data[1] & 1, data[10:]))
             out["after_config"].append(data[1] & 1)
@@ -761,29 +764,33 @@ def meters_exposure_and_a_zoom_of_ones_own(c):
         # blue is 7.2 % with the Rec.709 matrix, 11.4 % with Rec.601 (videotestsrc's choice varies by
         # version); a re-matrixed copy - the bug this guards - read 1.4 %
         check(abs(white - 100) <= 1.5 and 5 <= blue <= 13, "levels: white %.1f %%, blue %.1f %%" % (white, blue))
-        cfg = next(t for t in r["text"] if t["type"] == "config")
-        a.send_text(json.dumps({"type": "zoom", "on": True, "x": 0.25, "y": 0.75}))
+        # the loupe: a square crop next to the whole picture, what the circle covers x2
+        a.send_text(json.dumps({"type": "zoom", "on": True, "x": 0.25, "y": 0.75, "size": 0.5}))
         r = _collect(a, 4)
         z = next((t for t in r["text"] if t["type"] == "zoom"), None)
         check(z and z["on"] and z["ratio"] == 2, z)
         sw, sh = z["src_width"], z["src_height"]
-        check(z["crop"][2] == (sw // 2) & ~1 and z["crop"][0] == 0 and z["crop"][1] + z["crop"][3] == sh, z["crop"])
-        zc = next(t for t in r["text"] if t["type"] == "config")
-        check(zc["width"] == z["width"] and zc.get("zoom"), zc)
-        check(r["after_config"] and r["after_config"][0] == 1, "the zoom stream did not start on a keyframe")
+        side = int(0.5 * sh / 2) & ~7
+        check(z["crop"][2] == z["crop"][3] == side == z["width"] == z["height"], (z["crop"], side))
+        check(abs(z["crop"][0] - (0.25 * sw - side / 2)) <= 2 and abs(z["crop"][1] - (0.75 * sh - side / 2)) <= 2,
+              "the crop is not under the point: %s" % z["crop"])
+        check(len(r["loupe"]) >= 60 and r["loupe"][0] == 1, "loupe frames: %d, first key %s" % (
+            len(r["loupe"]), r["loupe"][:1]))
+        check(len(r["video"]) >= 60, "the whole picture stopped while the loupe is open: %d" % len(r["video"]))
+        check(not any(t["type"] == "config" for t in r["text"]), "the whole picture's decoder was disturbed")
         other = _collect(b, 2)
-        check(len(other["video"]) >= 30 and not any(t["type"] == "zoom" for t in other["text"]),
-              "another viewer was disturbed by this one's zoom")
-        a.send_text(json.dumps({"type": "zoom", "on": True, "x": 0.9, "y": 0.1}))
+        check(len(other["video"]) >= 30 and not other["loupe"] and not any(t["type"] == "zoom" for t in other["text"]),
+              "another viewer got this one's loupe")
+        a.send_text(json.dumps({"type": "zoom", "on": True, "x": 0.9, "y": 0.1, "size": 0.5}))
         r = _collect(a, 2)
         moved = [t for t in r["text"] if t["type"] == "zoom"]
-        check(moved and moved[-1]["crop"][0] > 0 and not any(t["type"] == "config" for t in r["text"]),
-              "moving the zoom should change the crop, not the stream")
+        check(moved and moved[-1]["crop"][0] > z["crop"][0] and moved[-1]["width"] == side and len(r["loupe"]) >= 30,
+              "moving the loupe should move the crop and keep its stream: %s" % moved[-1:])
         a.send_text(json.dumps({"type": "zoom", "on": False}))
-        r = _collect(a, 3)
-        back = [t for t in r["text"] if t["type"] in ("zoom", "config")]
-        check(back and back[0] == {"type": "zoom", "on": False, "error": None} and back[-1]["width"] == cfg["width"],
-              back)
+        _collect(a, 0.5)
+        r = _collect(a, 2)
+        check(not r["loupe"] and len(r["video"]) >= 30, "after closing: %d loupe, %d picture frames" % (
+            len(r["loupe"]), len(r["video"])))
         c.a.call("recorder.settings.set", settings={"monitor": {"lut": "slog3"}})
         ok = c.b.wait_state("recorder", lambda d: "LUT" in ((d["preview"].get("stream") or {}).get("path") or ""), 8)
         check(ok, "the preview did not switch to the LUT")
@@ -808,11 +815,12 @@ def zooming_a_422_picture_keeps_the_take(c):
         conn = _ws(c, ())
         _collect(conn, 2)
         r = c.a.call("recorder.start", timeout=30)
-        conn.send_text(json.dumps({"type": "zoom", "on": True, "x": 0.5, "y": 0.5}))
+        conn.send_text(json.dumps({"type": "zoom", "on": True, "x": 0.5, "y": 0.5, "size": 0.4}))
         got = _collect(conn, 4)
         z = [t for t in got["text"] if t["type"] == "zoom"]
-        check(z and z[0]["on"] and not any(t.get("on") is False for t in z), "zoom refused or dropped: %s" % z)
-        check(len(got["after_config"]) >= 60 and got["after_config"][0] == 1, "zoomed frames: %d" % len(got["after_config"]))
+        check(z and z[0]["on"] and not any(t.get("on") is False for t in z), "loupe refused or dropped: %s" % z)
+        check(len(got["loupe"]) >= 60 and got["loupe"][0] == 1, "loupe frames: %d" % len(got["loupe"]))
+        check(len(got["video"]) >= 60, "the whole picture stopped: %d" % len(got["video"]))
         st = c.a.call("recorder.status")
         check(st["recording"].get("active") and st["recording"]["file"] == r["file"], "the take stopped: %s" % st["recording"])
         s = c.a.call("recorder.stop", timeout=60)

@@ -1,5 +1,5 @@
 // Recorder (REC-01..16): live preview with on-set monitoring (meters, tally, guides, zebras,
-// false colour, scopes, focus zoom), record button, timecode / slate / markers, storage you can
+// false colour, scopes, focus loupe), record button, timecode / slate / markers, storage you can
 // trust, recording settings.
 
 import { h, clear, icon, store, conn, run, sheet, seg, toggle, toast, fmtBytes, fmtRate, fmtDur, busy, errText,
@@ -9,7 +9,6 @@ import { OnSet, GUIDES, ZOOMS } from "../onset.js";
 import { frameMs } from "./gallery.js";
 
 const QUALITY = [["low", "360p"], ["medium", "720p"], ["high", "1080p"]];
-const PREVIEW_H = { low: 360, medium: 720, high: 1080 };
 const PREF = "arstro.preview.on";
 const CONTAINER = { mov: "PCM audio, opens in every editor", mkv: "PCM audio, survives a power cut",
                     mp4: "AAC audio, plays everywhere" };
@@ -66,17 +65,18 @@ export default {
     let onset = null;
     const player = new PreviewPlayer(box, {
       onState: (state, detail) => { pState = { state, detail }; renderPreview(); },
-      onConfig: () => { renderPreview(); onset?.draw(); },
-      onPlaying: () => { renderPreview(); onset?.draw(); onset?.drawScope(); },
+      onConfig: () => { renderPreview(); onset?.draw(); onset?.place(); },
+      onPlaying: () => { renderPreview(); onset?.draw(); onset?.drawScope(); onset?.place(); },
       onOpen: () => onset?.reset(),
+      onClose: () => onset?.reset(),
       onLevels: (m) => onset?.levels(m),
       onAnalysis: (b) => onset?.analysis(b),
-      onZoom: (z) => { onset?.onZoom(z); renderPreview(); },
+      onZoom: (z) => onset?.onZoom(z),
+      onLoupe: (on) => onset?.loupeShowing(on),
     });
-    // REC-10/13/14: meters, tally, guides, zebras, false colour, scopes, focus zoom
+    // REC-10/13/14: meters, tally, guides, zebras, false colour, scopes, focus loupe
     onset = new OnSet(box, player);
-    ovTl.append(onset.badge, onset.lutTag);
-    ovBr.prepend(onset.whole);
+    ovTl.append(onset.lutTag);
     const stage = h("div.live-stage", null, box, onset.strip);
 
     const quality = seg(QUALITY, (store.get("recorder.settings") || {}).preview?.quality || "medium",
@@ -140,7 +140,7 @@ export default {
       const cfg = player.config;
       res.classList.toggle("hidden", !(sig.present && sig.width));
       res.textContent = sig.present ? `${sig.width}×${sig.height} · ${Math.round(sig.fps)} fps` +
-        (cfg && playing && !onset.zoom ? ` → ${cfg.height}p` : "") : "";
+        (cfg && playing ? ` → ${cfg.height}p` : "") : "";
       clear(msgAction);
       let ic = "recorder", title = "", detail = "";
       if (!rec.available) {
@@ -300,7 +300,7 @@ export default {
     function syncPlayer() {
       const want = previewOn && rec.available && document.visibilityState === "visible";
       if (want) player.start();
-      else { player.stop(); onset.reset(); }               // a paused preview is never zoomed
+      else { player.stop(); onset.reset(); }               // a paused preview has no loupe
       renderPreview();
     }
 
@@ -581,14 +581,10 @@ function monitorGroup(st, rec, set, row) {
   const mon = rec.monitor || {};
   const caps = rec.caps || {};
   const mset = (patch) => set({ monitor: patch });
-  // which ratio shows the signal's own pixels on the preview's size (≈ 1:1)
+  // the loupe magnifies what it covers, cut from the full frame (not the preview)
   const sig = rec.signal || {};
-  const ph = PREVIEW_H[st.preview?.quality] || 720;
-  const want = sig.height ? sig.height / ph : 0;
-  const best = want >= 1.5 ? ZOOMS.reduce((a, b) => (Math.abs(b - want) < Math.abs(a - want) ? b : a)) : null;
-  const zoomSub = best ? `${best}× ≈ 1:1 pixels for ${sig.width}×${sig.height} on the ${ph}p preview`
-    : sig.height ? `Every ratio is past 1:1 for ${sig.width}×${sig.height}: shows its pixels bigger`
-    : "Click the live picture to zoom; Esc or Whole picture to go back";
+  const zoomSub = "Click the live picture for a magnifying glass" +
+    (sig.width ? ` · cut from the full ${sig.width}×${sig.height} frame` : "");
   const levelVal = h("span.num.dim", { style: { minWidth: "48px", textAlign: "right" } }, (m.zebra_level || 95) + " %");
   const level = h("input", { type: "range", min: "50", max: "109", step: "1", value: String(m.zebra_level || 95),
     "aria-label": "Zebra level", oninput: (e) => { levelVal.textContent = e.target.value + " %"; },
@@ -630,7 +626,7 @@ function monitorGroup(st, rec, set, row) {
         seg([["off", "Off"], ["histogram", "Histogram"], ["waveform", "Waveform"]], m.scope || "off", (v) => mset({ scope: v }),
             { disabled: caps.analysis ? {} : { histogram: true, waveform: true } })),
       row("Audio meters", "Peak and RMS per channel", toggle(m.meters !== false, (v) => mset({ meters: v }), { label: "Audio meters" })),
-      row("Focus zoom", zoomSub,
+      row("Focus loupe", zoomSub,
         seg(ZOOMS.map((z) => [z, z + "×"]), Number(m.zoom) || 3, (v) => mset({ zoom: v }))),
       row("LUT", caps.lut === false ? "Needs numpy on the board" : "Shows log footage as normal video (preview only)",
         h("div.row", null,

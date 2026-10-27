@@ -232,11 +232,15 @@ may send text:
     rows from the top: each cell's level as IRE x 2, i.e. 200 = 100 %). Zebras = cells at or
     over `monitor.zebra_level`; false colour = the `bands` of the `recorder` topic. Measured on
     the full captured frame, not the preview.
-- `{"type":"zoom","on":true,"x":0.5,"y":0.5}` - focus zoom around that point (0..1 of the whole
-  picture) at the settings' `monitor.zoom` ratio. Reply `{"type":"zoom","on":true,"ratio","x","y",
-  "width","height","src_width","src_height","crop":[left,top,w,h],"pixels"}` (`pixels`: screen
-  pixels per source pixel of the stream, 1 = 1:1) and, when the size changes, a new `config`
-  (with `"zoom": true`); this viewer's video frames are then the crop's. Sending another point
-  moves it (only a new `zoom` comes back). `{"type":"zoom","on":false}` - or a refusal
-  `{"type":"zoom","on":false,"error"}` (e.g. 3 viewers zoomed already) - brings the whole
-  picture back with its `config` and a keyframe. The zoom is per viewer.
+- `{"type":"zoom","on":true,"x":0.5,"y":0.5,"size":0.4}` - a **loupe** (REC-14) around that point
+  (0..1 of the whole picture); `size` = the loupe circle's diameter as a share of the picture's
+  displayed height (0.02..1). The whole picture keeps coming as before; next to it the viewer gets
+  the loupe's own stream: binary `[version u8 = 3][flags u8: bit0 keyframe][pts_us u64 BE][Annex-B
+  access unit]` - a square crop of the full-resolution frame, side = size x picture height /
+  `monitor.zoom` source pixels (a multiple of 8, at least 64; scaled down past 1080), i.e. what
+  the circle covers, `monitor.zoom` times larger. Text reply `{"type":"zoom","on":true,"ratio","x",
+  "y","size","width","height","fps","src_width","src_height","crop":[left,top,w,h]}` (width x
+  height = the loupe stream's size; its stream starts with a keyframe whenever they change -
+  a new size or ratio). Sending another point moves it: only a new `zoom` comes back, the stream
+  goes on. `{"type":"zoom","on":false}` - or a refusal `{"type":"zoom","on":false,"error"}`
+  (e.g. 3 loupes open already) - ends it. The loupe is per viewer.

@@ -946,9 +946,10 @@ class RecorderService:
             if msg.get("on"):
                 try:
                     x, y = float(msg.get("x", 0.5)), float(msg.get("y", 0.5))
+                    size = float(msg.get("size", 0.4))
                 except (TypeError, ValueError):
                     return
-                self._send({"cmd": "zoom", "id": viewer.id, "on": True, "x": x, "y": y,
+                self._send({"cmd": "zoom", "id": viewer.id, "on": True, "x": x, "y": y, "size": size,
                             "ratio": self.settings["monitor"]["zoom"]}, quiet=True)
             else:
                 self._send({"cmd": "zoom", "id": viewer.id, "on": False}, quiet=True)
@@ -965,7 +966,8 @@ class RecorderService:
             zoomed = [v for v in self.preview.viewers if v.zoom]
         for v in zoomed:
             self._send({"cmd": "zoom", "id": v.id, "on": True, "x": v.zoom.get("x", 0.5),
-                        "y": v.zoom.get("y", 0.5), "ratio": self.settings["monitor"]["zoom"]}, quiet=True)
+                        "y": v.zoom.get("y", 0.5), "size": v.zoom.get("size", 0.4),
+                        "ratio": self.settings["monitor"]["zoom"]}, quiet=True)
 
     def _take_started(self, ev):
         nt, self._next_take = self._next_take or {}, None

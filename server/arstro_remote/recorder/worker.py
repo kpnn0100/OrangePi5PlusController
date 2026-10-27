@@ -14,7 +14,7 @@ server (Bluetooth sessions, shells) down with it. The server spawns it:
             {"cmd": "edid", "value": "4k60"}
             {"cmd": "audio_source", "value": "hdmi" | "alsa:<card>"}            (REC-09)
             {"cmd": "monitor", "analysis": true, "lut": {"id", "path"} | null}  (REC-13)
-            {"cmd": "zoom", "id": 3, "on": true, "x": 0.5, "y": 0.5, "ratio": 3} (REC-14)
+            {"cmd": "zoom", "id": 3, "on": true, "x": 0.5, "y": 0.5, "size": 0.4, "ratio": 3} (REC-14)
             {"cmd": "zoom_keyframe", "id": 3}
             {"cmd": "shutdown"}
   stdout  protocol frames (protocol.py): JSON events {"ev": "caps"|"status"|"stream"|
@@ -101,7 +101,7 @@ class Worker:
         self._link_checked = 0.0
         self.last_status = None
         self.stopping_replies = {}
-        self.zoom_wanted = {}             # viewer id -> (x, y, ratio): kept across capture restarts
+        self.zoom_wanted = {}             # viewer id -> (x, y, ratio, size): kept across capture restarts
         self.analysis_wanted = False
         self.lut_spec = None
 
@@ -144,13 +144,13 @@ class Worker:
 
     def _reattach(self):
         """Capture (re)started: the viewers' zooms and the analysis come back with it."""
-        for zid, (x, y, ratio) in list(self.zoom_wanted.items()):
-            self._zoom(zid, x, y, ratio)
+        for zid, (x, y, ratio, size) in list(self.zoom_wanted.items()):
+            self._zoom(zid, x, y, ratio, size)
         self.cap.set_analysis(self.analysis_wanted and self.preview_on, self._on_analysis)
 
-    def _zoom(self, zid, x, y, ratio):
+    def _zoom(self, zid, x, y, ratio, size):
         try:
-            z = self.cap.start_zoom(zid, x, y, ratio, self._on_zoom_au)
+            z = self.cap.start_zoom(zid, x, y, ratio, size, self._on_zoom_au)
             self.emit(ev="zoom", **z.describe())
         except (RuntimeError, self.GLib.Error) as e:
             self.zoom_wanted.pop(zid, None)
@@ -307,9 +307,10 @@ class Worker:
                 x = min(1.0, max(0.0, float(cmd.get("x", 0.5))))
                 y = min(1.0, max(0.0, float(cmd.get("y", 0.5))))
                 ratio = int(cmd.get("ratio") or 3)
-                self.zoom_wanted[zid] = (x, y, ratio)
+                size = min(1.0, max(0.02, float(cmd.get("size") or 0.4)))
+                self.zoom_wanted[zid] = (x, y, ratio, size)
                 if self.cap.pipeline and self.cap.timing:
-                    self._zoom(zid, x, y, ratio)
+                    self._zoom(zid, x, y, ratio, size)
             else:
                 self.zoom_wanted.pop(zid, None)
                 self.cap.stop_zoom(zid)
