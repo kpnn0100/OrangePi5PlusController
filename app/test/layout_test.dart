@@ -189,6 +189,23 @@ void main() {
       log.found(find.text('Recording format'), 'settings sheet');
       // (no scrollUntilVisible: it waits for animations to settle, and the record button pulses forever)
       final sheetScroll = find.descendant(of: find.byType(DraggableScrollableSheet), matching: find.byType(Scrollable)).first;
+      // REC-04: extra copies, one collapsible sub-section per codec, in the order H.264, H.265, FFV1
+      for (var i = 0; i < 12 && find.byKey(const Key('copy-ffv1')).evaluate().isEmpty; i++) {
+        await tester.drag(sheetScroll, const Offset(0, -200));
+        await tester.pump(const Duration(milliseconds: 200));
+      }
+      final ys = [for (final id in ['h264', 'h265', 'ffv1']) find.byKey(Key('copy-$id'))]
+          .map((f) => f.evaluate().isEmpty ? double.nan : tester.getTopLeft(f).dy)
+          .toList();
+      log.found(ys[0] < ys[1] && ys[1] < ys[2] ? find.byKey(const Key('copy-h264')) : find.byKey(const Key('copy-none')),
+          'copy sections in the order H.264, H.265, FFV1 ($ys)');
+      log.found(find.text('1080p · High'), 'the H.264 copy says its options in its header');
+      await tester.tap(find.byKey(const Key('copy-h264')));
+      await tester.pump(const Duration(milliseconds: 400));
+      log.found(find.text('Smaller copies are faster to make and to send'), 'the H.264 section opens');
+      await tester.tap(find.byKey(const Key('copy-h264')));
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.text('Smaller copies are faster to make and to send'), findsNothing, reason: 'the H.264 section closes');
       for (var i = 0; i < 12 && find.text('Test pattern size (width×height@fps)').evaluate().isEmpty; i++) {
         await tester.drag(sheetScroll, const Offset(0, -300));
         await tester.pump(const Duration(milliseconds: 200));

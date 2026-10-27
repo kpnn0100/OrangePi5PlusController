@@ -307,6 +307,39 @@ test("gallery_take_convert_play_delete", ["GAL-01", "GAL-02", "GAL-03", "GAL-04"
   await page.close();
 });
 
+test("extra_copies_by_codec", ["REC-04", "ARC-03"], async () => {
+  // one collapsible sub-section per kind of copy - H.264, H.265, FFV1 - switch in the header
+  const before = await op("recorder.settings.get");
+  const page = await newPage();
+  try {
+    await op("recorder.settings.set", { settings: { mode: "raw", raw: { h264: false, hq: false, ffv1: false } } });
+    await go(page, "recorder");
+    await page.click(".mode-card");
+    await page.waitForSelector(".sheet.show .copy-head");
+    const names = await page.evaluate(() => [...document.querySelectorAll(".sheet.show .copy-head b")].map((b) => b.textContent));
+    check(JSON.stringify(names) === JSON.stringify(["H.264", "H.265", "FFV1"]), "copy sections: " + names);
+    const isOpen = () => page.evaluate(() => document.querySelector(".sheet.show .copy-sec").classList.contains("open"));
+    const wasOpen = await isOpen();
+    await page.click('.sheet.show .copy-head[data-copy="h264"] .txt');
+    check(await until(async () => (await isOpen()) !== wasOpen, 2000), "the H.264 header did not open / close its options");
+    await page.click('.sheet.show .copy-head[data-copy="h264"] .txt');
+    check(await until(async () => (await isOpen()) === wasOpen, 2000), "the H.264 header did not toggle back");
+    // the switch turns the copy on (on the server) and opens its options; the header then says them
+    await page.evaluate(() => document.querySelector('.sheet.show .copy-head[data-copy="h264"] input[type=checkbox]').click());
+    check(await until(async () => (await op("recorder.settings.get")).raw.h264 === true, 3000), "H.264 copy not switched on");
+    check(await until(isOpen, 3000), "switching the copy on did not open its options");
+    const sub = await until(() => page.evaluate(() => {
+      const t = document.querySelector('.sheet.show .copy-head[data-copy="h264"] small');
+      return t && t.textContent.includes("·") ? t.textContent : null;
+    }), 3000);
+    check(sub, "the H.264 header does not show its options");
+    await page.keyboard.press("Escape");
+  } finally {
+    await op("recorder.settings.set", { settings: { mode: before.mode, raw: { h264: before.raw.h264 || false, hq: before.raw.hq, ffv1: before.raw.ffv1 } } });
+    await page.close();
+  }
+});
+
 test("verified_ffv1_replaces_the_raw", ["GAL-08", "REC-04", "ARC-03"], async () => {
   const before = await op("recorder.settings.get");
   const page = await newPage();

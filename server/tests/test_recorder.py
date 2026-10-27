@@ -469,6 +469,33 @@ def raw_recording_with_ffv1_copy_after(c):
     c.a.call("recorder.settings.set", settings={"mode": "h265", "raw": {"ffv1": False}})
 
 
+@test("REC-04", "REC-03", "GAL-05")
+def raw_recording_with_an_h264_copy_during(c):
+    # the share copy is made by the VPU while the RAW is still being written (it follows the file)
+    for bad in ({"h264_scale": "4k"}, {"h264_quality": "best"}):
+        r = c.a.request("recorder.settings.set", settings={"raw": bad})
+        check(r["ok"] is False, (bad, r))
+    s = c.a.call("recorder.settings.set", settings={"mode": "raw", "raw": {"h264": True, "h264_scale": "720", "h264_quality": "high",
+                                                                            "hq": False, "ffv1": False, "when": "during"}})
+    check(s["raw"]["h264"] is True and s["raw"]["h264_scale"] == "720", s["raw"])
+    check("+H.264" in c.a.call("recorder.status")["mode_text"], "mode text does not say the H.264 copy")
+    r = c.a.call("recorder.start", timeout=30)
+    following = c.b.wait_state("jobs", lambda js: any(j["source"] == r["file"] and j["codec"] == "h264-vpu" and j["live"]
+                                                      for j in js), 10)
+    time.sleep(2)
+    c.a.call("recorder.stop", timeout=60)
+    check(following, "no H.264 copy followed the recording: %s" % c.b.state.get("jobs"))
+    ok = c.b.wait_state("jobs", lambda js: any(j["source"] == r["file"] and j["codec"] == "h264-vpu" and j["state"] == "done"
+                                               for j in js), 120)
+    check(ok, "the H.264 copy did not finish: %s" % c.b.state.get("jobs"))
+    take = r["file"][:-4]
+    t = take_with(c, lambda t: t["id"] == take and "H.264" in t["kinds"])
+    check(t, "the take has no H.264 copy")
+    item = t and next(i for i in t["items"] if i["kind"] == "H.264")
+    check(item and item["height"] == 720 and item["codec"] == "h264", item)
+    c.a.call("recorder.settings.set", settings={"mode": "h265", "raw": {"h264": False}})
+
+
 @test("REC-05", "GAL-06")
 def guards(c):
     r = c.a.call("recorder.start", timeout=30)

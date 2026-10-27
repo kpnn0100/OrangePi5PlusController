@@ -21,6 +21,10 @@ DEFAULTS = {
         "container": "mp4",         # mp4 | mkv
     },
     "raw": {
+        # extra copies of a RAW take (REC-04), made during or after recording - H.264, H.265, FFV1
+        "h264": False,              # also make an H.264 MP4 share copy (VPU)
+        "h264_quality": "high",     # high | higher | max
+        "h264_scale": "source",     # source | 1080 | 720
         "hq": False,                # also make a high-quality H.265 file
         "hq_engine": "vpu",         # vpu (hardware, ~real time) | x265 (CPU, best, slow)
         "hq_quality": "high",       # high | higher | max
@@ -44,6 +48,9 @@ SCHEMA = {
     ("h265", "rc"): ("cbr", "vbr"),
     ("h265", "gop"): (float, 0.1, 10.0),
     ("h265", "container"): ("mp4", "mkv"),
+    ("raw", "h264"): (bool,),
+    ("raw", "h264_quality"): ("high", "higher", "max"),
+    ("raw", "h264_scale"): ("source", "1080", "720"),
     ("raw", "hq"): (bool,),
     ("raw", "hq_engine"): ("vpu", "x265"),
     ("raw", "hq_quality"): ("high", "higher", "max"),

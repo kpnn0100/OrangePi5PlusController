@@ -72,6 +72,9 @@
    "container": "mp4"
   },
   "raw": {
+   "h264": true,
+   "h264_quality": "high",
+   "h264_scale": "1080",
    "hq": true,
    "hq_engine": "x265",
    "hq_quality": "high",

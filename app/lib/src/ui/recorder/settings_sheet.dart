@@ -102,45 +102,81 @@ class _SettingsBodyState extends State<_SettingsBody> {
               ])
             else ...[
               const _Group('Extra copies'),
+              // REC-04: one sub-section per kind of copy - H.264, H.265, FFV1 - its switch in the
+              // header, its options inside (tap the header; switching a copy on opens it too)
               _Card([
-                _SwitchRow('High-quality H.265', 'A compact copy made from the RAW file', raw['hq'] == true,
-                    caps['vpu_h265'] == true || caps['x265'] == true ? (v) => _set({'raw': {'hq': v}}) : null),
-                if (raw['hq'] == true) ...[
-                  _Row('Encoder', raw['hq_engine'] == 'x265' ? 'CPU, best quality, slow' : 'Hardware, about real time',
-                      _seg<String>({'vpu': 'VPU', 'x265': 'x265'}, raw['hq_engine'] as String?,
-                          (v) => _set({'raw': {'hq_engine': v}}),
-                          disabled: {if (caps['vpu_h265'] != true) 'vpu', if (caps['x265'] != true) 'x265'})),
-                  _Row('Quality', null,
-                      _seg<String>({'high': 'High', 'higher': 'Higher', 'max': 'Max'}, raw['hq_quality'] as String?,
-                          (v) => _set({'raw': {'hq_quality': v}}))),
-                  if (raw['hq_engine'] == 'x265')
-                    _Row('x265 preset', 'Slower presets compress better',
-                        DropdownButton<String>(
-                          value: raw['x265_preset'] as String?,
-                          items: [
-                            for (final p in ['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow'])
-                              DropdownMenuItem(value: p, child: Text(p)),
-                          ],
-                          onChanged: (v) => _set({'raw': {'x265_preset': v}}),
-                        )),
-                  _Row('Chroma', '4:2:0 plays everywhere; source keeps 4:2:2 / 4:4:4',
-                      _seg<String>({'420': '4:2:0', 'source': 'Source'}, raw['hq_chroma'] as String?,
-                          (v) => _set({'raw': {'hq_chroma': v}}))),
-                ],
-                _SwitchRow('Lossless FFV1', 'Exact copy at a fraction of the RAW size', raw['ffv1'] == true,
-                    caps['ffv1'] == true || caps['gpu_ffv1'] == true ? (v) => _set({'raw': {'ffv1': v}}) : null),
-                if (raw['ffv1'] == true)
-                  _Row('FFV1 engine', 'GPU is slower but leaves the CPU free',
-                      _seg<String>({'cpu': 'CPU', 'gpu': 'GPU'}, raw['ffv1_engine'] as String?,
-                          (v) => _set({'raw': {'ffv1_engine': v}}),
-                          disabled: {if (caps['ffv1'] != true) 'cpu', if (caps['gpu_ffv1'] != true) 'gpu'})),
-                if (raw['ffv1'] == true)
-                  _SwitchRow(
-                      'Delete RAW after a verified copy',
-                      'Every frame and audio sample is compared byte for byte first; if anything differs the RAW stays',
-                      raw['ffv1_replace_raw'] != false,
-                      (v) => _set({'raw': {'ffv1_replace_raw': v}})),
-                if (raw['hq'] == true || raw['ffv1'] == true)
+                _CopySection(
+                  id: 'h264',
+                  title: 'H.264',
+                  what: 'MP4 share copy that plays everywhere',
+                  summary: '${{'source': 'Source size', '1080': '1080p', '720': '720p'}[raw['h264_scale']] ?? 'Source size'}'
+                      ' · ${_cap(raw['h264_quality'])}',
+                  on: raw['h264'] == true,
+                  onChanged: caps['vpu_h264'] == true ? (v) => _set({'raw': {'h264': v}}) : null,
+                  open: _openCopies,
+                  children: [
+                    _Row('Size', 'Smaller copies are faster to make and to send',
+                        _seg<String>({'source': 'Source', '1080': '1080p', '720': '720p'}, raw['h264_scale'] as String?,
+                            (v) => _set({'raw': {'h264_scale': v}}))),
+                    _Row('Quality', 'Hardware encoder (VPU)',
+                        _seg<String>({'high': 'High', 'higher': 'Higher', 'max': 'Max'}, raw['h264_quality'] as String?,
+                            (v) => _set({'raw': {'h264_quality': v}}))),
+                  ],
+                ),
+                _CopySection(
+                  id: 'h265',
+                  title: 'H.265',
+                  what: 'Compact high-quality copy',
+                  summary: '${raw['hq_engine'] == 'x265' ? 'x265 ${raw['x265_preset']}' : 'VPU'} · ${_cap(raw['hq_quality'])}'
+                      ' · ${raw['hq_chroma'] == 'source' ? 'source chroma' : '4:2:0'}',
+                  on: raw['hq'] == true,
+                  onChanged: caps['vpu_h265'] == true || caps['x265'] == true ? (v) => _set({'raw': {'hq': v}}) : null,
+                  open: _openCopies,
+                  children: [
+                    _Row('Encoder', raw['hq_engine'] == 'x265' ? 'CPU, best quality, slow' : 'Hardware, about real time',
+                        _seg<String>({'vpu': 'VPU', 'x265': 'x265'}, raw['hq_engine'] as String?,
+                            (v) => _set({'raw': {'hq_engine': v}}),
+                            disabled: {if (caps['vpu_h265'] != true) 'vpu', if (caps['x265'] != true) 'x265'})),
+                    _Row('Quality', null,
+                        _seg<String>({'high': 'High', 'higher': 'Higher', 'max': 'Max'}, raw['hq_quality'] as String?,
+                            (v) => _set({'raw': {'hq_quality': v}}))),
+                    if (raw['hq_engine'] == 'x265')
+                      _Row('x265 preset', 'Slower presets compress better',
+                          DropdownButton<String>(
+                            value: raw['x265_preset'] as String?,
+                            items: [
+                              for (final p in ['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow'])
+                                DropdownMenuItem(value: p, child: Text(p)),
+                            ],
+                            onChanged: (v) => _set({'raw': {'x265_preset': v}}),
+                          )),
+                    _Row('Chroma', '4:2:0 plays everywhere; source keeps 4:2:2 / 4:4:4',
+                        _seg<String>({'420': '4:2:0', 'source': 'Source'}, raw['hq_chroma'] as String?,
+                            (v) => _set({'raw': {'hq_chroma': v}}))),
+                  ],
+                ),
+                _CopySection(
+                  id: 'ffv1',
+                  title: 'FFV1',
+                  what: 'Lossless: the exact picture at a fraction of the RAW size',
+                  summary: '${raw['ffv1_engine'] == 'gpu' ? 'GPU' : 'CPU'}'
+                      ' · ${raw['ffv1_replace_raw'] != false ? 'replaces the RAW' : 'keeps the RAW'}',
+                  on: raw['ffv1'] == true,
+                  onChanged: caps['ffv1'] == true || caps['gpu_ffv1'] == true ? (v) => _set({'raw': {'ffv1': v}}) : null,
+                  open: _openCopies,
+                  children: [
+                    _Row('Engine', 'GPU is slower but leaves the CPU free',
+                        _seg<String>({'cpu': 'CPU', 'gpu': 'GPU'}, raw['ffv1_engine'] as String?,
+                            (v) => _set({'raw': {'ffv1_engine': v}}),
+                            disabled: {if (caps['ffv1'] != true) 'cpu', if (caps['gpu_ffv1'] != true) 'gpu'})),
+                    _SwitchRow(
+                        'Delete RAW after a verified copy',
+                        'Every frame and audio sample is compared byte for byte first; if anything differs the RAW stays',
+                        raw['ffv1_replace_raw'] != false,
+                        (v) => _set({'raw': {'ffv1_replace_raw': v}})),
+                  ],
+                ),
+                if (raw['h264'] == true || raw['hq'] == true || raw['ffv1'] == true)
                   _Row('Make copies', 'During recording needs more CPU/VPU',
                       _seg<String>({'during': 'During', 'after': 'After'}, raw['when'] as String?,
                           (v) => _set({'raw': {'when': v}}))),
@@ -221,6 +257,106 @@ class _SettingsBodyState extends State<_SettingsBody> {
         if (s.isNotEmpty && s.first != value) onChanged(s.first);
       },
     );
+  }
+}
+
+/// Which copy sub-sections are open (view state, kept while the app runs).
+final Set<String> _openCopies = {};
+
+String _cap(Object? q) {
+  final s = q is String ? q : 'high';
+  return s.isEmpty ? s : s[0].toUpperCase() + s.substring(1);
+}
+
+/// One kind of extra copy (REC-04): chevron, name, what it is (or its options when on) and its
+/// switch; tapping the header shows / hides [children]. Switching it on opens it.
+class _CopySection extends StatefulWidget {
+  const _CopySection({
+    required this.id,
+    required this.title,
+    required this.what,
+    required this.summary,
+    required this.on,
+    required this.onChanged,
+    required this.open,
+    required this.children,
+  });
+  final String id, title, what, summary;
+  final bool on;
+  final ValueChanged<bool>? onChanged;
+  final Set<String> open;
+  final List<Widget> children;
+
+  @override
+  State<_CopySection> createState() => _CopySectionState();
+}
+
+class _CopySectionState extends State<_CopySection> {
+  bool get _open => widget.open.contains(widget.id);
+
+  void _flip() => setState(() => _open ? widget.open.remove(widget.id) : widget.open.add(widget.id));
+
+  @override
+  Widget build(BuildContext context) {
+    final t = Theme.of(context).textTheme;
+    final scheme = Theme.of(context).colorScheme;
+    final onChanged = widget.onChanged;
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      Semantics(
+        button: true,
+        expanded: _open,
+        child: InkWell(
+          key: Key('copy-${widget.id}'),
+          onTap: _flip,
+          borderRadius: BorderRadius.circular(10),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Row(children: [
+              AnimatedRotation(
+                turns: _open ? 0 : -0.25,
+                duration: const Duration(milliseconds: 180),
+                child: Icon(Icons.expand_more, color: scheme.onSurfaceVariant),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(widget.title, style: t.bodyLarge?.copyWith(fontWeight: FontWeight.w600)),
+                  Text(widget.on ? widget.summary : widget.what,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: t.bodySmall?.copyWith(color: widget.on ? scheme.onSurface : scheme.onSurfaceVariant)),
+                ]),
+              ),
+              Switch(
+                value: widget.on,
+                onChanged: onChanged == null
+                    ? null
+                    : (v) {
+                        if (v) setState(() => widget.open.add(widget.id));
+                        onChanged(v);
+                      },
+              ),
+            ]),
+          ),
+        ),
+      ),
+      AnimatedSize(
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeOut,
+        alignment: Alignment.topCenter,
+        child: _open
+            ? Padding(
+                padding: const EdgeInsets.only(left: 32, bottom: 4),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                  for (var i = 0; i < widget.children.length; i++) ...[
+                    if (i > 0) Divider(height: 1, color: scheme.outlineVariant.withValues(alpha: 0.4)),
+                    widget.children[i],
+                  ],
+                ]),
+              )
+            : const SizedBox(width: double.infinity),
+      ),
+    ]);
   }
 }
 

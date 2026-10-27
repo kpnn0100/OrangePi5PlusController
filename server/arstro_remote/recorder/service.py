@@ -278,7 +278,7 @@ class RecorderService:
         s = self.settings
         mode = ("H.265 %d Mb/s %s" % (s["h265"]["bitrate"], s["h265"]["container"].upper())
                 if s["mode"] == "h265" else "RAW" + "".join(
-                    " +" + {"h265-vpu": "HQ", "h265-x265": "HQ", "ffv1": "FFV1", "ffv1-gpu": "FFV1"}[c]
+                    " +" + {"h264-vpu": "H.264", "h265-vpu": "HQ", "h265-x265": "HQ", "ffv1": "FFV1", "ffv1-gpu": "FFV1"}[c]
                     for c, _ in self._planned_jobs()))
         return {
             "available": bool(self.proc and self.proc.poll() is None and self.caps),
@@ -305,6 +305,8 @@ class RecorderService:
         out = []
         if self.settings["mode"] != "raw":
             return out
+        if r.get("h264") and caps.get("vpu_h264"):
+            out.append(("h264-vpu", {"quality": r.get("h264_quality", "high"), "scale": r.get("h264_scale", "source")}))
         if r["hq"]:
             codec = "h265-x265" if r["hq_engine"] == "x265" or not caps.get("vpu_h265") else "h265-vpu"
             out.append((codec, {"quality": r["hq_quality"], "preset": r["x265_preset"],

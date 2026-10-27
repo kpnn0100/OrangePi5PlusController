@@ -22,7 +22,7 @@ and all three are updated live by the same state events (ARC-03).
 | Live preview | REC-02 | Recorder › Live (native H.264 decoder) | `rec preview FILE [--seconds N]` saves the stream ¹ | Recorder (WebCodecs / MSE) |
 | Preview quality | REC-02 | Live (360p/720p/1080p) | `rec quality low\|medium\|high` | Recorder |
 | Start / stop recording | REC-03 | Record button | `rec start [--duration S]`, `rec stop` | Record button |
-| Recording settings | REC-04 | Settings sheet | `rec settings`, `rec set key=value ...` | Settings sheet |
+| Recording settings (extra copies: H.264 / H.265 / FFV1, each a collapsible sub-section) | REC-04 | Settings sheet | `rec settings`, `rec set key=value ...` (`raw.h264=true raw.h264_scale=720 raw.h264_quality=high`) | Settings sheet |
 | EDID | REC-04 | Settings sheet | `rec edid 4k60\|4k30\|1080p\|keep` | Settings sheet |
 | Test source | REC-08 | Settings sheet › Source | `rec source --test WxH@FPS \| --hdmi` | Settings sheet › Source |
 | Gallery list + filter, grouped by month and day | GAL-01 | Recorder › Gallery (month and day headings) | `gallery list [--kind K]` (month / day headings), `gallery show TAKE` | Gallery (month and day headings) |

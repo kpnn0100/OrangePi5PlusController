@@ -239,6 +239,29 @@ export function openSettings() {
     const scroll = body.parentElement ? body.parentElement.scrollTop : 0;
 
     const h265 = st.h265 || {}, raw = st.raw || {};
+    const cap = (q) => (q || "").charAt(0).toUpperCase() + (q || "").slice(1);
+    // a copy's sub-section: header = chevron, name, what it is (or its options when on), switch
+    const copySec = (key, title, what, summary, on, onToggle, disabled, options) => {
+      const open = OPEN_COPIES.has(key);
+      let sec, head;
+      const flip = () => {                 // in place, so the body eases open / shut
+        const o = !OPEN_COPIES.has(key);
+        if (o) OPEN_COPIES.add(key); else OPEN_COPIES.delete(key);
+        saveOpen();
+        sec.classList.toggle("open", o);
+        head.setAttribute("aria-expanded", String(o));
+      };
+      const sw = toggle(on, (v) => { if (v) { OPEN_COPIES.add(key); saveOpen(); } onToggle(v); }, { disabled, label: title + " copy" });
+      head = h("div.copy-head", { role: "button", tabindex: "0", "aria-expanded": String(open), "data-copy": key,
+        onclick: (e) => { if (!e.target.closest(".switch")) flip(); },
+        onkeydown: (e) => { if ((e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) { e.preventDefault(); flip(); } } },
+        icon("chevron", "copy-chev"),
+        h("div.txt", null, h("b", null, title), h("small", null, on && summary ? summary : what)),
+        sw);
+      sec = h("div.copy-sec" + (open ? ".open" : "") + (on ? ".on" : ""), null, head,
+        h("div.copy-body", null, h("div.copy-inner", null, options)));
+      return sec;
+    };
     const bitrateVal = h("span.num.dim", { style: { minWidth: "70px", textAlign: "right" } }, h265.bitrate + " Mb/s");
     const bitrate = h("input", { type: "range", min: "2", max: "200", step: "1", value: String(h265.bitrate),
       oninput: (e) => { bitrateVal.textContent = e.target.value + " Mb/s"; },
@@ -290,29 +313,40 @@ export function openSettings() {
           seg([["mp4", "MP4"], ["mkv", "MKV"]], h265.container, (v) => set({ h265: { container: v } }))))
       : h("div", null,
         h("div.set-group-title", null, "Extra copies"),
-        h("div.set-group", null,
-          row("High-quality H.265", "A compact copy made from the RAW file",
-            toggle(raw.hq, (v) => set({ raw: { hq: v } }), { disabled: !caps.vpu_h265 && !caps.x265 })),
-          raw.hq ? h("div", null,
-            row("Encoder", raw.hq_engine === "x265" ? "CPU, best quality, slow" : "Hardware, about real time",
-              seg([["vpu", "VPU"], ["x265", "x265"]], raw.hq_engine, (v) => set({ raw: { hq_engine: v } }),
-                  { disabled: { vpu: !caps.vpu_h265, x265: !caps.x265 } })),
-            row("Quality", null, seg([["high", "High"], ["higher", "Higher"], ["max", "Max"]], raw.hq_quality,
-                                     (v) => set({ raw: { hq_quality: v } }))),
-            raw.hq_engine === "x265" ? row("x265 preset", "Slower presets compress better",
-              selectEl(["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow"], raw.x265_preset,
-                       (v) => set({ raw: { x265_preset: v } }))) : null,
-            row("Chroma", "4:2:0 plays everywhere; source keeps 4:2:2 / 4:4:4",
-              seg([["420", "4:2:0"], ["source", "Source"]], raw.hq_chroma, (v) => set({ raw: { hq_chroma: v } })))) : null,
-          row("Lossless FFV1", "Exact copy at a fraction of the RAW size",
-            toggle(raw.ffv1, (v) => set({ raw: { ffv1: v } }), { disabled: !caps.ffv1 && !caps.gpu_ffv1 })),
-          raw.ffv1 ? row("FFV1 engine", "GPU is slower but leaves the CPU free",
-            seg([["cpu", "CPU"], ["gpu", "GPU"]], raw.ffv1_engine, (v) => set({ raw: { ffv1_engine: v } }),
-                { disabled: { cpu: !caps.ffv1, gpu: !caps.gpu_ffv1 } })) : null,
-          raw.ffv1 ? row("Delete RAW after a verified copy",
-            "Every frame and audio sample is compared byte for byte first; if anything differs the RAW stays",
-            toggle(raw.ffv1_replace_raw, (v) => set({ raw: { ffv1_replace_raw: v } }))) : null,
-          (raw.hq || raw.ffv1) ? row("Make copies", "During recording needs more CPU/VPU",
+        // REC-04: one sub-section per kind of copy, H.264 - H.265 - FFV1; its switch in the header,
+        // its options inside (the header opens them; switching a copy on opens it too)
+        h("div.set-group.copies", null,
+          copySec("h264", "H.264", "MP4 share copy that plays everywhere",
+            raw.h264 ? [{ source: "Source size", "1080": "1080p", "720": "720p" }[raw.h264_scale], cap(raw.h264_quality)].join(" · ") : null,
+            raw.h264, (v) => set({ raw: { h264: v } }), !caps.vpu_h264,
+            [row("Size", "Smaller copies are faster to make and to send",
+               seg([["source", "Source"], ["1080", "1080p"], ["720", "720p"]], raw.h264_scale, (v) => set({ raw: { h264_scale: v } }))),
+             row("Quality", "Hardware encoder (VPU)", seg([["high", "High"], ["higher", "Higher"], ["max", "Max"]], raw.h264_quality,
+                                                         (v) => set({ raw: { h264_quality: v } })))]),
+          copySec("h265", "H.265", "Compact high-quality copy",
+            raw.hq ? [raw.hq_engine === "x265" ? "x265 " + raw.x265_preset : "VPU", cap(raw.hq_quality),
+                      raw.hq_chroma === "source" ? "source chroma" : "4:2:0"].join(" · ") : null,
+            raw.hq, (v) => set({ raw: { hq: v } }), !caps.vpu_h265 && !caps.x265,
+            [row("Encoder", raw.hq_engine === "x265" ? "CPU, best quality, slow" : "Hardware, about real time",
+               seg([["vpu", "VPU"], ["x265", "x265"]], raw.hq_engine, (v) => set({ raw: { hq_engine: v } }),
+                   { disabled: { vpu: !caps.vpu_h265, x265: !caps.x265 } })),
+             row("Quality", null, seg([["high", "High"], ["higher", "Higher"], ["max", "Max"]], raw.hq_quality,
+                                      (v) => set({ raw: { hq_quality: v } }))),
+             raw.hq_engine === "x265" ? row("x265 preset", "Slower presets compress better",
+               selectEl(["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow"], raw.x265_preset,
+                        (v) => set({ raw: { x265_preset: v } }))) : null,
+             row("Chroma", "4:2:0 plays everywhere; source keeps 4:2:2 / 4:4:4",
+               seg([["420", "4:2:0"], ["source", "Source"]], raw.hq_chroma, (v) => set({ raw: { hq_chroma: v } })))]),
+          copySec("ffv1", "FFV1", "Lossless: the exact picture at a fraction of the RAW size",
+            raw.ffv1 ? [raw.ffv1_engine === "gpu" ? "GPU" : "CPU", raw.ffv1_replace_raw ? "replaces the RAW" : "keeps the RAW"].join(" · ") : null,
+            raw.ffv1, (v) => set({ raw: { ffv1: v } }), !caps.ffv1 && !caps.gpu_ffv1,
+            [row("Engine", "GPU is slower but leaves the CPU free",
+               seg([["cpu", "CPU"], ["gpu", "GPU"]], raw.ffv1_engine, (v) => set({ raw: { ffv1_engine: v } }),
+                   { disabled: { cpu: !caps.ffv1, gpu: !caps.gpu_ffv1 } })),
+             row("Delete RAW after a verified copy",
+               "Every frame and audio sample is compared byte for byte first; if anything differs the RAW stays",
+               toggle(raw.ffv1_replace_raw, (v) => set({ raw: { ffv1_replace_raw: v } })))]),
+          (raw.h264 || raw.hq || raw.ffv1) ? row("Make copies", "During recording needs more CPU/VPU",
             seg([["during", "During"], ["after", "After"]], raw.when, (v) => set({ raw: { when: v } }))) : null)),
 
       h("div.set-group-title", null, "Input"),
@@ -338,6 +372,10 @@ export function openSettings() {
   s.close = () => { offs.forEach((f) => f()); origClose(); };
   return s;
 }
+
+// which copy sub-sections this page has open (view state; remembered in this browser only)
+const OPEN_COPIES = new Set((() => { try { return JSON.parse(localStorage.getItem("rec.copies.open") || "[]"); } catch { return []; } })());
+function saveOpen() { try { localStorage.setItem("rec.copies.open", JSON.stringify([...OPEN_COPIES])); } catch { /* private mode */ } }
 
 function selectEl(values, value, onChange) {
   const el = h("select.input", { style: { width: "auto", minWidth: "130px" }, onchange: (e) => onChange(e.target.value) },
