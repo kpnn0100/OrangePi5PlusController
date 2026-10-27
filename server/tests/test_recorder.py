@@ -297,6 +297,21 @@ def convert_to_h264_share_with_live_progress(c):
     check(r["ok"] is False, r)
 
 
+@test("GAL-05", "ARC-03")
+def a_running_conversion_is_cancelled(c):
+    # every controller named the job `id` - the field that carries the request's own number - so
+    # the server read the request counter instead: "no job 13", and cancel never worked
+    job = c.a.call("gallery.convert", file=c.h265_file, target="h265-x265", quality="max", preset="slow")
+    running = c.b.wait_state("jobs", lambda js: any(j["id"] == job["id"] and j["state"] == "running" for j in js), 15)
+    check(running, "the job never ran: %s" % c.b.state.get("jobs"))
+    r = c.a.request("jobs.cancel", job=job["id"])
+    check(r["ok"] and r["data"]["id"] == job["id"], r)
+    gone = c.b.wait_state("jobs", lambda js: any(j["id"] == job["id"] and j["state"] == "cancelled" for j in js), 15)
+    check(gone, "the observer never saw the job cancelled: %s" % c.b.state.get("jobs"))
+    r = c.a.request("jobs.cancel", job=987654)
+    check(r["ok"] is False and "no job 987654" in r["error"], r)
+
+
 @test("GAL-02", "GAL-03", "SEC-03")
 def media_range_and_thumbnail(c):
     with http(c, "/api/media/" + c.h264_file, {"Range": "bytes=0-99"}) as r:

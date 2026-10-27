@@ -743,7 +743,7 @@ def cmd_jobs(ctl, a):
                 print("      %s" % j["note"])
         out(a, r, lambda js: [row(j) for j in js] or print("no jobs"))
     elif sub == "cancel":
-        ctl.call("jobs.cancel", id=a.id)
+        ctl.call("jobs.cancel", job=a.id)
         print("cancelling job #%d" % a.id)
     elif sub == "clear":
         ctl.call("jobs.clear")

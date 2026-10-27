@@ -657,7 +657,7 @@ class _JobRow extends StatelessWidget {
               tooltip: 'Cancel',
               visualDensity: VisualDensity.compact,
               icon: const Icon(Icons.close_rounded, size: 18),
-              onPressed: () => runOp(context, client, 'jobs.cancel', {'id': job['id']}),
+              onPressed: () => runOp(context, client, 'jobs.cancel', {'job': job['id']}),
             ),
         ]),
         if (!done)

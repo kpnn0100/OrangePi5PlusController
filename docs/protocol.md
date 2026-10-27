@@ -114,7 +114,7 @@ Other events: `stats` `{data}` (after `stats.subscribe`), `term.exit` `{term, co
 | `gallery.verify` | `file` (the take's FFV1 or RAW), `delete_raw` | a *verify* job: decodes the FFV1 and compares every frame plane and audio sample with the RAW byte for byte; with `delete_raw` the RAW is deleted only if all of it is identical (GAL-08) |
 | `gallery.delete` | `file` | refused while it is recorded or converted |
 | `gallery.delete_take` | `take` | |
-| `jobs.list` / `jobs.clear` / `jobs.cancel` | `id` (cancel) | `{jobs}` / job |
+| `jobs.list` / `jobs.clear` / `jobs.cancel` | `job` (cancel: the job's number - never `id`, which is the request's own number) | `{jobs}` / job |
 | `screen.status` | | the `screen` topic |
 | `screen.settings.set` | `settings: {quality?, encoder?, bitrate?}` - quality low ≤ 960 px 15 fps, medium ≤ 1280 px 30 fps, high native 30 fps; encoder `auto` (VPU when present) / `vpu` / `cpu` (x264); bitrate bits/s, 0 = from the quality, else 200000 - 20000000 (SCR-05) | saved, shared; only the given keys change; a running capture restarts |
 | `admin.status` | | `{version, bluetooth, input, web, recorder, sessions}` |

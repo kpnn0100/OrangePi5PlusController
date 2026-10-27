@@ -1023,7 +1023,13 @@ class JobManager:
             self._finish(job)
             return False
         if not job.finished:
-            job.state = getattr(job, "result", None) or ("done" if code == 0 else "failed")
+            result = getattr(job, "result", None)
+            if getattr(job, "cancelled", False) and result != "done":
+                # a cancel can land before the worker installed its SIGTERM handler: it then dies of
+                # the signal (code -15) instead of saying "cancelled" - it was still cancelled
+                job.state, job.error = "cancelled", "cancelled"
+            else:
+                job.state = result or ("done" if code == 0 else "failed")
             job.result = None
             if job.state != "done":
                 job.error = job.error or f"worker exited with code {code} (see {job.log_path})"

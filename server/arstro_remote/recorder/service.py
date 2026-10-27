@@ -840,9 +840,14 @@ class RecorderService:
         return {"jobs": [j.describe() for j in self.jobs.jobs]}
 
     def op_jobs_cancel(self, _s, msg):
-        job = self.jobs.get(msg.get("id"))
+        # the job is `job`, never `id`: `id` is the request's own number in every message, so a
+        # job named by `id` was replaced by the request counter ("no job 13") - cancel never worked
+        try:
+            job = self.jobs.get(msg.get("job"))
+        except (TypeError, ValueError):
+            job = None
         if not job:
-            raise OpError("no job %s" % msg.get("id"))
+            raise OpError("no job %s" % msg.get("job"))
         self._main(self.jobs.cancel, job)
         return job.describe()
 

@@ -324,7 +324,7 @@ export function jobRow(j) {
           j.codec === "verify" ? `${j.title} · against ${j.source}` : `${j.title} · from ${j.source}`)),
       stateTag,
       !finished ? h("button.btn.ghost.icon.sm", { title: "Cancel", "aria-label": "Cancel conversion",
-                                                  onclick: (e) => run("jobs.cancel", { id: j.id }, { btn: e.currentTarget }) }, icon("x")) : null),
+                                                  onclick: (e) => run("jobs.cancel", { job: j.id }, { btn: e.currentTarget }) }, icon("x")) : null),
     !finished ? h("div.bar", null, h("i", { style: { width: pct + "%" } })) : null,
     detail ? h("div", { style: { fontSize: "12.5px", color: j.state === "failed" || (v && !v.ok) ? "var(--err)" : "var(--muted)" } }, detail) : null,
     // GAL-09/10: repaired RAW, skipped damage, retries and resumes
