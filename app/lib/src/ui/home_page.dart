@@ -12,6 +12,7 @@ import 'recorder/recorder_page.dart';
 import 'remote_page.dart';
 import 'settings_page.dart';
 import 'terminal_page.dart';
+import 'widgets.dart';
 import 'wifi_page.dart';
 
 class HomePage extends StatefulWidget {
@@ -104,6 +105,7 @@ class _HomePageState extends State<HomePage> {
         canPop: false,
         onPopInvokedWithResult: (didPop, _) {
           if (didPop) return;
+          if (handleBack()) return;    // e.g. the live view leaves its focus zoom first
           if (full) {
             _immersive!.value = false; // back leaves full screen first
           } else {

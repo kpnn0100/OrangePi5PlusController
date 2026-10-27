@@ -7,7 +7,7 @@ Control an Orange Pi 5 Plus - or any Linux machine - from an **Android app**, a 
 |---|---|
 | **Monitor** | CPU, memory, temperatures, disks, network, processes |
 | **System** | server info, logs (live tail, level, markers), modules, pairing, web access, restart / reboot |
-| **Camera** | HDMI input, USB (V4L2) camera or test pattern: live H.264 preview, recording (H.265 or RAW), gallery with conversion and verified-lossless FFV1 |
+| **Camera** | HDMI input, USB (V4L2) camera or test pattern: live H.264 preview, recording (H.265 MOV with PCM audio, or RAW), gallery with conversion and verified-lossless FFV1 - and an external recorder for film: time-of-day timecode in every file, slate names and markers, audio meters and an audio-interface input, zebras / false colour / waveform / LUTs, click-to-zoom focus check, disk speed check and time left, a GPIO record button and tally light, a CSV of the takes for the editor |
 | **Connection** | Wi-Fi, Ethernet and every NetworkManager profile (DHCP / static), Bluetooth devices |
 | **Terminal** | shared shells |
 | **Screen** | watch and control the desktop (like TeamViewer), remote keyboard and mouse |
@@ -90,6 +90,9 @@ Everything the app does, in the browser.
 
 ```bash
 arstro-remote rec status | start | stop            # recorder
+arstro-remote rec slate --scene 12A --shot 3 --take 1   # names the next takes; rec mark [label] while recording
+arstro-remote rec disktest                         # can the storage disk keep up with the mode?
+arstro-remote gallery note TAKE --good --notes "..."; gallery csv --day 2026-10-27   # the editor's sheet
 arstro-remote rec set mode=raw raw.ffv1=true       # settings (shared with app and web)
 arstro-remote gallery list                         # recordings, by month and day
 arstro-remote gallery download --day 2026-09-30 --zip   # a whole day as one ZIP

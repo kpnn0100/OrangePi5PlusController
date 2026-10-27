@@ -1,5 +1,6 @@
-// Gallery (GAL-01..12): takes grouped by month and day, their variants, playback (GAL-11),
-// download - one file, or many at once as one ZIP (GAL-12) - convert, delete, jobs.
+// Gallery (GAL-01..13): takes grouped by month and day, their variants, playback (GAL-11),
+// download - one file, or many at once as one ZIP (GAL-12) - convert, delete, jobs; the slate,
+// timecode, good takes, notes, markers and A/V sync of each take, and the editor's CSV (GAL-13).
 
 import { h, clear, icon, store, conn, run, sheet, confirmBox, toast, toggle, fmtBytes, fmtDur, busy, errText } from "../core.js";
 import { FilePlayer, streamMode } from "../fileplayer.js";
@@ -100,6 +101,44 @@ function filesOf(takes, kind) {
   return out;
 }
 
+/** One frame in ms at a rate ("30000/1001", 29.97 or 30). */
+export function frameMs(rate) {
+  if (typeof rate === "string" && rate.includes("/")) {
+    const [n, d] = rate.split("/").map(Number);
+    return n ? 1000 * d / n : 1000 / 30;
+  }
+  return 1000 / (Number(rate) || 30);
+}
+
+/** Audio and video of the take differ by more than a frame (REC-09): the drift in ms, else null. */
+export function avOff(meta) {
+  const d = meta && meta.drift_ms;
+  return d !== null && d !== undefined && Math.abs(d) > frameMs(meta.rate) ? d : null;
+}
+
+/** "Scene 12A · Shot 3 · Take 4" - the words the server uses (takes.slate_title). */
+function slateTitle(m) {
+  if (!m || !m.scene) return null;
+  return ["Scene " + m.scene, m.shot ? "Shot " + m.shot : null, "Take " + (m.take || 1)].filter(Boolean).join(" · ");
+}
+
+function rateText(rate) {
+  if (!rate) return null;
+  const [n, d] = String(rate).split("/").map(Number);
+  const f = d ? n / d : n;
+  return (Math.round(f * 100) / 100) + " fps";
+}
+
+/** Save `text` as a file in the browser (the editor's CSV). */
+function saveText(text, name, type) {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  const a = h("a", { href: url, download: name });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
 function checkbox(onToggle, label) {
   const b = h("button.selbox", { type: "button", role: "checkbox", "aria-checked": "false", "aria-label": label,
                                  onclick: (e) => { e.stopPropagation(); onToggle(); } }, icon("check"));
@@ -128,9 +167,13 @@ export default {
     const grid = h("div.gallery");
     const empty = h("div.empty.hidden");
     const barInfo = h("div.grow.ellipsis");
-    const dlBtn = h("button.btn.sm.primary", { onclick: (e) => downloadSelected(e.currentTarget) }, icon("download"), "Download ZIP");
+    const dlBtn = h("button.btn.sm.primary", { onclick: (e) => downloadSelected(e.currentTarget) }, icon("download"),
+                    h("span.wide-only", null, "Download "), "ZIP");
+    // GAL-13: the editor's sheet of the chosen takes (a day, a month) as a CSV
+    const csvBtn = h("button.btn.sm", { title: "Export the takes as a CSV for the editor (DaVinci Resolve metadata)",
+                                        onclick: (e) => exportCsv(e.currentTarget) }, icon("file"), "CSV");
     const bar = h("div.selbar", { "aria-live": "polite" }, barInfo,
-      h("button.btn.sm.ghost", { onclick: () => { selected.clear(); sync(); } }, "Clear"), dlBtn);
+      h("button.btn.sm.ghost", { onclick: () => { selected.clear(); sync(); } }, "Clear"), csvBtn, dlBtn);
     root.append(
       h("div.view-head", null, h("div", null, h("h1", null, "Gallery"), sub), h("div.actions.chip-row", null, chips, selectBtn)),
       jobsBox, grid, empty, bar);
@@ -217,6 +260,38 @@ export default {
           `${filter === "all" ? "" : " " + (filter === "VIDEO" ? "other" : filter)} · ${fmtBytes(size)}` +
           (ready.length < files.length ? ` · ${files.length - ready.length} still being written` : "");
       dlBtn.disabled = !ready.length;
+      csvBtn.disabled = !chosen.length;
+    }
+
+    async function exportCsv(btn) {
+      // a whole day or month chosen (no kind filter): ask for it by name - the file is named so
+      let args = { takes: [...selected] };
+      if (filter === "all" && takes) {
+        const months = groupTakes(takes);
+        const groups = [...months.flatMap((m) => m.days.map((d) => ({ day: d.key, takes: d.takes }))),     // a day first
+                        ...months.map((m) => ({ month: m.key, takes: m.days.flatMap((d) => d.takes) }))];
+        const g = groups.find((x) => x.takes.length === selected.size && x.takes.every((t) => selected.has(t.id)));
+        if (g) args = g.day ? { day: g.day } : { month: g.month };
+      }
+      const r = await busy(btn, () => conn.call("gallery.csv", args));
+      if (!r) return;
+      saveText(r.csv, r.name, "text/csv;charset=utf-8");
+      toast(`Saved ${r.name} · ${r.rows} row${r.rows === 1 ? "" : "s"}`, "ok");
+    }
+
+    /** A take's notes changed here (GAL-13): its card follows at once. */
+    function annotated(id, meta) {
+      const t = (takes || []).find((x) => x.id === id);
+      if (!t) return;
+      t.meta = meta;
+      t.slate = slateTitle(meta);
+      const old = refs.cards.get(id);
+      if (old) {
+        const card = takeCard(t, 0);
+        card.style.animation = "none";
+        old.replaceWith(card);
+        sync();
+      }
     }
 
     async function downloadSelected(btn) {
@@ -239,18 +314,29 @@ export default {
         img.onload = () => { img.classList.add("loaded"); ph.remove(); };
         img.onerror = () => img.remove();
       }
-      const open = () => (selecting ? toggleTake(t.id) : openTake(t.id));
+      const open = () => (selecting ? toggleTake(t.id) : openTake(t.id, { onAnnotate: annotated }));
+      const meta = t.meta || {};
+      const [day, time] = titleParts(t);
+      const drift = avOff(meta);
       const card = h("div.card.take", { style: { animationDelay: Math.min(n, 12) * 30 + "ms" }, onclick: open,
-                                        role: "button", tabindex: "0", onkeydown: (e) => e.key === "Enter" && open() },
+                                        role: "button", tabindex: "0", onkeydown: (e) => e.key === "Enter" && open(),
+                                        "data-take": t.id },
         h("div.thumb", null, ph, img,
           checkbox(() => { if (!selecting) setSelecting(true); toggleTake(t.id); }, "Select " + t.title),
           t.recording ? h("span.flag.tag.rec.live", null, h("span.dot"), "REC") : null,
+          meta.good ? h("span.good-flag", { title: "Good take", "aria-label": "Good take" }, icon("star")) : null,
+          meta.tc ? h("span.tc", null, meta.tc) : null,
           t.duration ? h("span.dur", null, fmtDur(t.duration)) : null),
         h("div.take-body", null,
-          h("div.take-title.ellipsis", null, titleParts(t)[1] || t.title),
-          h("div.take-meta.ellipsis", null, [titleParts(t)[1] ? titleParts(t)[0] : null,
+          h("div.take-title.ellipsis", null, t.slate || time || t.title),
+          h("div.take-meta.ellipsis", null, [t.slate ? [day, time].filter(Boolean).join(" ") : time ? day : null,
             `${t.items.length} file${t.items.length === 1 ? "" : "s"}`, fmtBytes(t.size)].filter(Boolean).join(" · ")),
-          h("div.tags", null, t.kinds.map(kindTag))));
+          meta.notes ? h("div.take-notes.ellipsis", { title: meta.notes }, meta.notes) : null,
+          h("div.tags", null, t.kinds.map(kindTag),
+            meta.good ? h("span.tag.ok.good-tag", null, icon("star"), "Good") : null,
+            meta.markers && meta.markers.length ? h("span.tag", { title: meta.markers.map((m) => m.tc + (m.label ? " " + m.label : "")).join("\n") },
+              icon("flag"), String(meta.markers.length)) : null,
+            drift !== null ? h("span.tag.warn", { title: "Audio and video differ by more than a frame" }, `A/V ${Math.round(drift)} ms`) : null)));
       refs.cards.set(t.id, card);
       return card;
     }
@@ -332,14 +418,17 @@ export function jobRow(j) {
 }
 
 // ---------------------------------------------------------------- take
-export function openTake(takeId) {
+export function openTake(takeId, { onAnnotate } = {}) {
   let take = null;
   let playing = null;
   let fp = null;                                     // the streamed player (GAL-11), if one is shown
+  let dirty = false;                                 // the notes / slate fields are being edited
   const player = h("div.player");
+  const facts = h("div.take-facts");
+  const edit = h("div.take-edit");
   const list = h("div");
   const footDel = h("button.btn.danger", { onclick: () => deleteTake() }, icon("trash"), "Delete take");
-  const s = sheet({ title: "Recording", body: h("div", null, player, list), foot: [footDel], wide: true });
+  const s = sheet({ title: "Recording", body: h("div", null, player, facts, edit, list), foot: [footDel], wide: true });
 
   async function refresh() {
     try {
@@ -349,10 +438,73 @@ export function openTake(takeId) {
       return;
     }
     if (s.closed) return;
-    s.setTitle(take.title);
+    s.setTitle(take.slate ? `${take.slate} · ${take.title}` : take.title);
     if (playing && !take.items.some((i) => i.id === playing)) playing = null;
     renderPlayer();
+    renderInfo();
     renderList();
+  }
+
+  // ---------------------------------------------------- the take (GAL-13)
+  async function annotate(args, btn) {
+    const meta = await busy(btn, () => conn.call("gallery.annotate", { take: take.id, ...args }));
+    if (!meta) return false;
+    take.meta = meta;
+    take.slate = slateTitle(meta);
+    s.setTitle(take.slate ? `${take.slate} · ${take.title}` : take.title);
+    dirty = false;
+    renderInfo();
+    onAnnotate && onAnnotate(take.id, meta);
+    return true;
+  }
+
+  function renderInfo() {
+    const m = take.meta || {};
+    const drift = m.drift_ms;
+    const off = avOff(m);
+    const good = h("button.btn.sm.good-btn", { class: m.good ? "on" : "", "aria-pressed": String(!!m.good),
+      title: m.good ? "Marked as a good take" : "Mark as a good take",
+      onclick: (e) => annotate({ good: !m.good }, e.currentTarget) }, icon("star"), m.good ? "Good take" : "Mark good");
+    clear(facts,
+      h("div.row.wrap.take-head", null,
+        h("div.grow", null,
+          h("div.take-slate", null, take.slate || "No slate"),
+          h("div.muted.num", { style: { fontSize: "12.5px" } }, [
+            m.tc ? "TC " + m.tc : null, rateText(m.rate), m.audio_source || null,
+            m.clock_synced === false ? "clock not synced" : null,
+            m.drops ? `${m.drops} dropped` : null].filter(Boolean).join(" · ") || "No take sheet (recorded before slates)")),
+        good),
+      drift !== null && drift !== undefined
+        ? h("div", { class: off !== null ? "av-warn" : "av-ok" }, icon(off !== null ? "alert" : "check"),
+            off !== null ? `A/V sync: audio and video differ by ${Math.round(Math.abs(drift))} ms - more than a frame`
+                         : `A/V in sync (${Math.round(Math.abs(drift))} ms)`) : null,
+      m.markers && m.markers.length ? h("div.markers", null,
+        h("div.section-title", null, "Markers", h("span.muted", { style: { fontWeight: 500 } }, String(m.markers.length))),
+        m.markers.map((k) => h("div.marker", null, icon("flag"), h("span.mono", null, k.tc),
+                                h("span.grow.ellipsis", null, k.label || "")))) : null);
+    if (dirty) return;                           // never under the user's fingers
+    const field = (key, label, value, attrs = {}) => h("div.field", null, h("label", null, label),
+      h("input.input", { value: value ?? "", "data-k": key, spellcheck: "false", autocomplete: "off",
+                         oninput: () => { dirty = true; }, ...attrs }));
+    const notes = h("textarea.input.notes", { rows: "3", placeholder: "Notes for the editor", "data-k": "notes",
+                                              oninput: () => { dirty = true; } }, m.notes || "");
+    const save = h("button.btn.sm.primary", { onclick: (e) => {
+      const v = (k) => edit.querySelector(`[data-k="${k}"]`).value;
+      const args = {};
+      if (v("scene").trim() !== (m.scene || "")) args.scene = v("scene").trim();
+      if (v("shot").trim() !== (m.shot || "")) args.shot = v("shot").trim();
+      if (Number(v("take_no")) !== Number(m.take || 1)) args.take_no = Number(v("take_no"));
+      if (v("notes") !== (m.notes || "")) args.notes = v("notes");
+      if (!Object.keys(args).length) { dirty = false; return toast("Nothing changed"); }
+      annotate(args, e.currentTarget).then((ok) => ok && toast("Take updated", "ok"));
+    } }, "Save");
+    clear(edit,
+      h("div.slate-row", null,
+        field("scene", "Scene", m.scene, { maxlength: "16", placeholder: "e.g. 12A" }),
+        field("shot", "Shot", m.shot, { maxlength: "16", placeholder: "e.g. 3" }),
+        field("take_no", "Take", m.take || 1, { type: "number", min: "1", max: "999" })),
+      h("div.field", null, h("label", null, "Notes"), notes),
+      h("div.row.end", null, save));
   }
 
   function renderPlayer() {

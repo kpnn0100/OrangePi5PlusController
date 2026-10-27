@@ -452,7 +452,25 @@ def cmd_rec(ctl, a):
             p = st["preview"]
             print("Preview  : %d viewer(s) · %s%s" % (p["viewers"], p["quality"],
                                                       " · %sx%s" % (p["stream"]["width"], p["stream"]["height"]) if p.get("stream") else ""))
-            print("Storage  : %s free in %s" % (fmt_size(d["free"]), d["path"]))
+            sto = st.get("storage") or {}
+            left = sto.get("seconds_left")
+            print("Storage  : %s free in %s%s%s" % (
+                fmt_size(d["free"]), d["path"],
+                " · %s left at %s/s" % (fmt_dur(left), fmt_size(sto["rate"])) if left is not None and sto.get("rate") else "",
+                " · disk %d MB/s" % (sto["speed"] // 1_000_000) if sto.get("speed") else ""))
+            if sto.get("warning"):
+                print("           ! %s" % sto["warning"])
+            tk = st.get("take") or {}
+            sync = {True: "clock NTP-synced", False: "clock NOT synced - timecode may be off", None: "clock sync unknown"}
+            print("Take     : %s%s · %s" % ("now " + r["tc"] + " · " if r.get("active") and r.get("tc") else "",
+                                           "next " + tk.get("next", "?"), sync[st.get("clock_synced")]))
+            src = (st.get("monitor") or {}).get("audio_source", "hdmi")
+            print("Audio in : %s" % next((i["name"] for i in st.get("audio_inputs") or [] if i["id"] == src), src))
+            g = st.get("gpio") or {}
+            pins = ["%s %s%s" % (k, v["pin"], " (%s)" % v["error"] if v.get("error") else "")
+                    for k, v in g.items() if isinstance(v, dict) and v.get("pin")]
+            if pins:
+                print("GPIO     : " + ", ".join(pins))
             caps = st.get("caps") or {}
             print("Encoders : " + ", ".join(k for k in ("vpu_h264", "vpu_h265", "x265", "ffv1", "gpu_ffv1") if caps.get(k)))
             if st.get("last"):
@@ -460,7 +478,13 @@ def cmd_rec(ctl, a):
                 print("Last     : %s%s" % (l.get("file"), " (%s)" % l["reason"] if l.get("reason") else ""))
         out(a, st, human)
     elif sub == "start":
-        r = ctl.call("recorder.start")
+        try:
+            r = ctl.client.call("recorder.start", timeout=120, force=bool(a.force))
+        except RuntimeError as e:
+            msg = str(e).split(" failed: ", 1)[-1]
+            hint = "\n(after changing disks: rec disktest; or record anyway: rec start --force)" \
+                if "disk too slow" in msg else ""
+            sys.exit("error: " + msg + hint)
         print("● recording %s" % r.get("file"))
         if a.duration:
             try:
@@ -472,6 +496,46 @@ def cmd_rec(ctl, a):
         r = ctl.call("recorder.stop")
         print("■ saved %s (%s)%s" % (r.get("file"), fmt_size(r.get("size")),
                                      " - %s" % r["reason"] if r.get("reason") else ""))
+    elif sub == "mark":
+        m = ctl.call("recorder.mark", label=" ".join(a.label or []))
+        print("◆ marker %s%s" % (m["tc"], "  " + m["label"] if m.get("label") else ""))
+    elif sub == "disktest":
+        print("measuring the storage disk (about 1 GB, a few seconds) ...")
+        r = ctl.call("recorder.disk_test", timeout=120)
+        f = r.get("figures") or {}
+        print("disk %s (%s): %d MB/s%s" % (r.get("device"), r.get("fs"), r["speed"] // 1_000_000,
+                                          "" if r.get("direct") else " (through the page cache)"))
+        if f.get("need"):
+            print("this mode needs %d MB/s: %s" % (f["need"] // 1_000_000,
+                                                   "OK" if f.get("ok") else f.get("warning") or "?"))
+    elif sub == "slate":
+        patch = {k: v for k, v in (("scene", a.scene), ("shot", a.shot), ("take", a.take)) if v is not None}
+        if a.auto is not None:
+            patch["auto"] = a.auto
+        s = ctl.call("recorder.settings.set", settings={"slate": patch}) if patch else ctl.call("recorder.settings.get")
+        sl = s["slate"]
+        print("Slate: scene %s · shot %s · take %s%s" % (sl["scene"] or "-", sl["shot"] or "-", sl["take"],
+                                                         " (counts up)" if sl["auto"] else ""))
+    elif sub == "inputs":
+        r = ctl.call("recorder.inputs")
+        for i in r["inputs"]:
+            print("%s %-22s %s" % ("*" if i["id"] == r["current"] else " ", i["id"], i["name"]))
+    elif sub == "input":
+        ctl.call("recorder.settings.set", settings={"audio": {"source": a.value}})
+        print("audio input: %s" % a.value)
+    elif sub == "luts":
+        r = ctl.call("recorder.luts")
+        for i in r["luts"]:
+            print("%s %-28s %s" % ("*" if i["id"] == r["current"] else " ", i["id"], i["name"]))
+    elif sub == "lut-add":
+        with open(a.file, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+        name = a.name or os.path.splitext(os.path.basename(a.file))[0]
+        r = ctl.call("recorder.lut.add", name=name, text=text, timeout=60)
+        print("added %s (show it: rec set monitor.lut=%s)" % (r["id"], r["id"]))
+    elif sub == "lut-rm":
+        ctl.call("recorder.lut.delete", lut=a.lut)
+        print("deleted %s" % a.lut)
     elif sub == "settings":
         out(a, ctl.call("recorder.settings.get"), lambda s: print(json.dumps(s, indent=2)))
     elif sub == "set":
@@ -566,7 +630,31 @@ def save_preview(ctl, path, seconds, stream="/ws/preview"):
 
 
 # -------------------------------------------------------------------- gallery
+def _gallery_film(ctl, a):
+    """gallery note / csv (GAL-13)."""
+    if a.gal_cmd == "note":
+        params = {"take": a.take}
+        for k, v in (("good", a.good), ("notes", a.notes), ("scene", a.scene), ("shot", a.shot),
+                     ("take_no", a.take_no)):
+            if v is not None:
+                params[k] = v
+        m = ctl.call("gallery.annotate", **params)
+        print("%s%s %s" % (a.take, " ★" if m.get("good") else "", m.get("notes") or ""))
+        return True
+    if a.gal_cmd == "csv":
+        params = {k: v for k, v in (("takes", a.takes or None), ("day", a.day), ("month", a.month)) if v}
+        r = ctl.call("gallery.csv", **params)
+        path = a.out or r["name"]
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            f.write(r["csv"])
+        print("%s: %d file(s)" % (path, r["rows"]))
+        return True
+    return False
+
+
 def cmd_gallery(ctl, a):
+    if _gallery_film(ctl, a):
+        return
     sub = a.gal_cmd or "list"
     if sub == "list":
         r = ctl.call("gallery.list", kind=a.kind)
@@ -1500,7 +1588,25 @@ def build_parser():
     rs.add_parser("status")
     st = rs.add_parser("start")
     st.add_argument("--duration", type=float, help="stop after this many seconds")
+    st.add_argument("--force", action="store_true", help="record although the disk was measured too slow")
     rs.add_parser("stop")
+    mk = rs.add_parser("mark", help="a marker in the take being recorded, at this moment")
+    mk.add_argument("label", nargs="*")
+    rs.add_parser("disktest", help="measure the storage disk's write speed (about 1 GB)")
+    sl = rs.add_parser("slate", help="scene / shot / take of the next take (no option: show it)")
+    sl.add_argument("--scene")
+    sl.add_argument("--shot")
+    sl.add_argument("--take", type=int)
+    sl.add_argument("--auto", action=argparse.BooleanOptionalAction, help="count the take up after each one")
+    rs.add_parser("inputs", help="audio inputs (HDMI, audio interfaces)")
+    ri = rs.add_parser("input", help="record audio from: hdmi or alsa:<card>")
+    ri.add_argument("value")
+    rs.add_parser("luts", help="monitoring LUTs (rec set monitor.lut=ID shows one)")
+    la = rs.add_parser("lut-add", help="add a .cube LUT for the live view")
+    la.add_argument("file")
+    la.add_argument("--name")
+    lr = rs.add_parser("lut-rm", help="delete a .cube LUT you added")
+    lr.add_argument("lut", help="cube:<name>")
     rs.add_parser("settings")
     se = rs.add_parser("set", help="change settings, e.g. mode=raw h265.bitrate=60 raw.ffv1=true")
     se.add_argument("assignments", nargs="+")
@@ -1550,6 +1656,18 @@ def build_parser():
     vf.add_argument("file", help="the FFV1 (or RAW) file of the take")
     vf.add_argument("--delete-raw", action="store_true", help="delete the RAW if every frame and sample match")
     vf.add_argument("--wait", action="store_true", help="wait and show progress")
+    nt = gs.add_parser("note", help="mark a take good, add notes, fix its slate (GAL-13)")
+    nt.add_argument("take")
+    nt.add_argument("--good", action=argparse.BooleanOptionalAction)
+    nt.add_argument("--notes")
+    nt.add_argument("--scene")
+    nt.add_argument("--shot")
+    nt.add_argument("--take-no", type=int)
+    cs = gs.add_parser("csv", help="the takes as a sheet for the editor (Resolve: Import Metadata)")
+    cs.add_argument("takes", nargs="*")
+    cs.add_argument("--day", help="YYYY-MM-DD")
+    cs.add_argument("--month", help="YYYY-MM")
+    cs.add_argument("--out", help="file (default: the name the server gives, here)")
     dl = gs.add_parser("delete", help="delete one file (one format of a take)")
     dl.add_argument("file")
     dt = gs.add_parser("delete-take", help="delete every file of a take")

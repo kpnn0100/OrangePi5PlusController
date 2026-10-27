@@ -18,7 +18,7 @@ DEFAULTS = {
         "bitrate": 80,              # Mbit/s
         "rc": "cbr",                # cbr | vbr
         "gop": 1.0,                 # keyframe interval, seconds
-        "container": "mp4",         # mp4 | mkv
+        "container": "mov",         # mov (PCM audio, editors) | mkv (PCM) | mp4 (AAC audio, plays everywhere)
     },
     "raw": {
         # extra copies of a RAW take (REC-04), made during or after recording - H.264, H.265, FFV1
@@ -35,7 +35,26 @@ DEFAULTS = {
         "when": "during",           # during | after : when the encodes start
         "ffv1_replace_raw": True,   # check the FFV1 copy byte for byte, then delete the RAW (GAL-08)
     },
-    "audio": {"record": True},
+    "audio": {"record": True,
+              "source": "hdmi"},    # hdmi | alsa:<card id> (a USB audio interface, REC-09)
+    # on-set monitoring, shared by every viewer (REC-13, REC-14)
+    "monitor": {
+        "guides": "off",            # off | 2.39 | 1.85 | 16:9 | 4:3 | 1:1 | 9:16
+        "safe": False,              # action (93 %) and title (90 %) safe areas
+        "center": False,            # centre cross
+        "zebra": False,
+        "zebra_level": 95,          # IRE %
+        "false_color": False,
+        "scope": "off",             # off | histogram | waveform
+        "meters": True,             # audio level meters
+        "lut": "off",               # off | a built-in (slog3, vlog, hlg, log) | cube:<name>
+        "zoom": 3,                  # focus zoom: times the whole picture (3 = 1:1 pixels for 4K)
+    },
+    # the slate: names the next take, counted up after each one (REC-15)
+    "slate": {"scene": "", "shot": "", "take": 1, "auto": True},
+    # a record button and a tally light on GPIO lines, "gpiochipN:LINE" or "" (REC-16)
+    "gpio": {"button": "", "button_active_low": True, "tally": "", "tally_active_low": False},
+    "storage_guard": True,          # refuse a take the measured disk cannot keep up with (REC-12)
     "storage": "~/Videos/HDMI-Recorder",
     "edid": "4k60",                 # 4k60 | 4k30 | 1080p | keep
     "preview": {"quality": "medium"},   # low | medium | high
@@ -47,7 +66,7 @@ SCHEMA = {
     ("h265", "bitrate"): (int, 2, 200),
     ("h265", "rc"): ("cbr", "vbr"),
     ("h265", "gop"): (float, 0.1, 10.0),
-    ("h265", "container"): ("mp4", "mkv"),
+    ("h265", "container"): ("mov", "mkv", "mp4"),
     ("raw", "h264"): (bool,),
     ("raw", "h264_quality"): ("high", "higher", "max"),
     ("raw", "h264_scale"): ("source", "1080", "720"),
@@ -61,6 +80,28 @@ SCHEMA = {
     ("raw", "when"): ("during", "after"),
     ("raw", "ffv1_replace_raw"): (bool,),
     ("audio", "record"): (bool,),
+    ("audio", "source"): lambda v: _match(v, r"^(hdmi|alsa:[A-Za-z0-9_-]{1,32})$",
+                                         "hdmi or alsa:<card id>"),
+    ("monitor", "guides"): ("off", "2.39", "1.85", "16:9", "4:3", "1:1", "9:16"),
+    ("monitor", "safe"): (bool,),
+    ("monitor", "center"): (bool,),
+    ("monitor", "zebra"): (bool,),
+    ("monitor", "zebra_level"): (int, 50, 109),
+    ("monitor", "false_color"): (bool,),
+    ("monitor", "scope"): ("off", "histogram", "waveform"),
+    ("monitor", "meters"): (bool,),
+    ("monitor", "lut"): lambda v: _match(v, r"^(off|slog3|vlog|hlg|log|cube:[A-Za-z0-9][A-Za-z0-9 ._+-]{0,59})$",
+                                         "off, slog3, vlog, hlg, log or cube:<name>"),
+    ("monitor", "zoom"): (2, 3, 4, 6, 8),
+    ("slate", "scene"): lambda v: _match(v, r"^[A-Za-z0-9-]{0,16}$", "up to 16 letters, digits or -"),
+    ("slate", "shot"): lambda v: _match(v, r"^[A-Za-z0-9-]{0,16}$", "up to 16 letters, digits or -"),
+    ("slate", "take"): (int, 1, 999),
+    ("slate", "auto"): (bool,),
+    ("gpio", "button"): lambda v: _match(v, r"^((gpiochip)?\d+:\d{1,3})?$", "chip:line, e.g. gpiochip1:5, or empty"),
+    ("gpio", "button_active_low"): (bool,),
+    ("gpio", "tally"): lambda v: _match(v, r"^((gpiochip)?\d+:\d{1,3})?$", "chip:line, e.g. gpiochip1:5, or empty"),
+    ("gpio", "tally_active_low"): (bool,),
+    ("storage_guard",): (bool,),
     ("storage",): (str,),
     ("edid",): ("4k60", "4k30", "1080p", "keep"),
     ("preview", "quality"): ("low", "medium", "high"),
@@ -128,10 +169,23 @@ def _flatten(d, prefix=()):
             yield prefix + (k,), v
 
 
+def _match(value, pattern, what):
+    import re
+    v = "" if value is None else str(value).strip()
+    if not re.match(pattern, v):
+        raise ValueError("must be %s" % what)
+    return v
+
+
 def _coerce(key, value):
     rule = SCHEMA.get(key)
     if rule is None:
         raise ValueError("unknown setting %s" % ".".join(key))
+    if callable(rule):
+        try:
+            return rule(value)
+        except ValueError as e:
+            raise ValueError("%s %s" % (".".join(key), e))
     if rule and isinstance(rule[0], type):
         typ = rule[0]
         if typ is bool:
@@ -151,6 +205,11 @@ def _coerce(key, value):
         if typ is str and not v.strip():
             raise ValueError("%s must not be empty" % ".".join(key))
         return v
+    if value not in rule and isinstance(value, str) and all(isinstance(x, int) for x in rule):
+        try:
+            value = int(value)
+        except ValueError:
+            pass
     if value not in rule:
         raise ValueError("%s must be one of %s" % (".".join(key), ", ".join(map(str, rule))))
     return value

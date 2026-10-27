@@ -1,6 +1,7 @@
 package com.arstro.arstro_remote
 
 import android.app.DownloadManager
+import android.content.ContentValues
 import android.content.Context
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
@@ -10,6 +11,7 @@ import android.os.Build
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.provider.MediaStore
 import android.util.Log
 import io.flutter.plugin.common.BasicMessageChannel
 import io.flutter.plugin.common.BinaryCodec
@@ -17,6 +19,7 @@ import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.view.TextureRegistry
+import java.io.File
 import java.nio.ByteBuffer
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
@@ -112,12 +115,20 @@ private class Decoder(
         thread.start()
     }
 
+    /**
+     * A new stream size (a `config`: the preview quality changed, or the focus zoom, REC-14,
+     * switched this viewer to a crop and back). Dart holds the frames that follow until this
+     * returns, so the queue holds only frames of the old stream: they are dropped, the codec
+     * is restarted at the new size on the new stream's first keyframe. A new stream of the same
+     * size is caught by its SPS in loop().
+     */
     fun configure(w: Int, h: Int) {
         if (w <= 0 || h <= 0) return
         synchronized(lock) {
             if (w != width || h != height) {
                 width = w
                 height = h
+                queue.clear()
                 producer.setSize(w, h)
                 resetRequested = true
             }
@@ -279,29 +290,84 @@ private class Decoder(
     }
 }
 
-/** Saves a recording into Downloads/Arstro with the system download manager (GAL-03). */
+/**
+ * Saves into Downloads/Arstro: a recording with the system download manager (GAL-03), or text
+ * the Pi sent - the editor's CSV sheet (GAL-13) - written there directly.
+ *
+ *   enqueue {url, name, headers} -> download id
+ *   save {name, text, mime} -> "Downloads/Arstro/<name>"
+ */
 class DownloadBridge(private val context: Context, messenger: BinaryMessenger) {
     private val method = MethodChannel(messenger, "arstro/download")
+    private val main = Handler(Looper.getMainLooper())
 
     init {
         method.setMethodCallHandler { call, result ->
-            if (call.method != "enqueue") return@setMethodCallHandler result.notImplemented()
-            try {
-                val url = call.argument<String>("url")!!
-                val name = call.argument<String>("name")!!.replace('/', '_')
-                val headers = call.argument<Map<String, String>>("headers") ?: emptyMap()
-                val req = DownloadManager.Request(Uri.parse(url))
-                    .setTitle(name)
-                    .setDescription("Arstro Remote")
-                    .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                    .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "Arstro/$name")
-                for ((k, v) in headers) req.addRequestHeader(k, v)
-                val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-                result.success(dm.enqueue(req))
-            } catch (e: Exception) {
-                result.error("download", e.message, null)
+            when (call.method) {
+                "enqueue" -> enqueue(call, result)
+                "save" -> save(call, result)
+                else -> result.notImplemented()
             }
         }
+    }
+
+    private fun enqueue(call: MethodCall, result: MethodChannel.Result) {
+        try {
+            val url = call.argument<String>("url")!!
+            val name = call.argument<String>("name")!!.replace('/', '_')
+            val headers = call.argument<Map<String, String>>("headers") ?: emptyMap()
+            val req = DownloadManager.Request(Uri.parse(url))
+                .setTitle(name)
+                .setDescription("Arstro Remote")
+                .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "Arstro/$name")
+            for ((k, v) in headers) req.addRequestHeader(k, v)
+            val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+            result.success(dm.enqueue(req))
+        } catch (e: Exception) {
+            result.error("download", e.message, null)
+        }
+    }
+
+    private fun save(call: MethodCall, result: MethodChannel.Result) {
+        val name = (call.argument<String>("name") ?: "arstro.txt").replace('/', '_')
+        val text = call.argument<String>("text") ?: ""
+        val mime = call.argument<String>("mime") ?: "text/plain"
+        Thread {
+            try {
+                val bytes = text.toByteArray(Charsets.UTF_8)
+                if (Build.VERSION.SDK_INT >= 29) {
+                    val resolver = context.contentResolver
+                    val values = ContentValues().apply {
+                        put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+                        put(MediaStore.MediaColumns.MIME_TYPE, mime)
+                        put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Arstro")
+                        put(MediaStore.MediaColumns.IS_PENDING, 1)
+                    }
+                    val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                        ?: throw IllegalStateException("Downloads refused the file")
+                    try {
+                        resolver.openOutputStream(uri)?.use { it.write(bytes) }
+                            ?: throw IllegalStateException("cannot write to Downloads")
+                    } catch (e: Exception) {
+                        resolver.delete(uri, null, null)
+                        throw e
+                    }
+                    values.clear()
+                    values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+                    resolver.update(uri, values, null, null)
+                } else {
+                    @Suppress("DEPRECATION")
+                    val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "Arstro")
+                    dir.mkdirs()
+                    File(dir, name).writeBytes(bytes)
+                }
+                main.post { result.success("Downloads/Arstro/$name") }
+            } catch (e: Exception) {
+                Log.w(TAG, "save $name", e)
+                main.post { result.error("save", e.message, null) }
+            }
+        }.start()
     }
 
     fun dispose() = method.setMethodCallHandler(null)

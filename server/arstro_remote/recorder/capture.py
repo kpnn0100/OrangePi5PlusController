@@ -1,15 +1,20 @@
 """Live HDMI RX pipeline with hot-pluggable branches (runs in the recorder worker).
 
     v4l2src ─ tee vt ─┬─ queue(leaky) ─ fakesink            (keeps the pipeline running)
-                      ├─ [stream branch]  H.264 preview     (while someone watches)
+                      ├─ [stream branch]  H.264 preview     (while someone watches; LUT, REC-13)
+                      ├─ [analysis branch] exposure data    (while a viewer shows scopes, REC-13)
+                      ├─ [zoom branches]  a 1:1 crop each   (per viewer zooming, REC-14)
                       └─ [recording branch]                 (while recording)
-    alsasrc ─ tee at ─── [recording branch]
+    alsasrc ─ tee at ─┬─ level ─ fakesink                   (the audio meters, REC-10)
+                      └─ [recording branch]
 
 Branches are bins linked to the tees on start and unlinked + drained (EOS) on stop,
 so capture never restarts when a viewer joins or a recording starts/stops.
 
   StreamBranch      H.264 preview on the VPU (mpph264enc; x264 without one), access units to a callback
-  EncodedRecording  real-time H.265 on the VPU (mpph265enc) -> MP4/MKV
+  AnalysisBranch    the luma of a small nearest-neighbour copy -> monitor.analyze
+  ZoomBranch        a crop of the full frame at its own pixels, H.264, for one viewer
+  EncodedRecording  real-time H.265 on the VPU (mpph265enc) -> MOV/MKV (PCM) or MP4 (AAC)
   RawRecording      frames copied out of the capture buffers, framed as ARH chunks
 """
 import os
@@ -23,9 +28,10 @@ gi.require_version("Gst", "1.0")
 gi.require_version("GstVideo", "1.0")
 from gi.repository import GLib, Gst, GstVideo  # noqa: E402
 
-from . import arh  # noqa: E402
+from . import arh, monitor, timecode  # noqa: E402
 from .gstutil import gst_buffer, is_dmabuf  # noqa: E402
-from .v4l2 import audio_present, find_pulse_hdmiin, lock_timings, query_signal  # noqa: E402
+from .v4l2 import (alsa_card_present, audio_present, find_pulse_hdmiin, find_pulse_source,  # noqa: E402
+                   lock_timings, query_signal)
 
 POLL_MS = 1000
 STABLE_POLLS = 2                    # identical timing readings required before (re)starting
@@ -33,7 +39,16 @@ IDLE_POLL_EVERY = 3                 # no signal and nothing running: ask the dri
                                     # (rk_hdmirx logs "port has no link" for every query)
 AUDIO_CAPS = "audio/x-raw,format=S16LE,rate=48000,channels=2,layout=interleaved"
 AUDIO_META = {"format": "S16LE", "rate": 48000, "channels": 2}
-SOFTWARE = "arstro-remote recorder 2.0"
+SOFTWARE = "arstro-remote recorder 2.1"
+LEVEL_INTERVAL_NS = 100_000_000     # the audio meters: 10 readings a second
+ANALYSIS_EVERY = 0.25               # exposure data: 4 a second
+MAX_ZOOMS = 3                       # viewers zoomed at once (one crop encoder each)
+ZOOM_MAX = (1920, 1080)             # a crop larger than this is scaled down to it
+
+
+def _db(x):
+    """A level for the meters: digital silence is -inf dB, which is no JSON number - floor it."""
+    return round(x, 1) if x == x and x > -100.0 else -100.0
 
 
 def cma_state():
@@ -101,6 +116,10 @@ class Capture:
         self.retry_delay = 2.0
         self.paused = False
         self.last_error = None
+        self.audio_source = "hdmi"        # or "alsa:<card id>" (REC-09)
+        self.analysis = None              # AnalysisBranch while a viewer shows scopes
+        self.zooms = {}                   # viewer id -> ZoomBranch
+        self.lut = None                   # monitor.LutTable for the preview, or None
 
     # -- signal
 
@@ -111,6 +130,8 @@ class Capture:
     def _want_audio(self):
         if self.audio_failed:
             return False
+        if self.audio_source.startswith("alsa:"):
+            return alsa_card_present(self.audio_source[5:])  # an audio interface, any video source
         if self.sim:
             return not getattr(self.sim, "device", None)      # a V4L2 camera has no audio here
         return bool(self.audio_card) and audio_present(self.dev)
@@ -208,7 +229,15 @@ class Capture:
                 "vt. ! queue max-size-buffers=1 leaky=downstream ! fakesink name=idle sync=false async=false")
         self.audio_in_pipeline = self._want_audio()
         if self.audio_in_pipeline:
-            if self.sim:
+            card = self.audio_source[5:] if self.audio_source.startswith("alsa:") else None
+            if card:
+                # a USB audio interface (REC-09); through PulseAudio when it holds the card
+                pulse = find_pulse_source(card)
+                asrc = (f"pulsesrc name=asrc device={pulse} buffer-time=100000 ! audioconvert ! audioresample"
+                        if pulse else
+                        f"alsasrc name=asrc device=plughw:CARD={card},DEV=0 buffer-time=100000 "
+                        "! audioconvert ! audioresample")
+            elif self.sim:
                 asrc = "audiotestsrc name=asrc is-live=true wave=ticks volume=0.4"
             elif find_pulse_hdmiin():
                 asrc = (f"pulsesrc name=asrc device={find_pulse_hdmiin()} buffer-time=100000 "
@@ -216,7 +245,10 @@ class Capture:
             else:
                 asrc = (f"alsasrc name=asrc device=plughw:CARD={self.audio_card},DEV=0 "
                         "buffer-time=100000")
-            desc += f" {asrc} ! {AUDIO_CAPS} ! tee name=at allow-not-linked=true"
+            desc += (f" {asrc} ! {AUDIO_CAPS} ! tee name=at allow-not-linked=true "
+                     "at. ! queue max-size-buffers=4 leaky=downstream ! "
+                     f"level name=meter interval={LEVEL_INTERVAL_NS} post-messages=true ! "
+                     "fakesink sync=false async=false")
         return desc
 
     def start(self, timing):
@@ -283,6 +315,12 @@ class Capture:
         if self.stream:
             self.stream.detach()
             self.stream = None
+        if self.analysis:
+            self.analysis.detach()
+            self.analysis = None
+        for z in list(self.zooms.values()):
+            z.detach()
+        self.zooms.clear()
         was_running = self.pipeline is not None
         if self.pipeline:
             self.pipeline.set_state(Gst.State.NULL)
@@ -294,7 +332,8 @@ class Capture:
             self.listener.on_capture(False)
 
     def restart(self):
-        """Rebuild the pipeline (e.g. when HDMI audio appears)."""
+        """Rebuild the pipeline (e.g. when HDMI audio appears, or another audio input is
+        chosen). The worker re-attaches analysis and zoom branches when capture runs again."""
         if self.timing and not self.recording:
             t = self.timing
             want_stream = self.stream.quality if self.stream else None
@@ -349,6 +388,15 @@ class Capture:
         return False
 
     def _on_message(self, _bus, msg):
+        if msg.type == Gst.MessageType.ELEMENT:
+            st = msg.get_structure()
+            if st is not None and st.get_name() == "level":
+                try:
+                    self.listener.on_levels([_db(x) for x in st.get_value("peak")],
+                                            [_db(x) for x in st.get_value("rms")])
+                except (TypeError, AttributeError):
+                    pass
+            return
         if msg.type == Gst.MessageType.ERROR:
             err, dbg = msg.parse_error()
             if not self._attached(msg.src):
@@ -360,6 +408,17 @@ class Capture:
                 print(f"[warn] audio disabled: {err.message}")
                 self.audio_failed = True
                 return
+            if self.analysis and self.analysis.owns(msg.src):
+                print(f"[warn] exposure analysis: {err.message}")
+                self.analysis.detach()
+                self.analysis = None
+                return
+            for zid, z in list(self.zooms.items()):
+                if z.owns(msg.src):
+                    print(f"[warn] zoom for viewer {zid}: {err.message}")
+                    self.stop_zoom(zid)
+                    self.listener.on_zoom(zid, error=err.message)
+                    return
             if self.stream and self.stream.owns(msg.src):
                 print(f"[warn] preview stream: {err.message} ({dbg})")
                 st = self.stream
@@ -389,7 +448,7 @@ class Capture:
             self.stream.detach()
             self.stream = None
         self._stream_cb = on_au
-        st = StreamBranch(self, quality, on_au, zero_copy=zero_copy)
+        st = StreamBranch(self, quality, on_au, zero_copy=zero_copy, lut=self.lut)
         st.attach()
         self.stream = st
         return st
@@ -400,6 +459,47 @@ class Capture:
             self.stream = None
         if not self.wanted and not self.recording and self.pipeline:
             self.stop("not needed")
+
+    # -- exposure analysis (REC-13)
+
+    def set_analysis(self, on, on_data=None):
+        if on and self.pipeline and self.timing and not self.analysis and monitor.available():
+            if (self.format or "") not in ANALYSIS_FORMATS:
+                print(f"[warn] no exposure analysis for {self.format} pictures")
+                return
+            a = AnalysisBranch(self, on_data)
+            try:
+                a.attach()
+                self.analysis = a
+            except (RuntimeError, GLib.Error) as e:
+                print(f"[warn] exposure analysis could not start: {e}")
+        elif not on and self.analysis:
+            self.analysis.detach()
+            self.analysis = None
+
+    # -- focus zoom (REC-14)
+
+    def start_zoom(self, zid, x, y, ratio, on_au):
+        """Crop around (x, y) (0..1 of the picture) at `ratio` times the whole picture."""
+        if not self.pipeline or not self.timing:
+            raise RuntimeError("not capturing")
+        z = self.zooms.get(zid)
+        if z and z.ratio == ratio:
+            z.move(x, y)
+            return z
+        if z:
+            self.stop_zoom(zid)
+        if len(self.zooms) >= MAX_ZOOMS:
+            raise RuntimeError(f"{MAX_ZOOMS} viewers are zoomed in already")
+        z = ZoomBranch(self, zid, x, y, ratio, on_au)
+        z.attach()
+        self.zooms[zid] = z
+        return z
+
+    def stop_zoom(self, zid):
+        z = self.zooms.pop(zid, None)
+        if z:
+            z.detach()
 
     # -- recording
 
@@ -433,11 +533,13 @@ class StreamBranch:
     capture memory is uncached, and a bilinear scaler reading every 4K pixel managed only
     ~4 fps. A leaky one-buffer queue in front drops frames instead of building delay."""
 
-    def __init__(self, cap, quality, on_au, zero_copy=True):
+    def __init__(self, cap, quality, on_au, zero_copy=True, lut=None):
         self.cap = cap
         self.quality = quality if quality in PREVIEW_QUALITIES else "medium"
         self.on_au = on_au
         self.zero_copy = zero_copy
+        self.lut = lut                    # monitor.LutTable: the picture through a LUT (REC-13)
+        self.lsrc = None
         self.bin = None
         self.tee_pad = None
         self.size = None
@@ -486,9 +588,15 @@ class StreamBranch:
             raise RuntimeError("no H.264 encoder for the preview (install gstreamer1.0-plugins-ugly)")
         parse = "h264parse config-interval=-1 ! " if Gst.ElementFactory.find("h264parse") else ""
         direct = not x264 and mpp and self.zero_copy and self.cap.format in ZERO_COPY_FORMATS \
-            and not self.cap.sim and getattr(self.cap, "dmabuf", False)
+            and not self.cap.sim and getattr(self.cap, "dmabuf", False) and not self.lut
         if direct:
             conv = f"{fix}{enc} width={w} height={h}"
+        elif self.lut:
+            # the scaled I420 frames go through the LUT in Python (monitor.LutTable), then on
+            conv = (f"videoscale method=nearest-neighbour n-threads=4 ! video/x-raw,width={w},height={h} ! "
+                    "videoconvert n-threads=2 ! video/x-raw,format=I420 ! "
+                    "appsink name=lsink emit-signals=true sync=false async=false max-buffers=1 drop=true "
+                    f"appsrc name=lsrc format=time is-live=true max-buffers=2 block=false ! {fix}{enc}")
         else:
             conv = (f"videoscale method=nearest-neighbour n-threads=4 ! video/x-raw,width={w},height={h} ! "
                     f"videoconvert n-threads=2 ! video/x-raw,format=I420 ! {fix}{enc}")
@@ -497,10 +605,41 @@ class StreamBranch:
                 f"video/x-h264,stream-format=byte-stream,alignment=au{',profile=main' if x264 else ''} ! "
                 "appsink name=psink emit-signals=true sync=false async=false max-buffers=4 drop=true")
         self.path = "zero-copy" if direct else "software x264" if x264 else "cpu-scale"
+        if self.lut:
+            self.path += " + LUT"
         self.bin = Gst.parse_bin_from_description(desc, False)
         pad = Gst.GhostPad.new("video", self.bin.get_by_name("pq").get_static_pad("sink"))
         self.bin.add_pad(pad)
         self.bin.get_by_name("psink").connect("new-sample", self._on_sample)
+        if self.lut:
+            self.lsrc = self.bin.get_by_name("lsrc")
+            self.bin.get_by_name("lsink").connect("new-sample", self._on_lut)
+
+    def _on_lut(self, sink):
+        sample = sink.emit("pull-sample")
+        if sample is None or self.lsrc is None:
+            return Gst.FlowReturn.OK
+        buf = sample.get_buffer()
+        if self.lsrc.get_property("caps") is None:
+            self.lsrc.set_property("caps", sample.get_caps())
+        ok, info = buf.map(Gst.MapFlags.READ)
+        if not ok:
+            return Gst.FlowReturn.OK
+        try:
+            data = info.data
+        finally:
+            buf.unmap(info)
+        w, h = self.size
+        if len(data) == w * h * 3 // 2:
+            try:
+                data = self.lut.apply_i420(data, w, h)
+            except Exception as e:            # never stop the preview over the LUT
+                print(f"[warn] LUT: {e}")
+                self.lut = None
+        out = Gst.Buffer.new_wrapped(data)
+        out.pts, out.dts, out.duration = buf.pts, buf.dts, buf.duration
+        self.lsrc.emit("push-buffer", out)
+        return Gst.FlowReturn.OK
 
     def attach(self):
         self.build()
@@ -571,7 +710,278 @@ class StreamBranch:
     def describe(self):
         return {"quality": self.quality, "width": self.size[0] if self.size else 0,
                 "height": self.size[1] if self.size else 0, "fps": self.fps,
-                "bitrate": self.bitrate, "path": getattr(self, "path", None)}
+                "bitrate": self.bitrate, "path": getattr(self, "path", None),
+                "lut": self.lut.name if self.lut else None}
+
+
+class TeeBranch:
+    """A bin hung on the video tee while it is needed (analysis, zoom): attach, detach, owns."""
+
+    bin = None
+    tee_pad = None
+
+    def owns(self, obj):
+        while obj is not None:
+            if obj == self.bin:
+                return True
+            obj = obj.get_parent()
+        return False
+
+    def attach(self):
+        self.build()
+        pipe = self.cap.pipeline
+        pipe.add(self.bin)
+        self.bin.sync_state_with_parent()
+        self.tee_pad = pipe.get_by_name("vt").request_pad_simple("src_%u")
+        if self.tee_pad.link(self.bin.get_static_pad("video")) != Gst.PadLinkReturn.OK:
+            raise RuntimeError("could not link the %s branch" % type(self).__name__)
+
+    def detach(self):
+        if not self.bin:
+            return
+        bin_, tpad, pipe = self.bin, self.tee_pad, self.cap.pipeline
+        self.bin = None
+
+        def unlink(pad, _info):
+            if pad.is_linked():
+                pad.unlink(bin_.get_static_pad("video"))
+
+            def finish():
+                bin_.set_state(Gst.State.NULL)
+                if pipe:
+                    try:
+                        pipe.remove(bin_)
+                        pipe.get_by_name("vt").release_request_pad(tpad)
+                    except Exception:
+                        pass
+                return False
+            GLib.idle_add(finish)
+            return Gst.PadProbeReturn.REMOVE
+        if tpad is not None and pipe is not None and pipe.get_state(0)[1] == Gst.State.PLAYING:
+            tpad.add_probe(Gst.PadProbeType.IDLE, unlink)
+        else:
+            bin_.set_state(Gst.State.NULL)
+
+
+class AnalysisBranch(TeeBranch):
+    """Exposure data (REC-13) from a small nearest-neighbour copy of the full frame - only
+    the pixels it keeps are read, so a 4K capture costs next to nothing. A probe in front
+    lets one frame through every ANALYSIS_EVERY seconds; the rest never enter the branch.
+    The copy keeps the source's own format: its luma is read as the camera sent it (a
+    colour conversion here would re-matrix it and every level would be off)."""
+
+    def __init__(self, cap, on_data):
+        self.cap = cap
+        self.on_data = on_data
+        self.last = 0.0
+        self.count = 0
+
+    def build(self):
+        w, h, _ = self.cap.timing
+        gw, gh = monitor.grid_size(w, h)
+        self.gw, self.gh = gw, max(2, gh & ~1)
+        desc = ("queue name=aq max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! "
+                f"videoscale method=nearest-neighbour ! video/x-raw,width={self.gw},height={self.gh} ! "
+                "appsink name=asink emit-signals=true sync=false async=false max-buffers=1 drop=true")
+        self.bin = Gst.parse_bin_from_description(desc, False)
+        q = self.bin.get_by_name("aq").get_static_pad("sink")
+        q.add_probe(Gst.PadProbeType.BUFFER, self._due)
+        self.bin.add_pad(Gst.GhostPad.new("video", q))
+        self.bin.get_by_name("asink").connect("new-sample", self._on_sample)
+
+    def _due(self, _pad, _info):
+        now = time.monotonic()
+        if now - self.last < ANALYSIS_EVERY:
+            return Gst.PadProbeReturn.DROP
+        self.last = now
+        return Gst.PadProbeReturn.OK
+
+    def _on_sample(self, sink):
+        sample = sink.emit("pull-sample")
+        if sample is None:
+            return Gst.FlowReturn.OK
+        buf = sample.get_buffer()
+        vi = GstVideo.VideoInfo.new_from_caps(sample.get_caps())
+        n = vi.finfo.n_planes
+        offsets, strides = list(vi.offset)[:n], list(vi.stride)[:n]
+        vm = GstVideo.buffer_get_video_meta(buf)
+        if vm:
+            offsets, strides = list(vm.offset)[:n], list(vm.stride)[:n]
+        full = int(vi.colorimetry.range) == 1 or None     # GST_VIDEO_COLOR_RANGE_0_255: full range
+        ok, info = buf.map(Gst.MapFlags.READ)
+        if not ok:
+            return Gst.FlowReturn.OK
+        try:
+            data = info.data
+        finally:
+            buf.unmap(info)
+        try:
+            y, full = monitor.sample_luma(data, vi.finfo.name, vi.width, vi.height, offsets, strides, full)
+            meta, payload = monitor.analyze(y, full)
+            self.count += 1
+            if self.on_data:
+                self.on_data(meta, payload)
+        except Exception as e:
+            print(f"[warn] exposure analysis: {e}")
+        return Gst.FlowReturn.OK
+
+
+# What a branch hung on the video tee is fed, checked on the board: a branch whose caps cannot
+# be negotiated stops the whole capture - and the recording - through the tee, so only these
+# are ever linked (the pad templates are no guide: videocrop's says NV16 and then refuses it).
+VIDEOCROP_FORMATS = {"NV12", "NV21", "I420", "YV12", "YUY2", "UYVY", "YVYU", "BGR", "RGB",
+                     "BGRx", "BGRA", "RGBx", "RGBA", "xRGB", "ARGB"}
+# 4:2:2 / 4:4:4 semi-planar - what HDMI cameras send, and what videocrop cannot crop: the
+# zoom cuts those itself (swap U/V?, chroma bytes per pixel)
+PY_CROP = {"NV16": (False, 1), "NV61": (True, 1), "NV24": (False, 2), "NV42": (True, 2)}
+ANALYSIS_FORMATS = VIDEOCROP_FORMATS | set(PY_CROP)    # videoscale nearest-neighbour takes all of these
+
+
+class ZoomBranch(TeeBranch):
+    """Focus zoom for one viewer (REC-14): a crop of the FULL frame, (width / ratio) x
+    (height / ratio) around the point the viewer clicked, encoded at its own pixels (scaled
+    down only past 1920x1080), so 3x on a 4K picture is 1:1 - every source pixel on screen.
+    Moving the point changes the crop of the running branch: no new encoder, no new config.
+
+    videocrop crops what it can (NV12, RGB, packed YUV ...). It cannot crop NV16 / NV24 -
+    the 4:2:2 most cameras send - so for those the rows the crop needs are copied out of the
+    frame (a third of it at 3x) and cut into I420 here; anything else is refused, never
+    linked (a branch that cannot negotiate would stop the capture and the recording)."""
+
+    def __init__(self, cap, zid, x, y, ratio, on_au):
+        self.cap, self.zid, self.ratio, self.on_au = cap, zid, int(ratio), on_au
+        self.x, self.y = x, y
+        self.frames = 0
+        w, h, fps = cap.timing
+        self.src = (w, h)
+        self.cw = max(16, int(w / self.ratio) & ~7)   # I420 rows then need no padding (the cut-out path)
+        self.ch = max(16, int(h / self.ratio) & ~1)
+        k = min(ZOOM_MAX[0] / self.cw, ZOOM_MAX[1] / self.ch, 1.0)
+        self.out = (max(16, int(self.cw * k) & ~1), max(16, int(self.ch * k) & ~1))
+        self.fps = max(1, min(30, round(fps)))
+
+    def _crop(self):
+        w, h = self.src
+        left = int(min(max(0, self.x * w - self.cw / 2), w - self.cw)) & ~1
+        top = int(min(max(0, self.y * h - self.ch / 2), h - self.ch)) & ~1
+        return left, top, w - left - self.cw, h - top - self.ch
+
+    def build(self):
+        fmt = self.cap.format or ""
+        self.py_crop = None
+        if fmt not in VIDEOCROP_FORMATS:
+            if fmt not in PY_CROP or not monitor.available():
+                raise RuntimeError("the zoom cannot crop %s pictures" % (fmt or "these"))
+            self.py_crop = PY_CROP[fmt]
+        ow, oh = self.out
+        px = ow * oh
+        bps = 2_500_000 if px <= 640 * 360 else 4_000_000 if px <= 1280 * 720 else 6_000_000
+        key = max(1, self.fps // 2)
+        fix = f"capssetter caps=\"video/x-raw,framerate={self.fps}/1\" ! "
+        if Gst.ElementFactory.find("x264enc"):
+            enc = (f"x264enc name=zenc tune=zerolatency speed-preset=ultrafast bitrate={bps // 1000} "
+                   f"vbv-buf-capacity=400 key-int-max={key} byte-stream=true sliced-threads=false threads=2")
+        elif Gst.ElementFactory.find("mpph264enc"):
+            enc = (f"mpph264enc name=zenc rc-mode=vbr bps={bps} bps-max={bps * 3 // 2} gop={key} "
+                   "header-mode=each-idr profile=main")
+        else:
+            raise RuntimeError("no H.264 encoder for the zoom")
+        parse = "h264parse config-interval=-1 ! " if Gst.ElementFactory.find("h264parse") else ""
+        left, top, right, bottom = self._crop()
+        scale = (f"videoscale ! video/x-raw,width={ow},height={oh} ! " if (ow, oh) != (self.cw, self.ch) else "")
+        head = ("queue name=zq max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! "
+                f"videorate drop-only=true max-rate={self.fps} ! ")
+        tail = (f"{fix}{enc} ! {parse}video/x-h264,stream-format=byte-stream,alignment=au"
+                f"{',profile=main' if 'x264enc' in enc else ''} ! "
+                "appsink name=zsink emit-signals=true sync=false async=false max-buffers=4 drop=true")
+        if self.py_crop:
+            desc = (head + "appsink name=csink emit-signals=true sync=false async=false max-buffers=1 drop=true "
+                    "appsrc name=csrc format=time is-live=true max-buffers=2 block=false "
+                    f"caps=video/x-raw,format=I420,width={self.cw},height={self.ch},framerate={self.fps}/1 ! "
+                    f"{scale}{tail}")
+        else:
+            desc = (head + f"videocrop name=crop left={left} top={top} right={right} bottom={bottom} ! {scale}"
+                    f"videoconvert n-threads=2 ! video/x-raw,format=I420 ! {tail}")
+        self.bin = Gst.parse_bin_from_description(desc, False)
+        self.bin.add_pad(Gst.GhostPad.new("video", self.bin.get_by_name("zq").get_static_pad("sink")))
+        self.bin.get_by_name("zsink").connect("new-sample", self._on_sample)
+        if self.py_crop:
+            self.csrc = self.bin.get_by_name("csrc")
+            self.bin.get_by_name("csink").connect("new-sample", self._on_frame)
+
+    def _on_frame(self, sink):
+        """NV16 / NV24 -> the crop as I420, copying only the rows it covers."""
+        sample = sink.emit("pull-sample")
+        if sample is None:
+            return Gst.FlowReturn.OK
+        buf = sample.get_buffer()
+        np = monitor.np
+        try:
+            vi = GstVideo.VideoInfo.new_from_caps(sample.get_caps())
+            offsets, strides = list(vi.offset)[:2], list(vi.stride)[:2]
+            vm = GstVideo.buffer_get_video_meta(buf)
+            if vm:
+                offsets, strides = list(vm.offset)[:2], list(vm.stride)[:2]
+            swap, cbytes = self.py_crop
+            left, top, _, _ = self._crop()
+            cw, ch = self.cw, self.ch
+            y = np.frombuffer(buf.extract_dup(offsets[0] + top * strides[0], ch * strides[0]), np.uint8)
+            y = y.reshape(ch, strides[0])[:, left:left + cw]
+            uv = np.frombuffer(buf.extract_dup(offsets[1] + top * strides[1], ch * strides[1]), np.uint8)
+            uv = uv.reshape(ch, strides[1])[::2, left * cbytes:(left + cw) * cbytes]
+            step = 2 * cbytes                     # 4:2:2: U V per 2 pixels; 4:4:4: per pixel, keep every other
+            u, v = uv[:, 0::step], uv[:, 1::step]
+            if swap:
+                u, v = v, u
+            out = Gst.Buffer.new_wrapped(y.tobytes() + u.tobytes() + v.tobytes())
+            out.pts, out.duration = buf.pts, buf.duration
+            self.csrc.emit("push-buffer", out)
+        except Exception as e:                    # never stop the capture over the zoom
+            print(f"[warn] zoom crop: {e}")
+        return Gst.FlowReturn.OK
+
+    def move(self, x, y):
+        self.x, self.y = x, y                     # the Python crop reads the point on every frame
+        crop = self.bin and self.bin.get_by_name("crop")
+        if crop:
+            left, top, right, bottom = self._crop()
+            crop.set_property("left", left)
+            crop.set_property("top", top)
+            crop.set_property("right", right)
+            crop.set_property("bottom", bottom)
+
+    def _on_sample(self, sink):
+        sample = sink.emit("pull-sample")
+        if sample is None:
+            return Gst.FlowReturn.OK
+        buf = sample.get_buffer()
+        ok, info = buf.map(Gst.MapFlags.READ)
+        if not ok:
+            return Gst.FlowReturn.OK
+        try:
+            data = bytes(info.data)
+        finally:
+            buf.unmap(info)
+        self.frames += 1
+        try:
+            self.on_au(self.zid, not buf.has_flags(Gst.BufferFlags.DELTA_UNIT),
+                       buf.pts // 1000 if buf.pts != Gst.CLOCK_TIME_NONE else 0, data)
+        except Exception as e:
+            print(f"[warn] zoom callback: {e}")
+        return Gst.FlowReturn.OK
+
+    def force_keyframe(self):
+        enc = self.bin and self.bin.get_by_name("zenc")
+        if enc:
+            ev = GstVideo.video_event_new_upstream_force_key_unit(Gst.CLOCK_TIME_NONE, True, 0)
+            enc.get_static_pad("src").send_event(ev)
+
+    def describe(self):
+        left, top, _, _ = self._crop()
+        w, h = self.src
+        return {"id": self.zid, "on": True, "ratio": self.ratio, "x": round(self.x, 4), "y": round(self.y, 4),
+                "width": self.out[0], "height": self.out[1], "fps": self.fps, "src_width": w, "src_height": h,
+                "crop": [left, top, self.cw, self.ch], "pixels": round(self.out[0] / self.cw, 3)}
 
 
 class Recording:
@@ -593,6 +1003,13 @@ class Recording:
         self._eos = threading.Event()
         self._on_done = None
         self.start_pts = 0
+        # A/V sync (REC-09) and timecode (REC-11): counted where the branch takes the data
+        self.first_pts = None
+        self.last_end = None
+        self.video_frames = 0
+        self.audio_bytes = 0
+        self.first_wall = None
+        self.tc = None
 
     # subclasses build self.bin with ghost pads "video" and optionally "audio"
     def build(self):
@@ -625,6 +1042,7 @@ class Recording:
             tee = pipe.get_by_name(tee_name)
             tpad = tee.request_pad_simple("src_%u")
             tpad.add_probe(Gst.PadProbeType.BUFFER, self._drop_early)
+            tpad.add_probe(Gst.PadProbeType.BUFFER, self._count, pad_name)
             if tpad.link(ghost) != Gst.PadLinkReturn.OK:
                 raise RuntimeError(f"could not link the {pad_name} branch")
             self.links.append((tee, tpad, ghost))
@@ -638,6 +1056,50 @@ class Recording:
         if buf.pts != Gst.CLOCK_TIME_NONE and buf.pts <= self.start_pts:
             return Gst.PadProbeReturn.DROP
         return Gst.PadProbeReturn.REMOVE
+
+    def _count(self, _pad, info, kind):
+        buf = info.get_buffer()
+        pts = buf.pts
+        if pts == Gst.CLOCK_TIME_NONE or pts <= self.start_pts or self.stopping:
+            return Gst.PadProbeReturn.OK
+        if kind == "audio":
+            self.audio_bytes += buf.get_size()
+            return Gst.PadProbeReturn.OK
+        if self.first_pts is None:
+            self.first_pts = pts
+            self.first_wall = self._wall_of(pts)
+            w, h, fps = self.cap.timing
+            n, d = _fraction(fps)
+            self.tc = timecode.start_timecode(self.first_wall, n, d)
+            try:
+                self.cap.listener.on_recording_timecode(self)
+            except Exception as e:
+                print(f"[warn] timecode: {e}")
+        dur = buf.duration if buf.duration != Gst.CLOCK_TIME_NONE else 0
+        if not dur and self.cap.timing:
+            dur = int(1e9 / max(1.0, self.cap.timing[2]))
+        self.last_end = pts + dur
+        self.video_frames += 1
+        return Gst.PadProbeReturn.OK
+
+    def _wall_of(self, pts):
+        """Wall-clock time of a buffer's capture: its running time against the pipeline clock."""
+        pipe = self.cap.pipeline
+        try:
+            clock = pipe.get_clock()
+            now_rt = clock.get_time() - pipe.get_base_time()
+            return time.time() - max(0, now_rt - pts) / 1e9
+        except Exception:
+            return time.time()
+
+    def av_stats(self):
+        """How far the audio ends from the video (REC-09): >0 = audio longer."""
+        video_s = (self.last_end - self.first_pts) / 1e9 if self.first_pts is not None and self.last_end else 0.0
+        audio_s = self.audio_bytes / (AUDIO_META["rate"] * AUDIO_META["channels"] * 2)
+        d = {"video_s": round(video_s, 3), "frames": self.video_frames}
+        if self.with_audio:
+            d.update(audio_s=round(audio_s, 3), drift_ms=round((audio_s - video_s) * 1000, 1))
+        return d
 
     def _on_sink_event(self, _pad, info):
         if info.get_event().type == Gst.EventType.EOS:
@@ -733,7 +1195,7 @@ class EncodedRecording(Recording):
 
     def __init__(self, cap, path_base, s, with_audio):
         self.s = s
-        ext = ".mkv" if s["container"] == "mkv" else ".mp4"
+        ext = {"mkv": ".mkv", "mov": ".mov"}.get(s["container"], ".mp4")
         super().__init__(cap, path_base + ext, with_audio)
         self.sysmem_frames = 0
         self.esrc = None
@@ -755,9 +1217,9 @@ class EncodedRecording(Recording):
         if s["container"] == "mkv":
             mux = "matroskamux name=mux"
         else:
-            # periodically rewritten index: the MP4 stays playable after a crash / power cut
-            mux = ("mp4mux name=mux reserved-max-duration=14400000000000 "
-                   "reserved-moov-update-period=1000000000")
+            # periodically rewritten index: the file stays playable after a crash / power cut
+            mux = (f"{'qtmux' if s['container'] == 'mov' else 'mp4mux'} name=mux "
+                   "reserved-max-duration=14400000000000 reserved-moov-update-period=1000000000")
         # mpph265enc's rate control breaks on fractional frame rates (59.94 fps -> ~15x the
         # bitrate); give it the rounded rate, the buffer timestamps stay exact
         enc = (f"capssetter caps=\"video/x-raw,framerate={max(1, round(fps))}/1\" ! "
@@ -772,8 +1234,11 @@ class EncodedRecording(Recording):
         else:
             desc = f"{vq}{conv}{enc}"
         if self.with_audio:
+            # MOV and MKV keep the audio as it came (16-bit PCM, REC-09); MP4 cannot hold PCM here
+            audio = ("audioconvert ! voaacenc bitrate=256000 ! aacparse" if s["container"] == "mp4" else
+                     "audioconvert ! audio/x-raw,format=S16LE,layout=interleaved")
             desc += (" queue name=aq max-size-time=3000000000 max-size-bytes=0 max-size-buffers=0 ! "
-                     "audioconvert ! voaacenc bitrate=256000 ! aacparse ! mux.")
+                     f"{audio} ! mux.")
         self.bin = Gst.parse_bin_from_description(desc, False)
         self.bin.get_by_name("fsink").set_property("location", self.path)
         vq = self.bin.get_by_name("vq")
@@ -811,10 +1276,20 @@ class EncodedRecording(Recording):
         return Gst.PadProbeReturn.OK
 
     def bytes_per_second(self):
-        return self.s["bitrate"] * 1e6 / 8 + (32000 if self.with_audio else 0)
+        audio = (32000 if self.s["container"] == "mp4" else 192000) if self.with_audio else 0
+        return self.s["bitrate"] * 1e6 / 8 + audio
+
+    def _finalize_file(self):
+        # the time-of-day timecode as a QuickTime tmcd track, where editors read it (REC-11)
+        if self.tc and self.path.endswith((".mov", ".mp4")) and self.size_bytes() > 0:
+            try:
+                timecode.add_tmcd(self.path, self.tc)
+            except (OSError, ValueError) as e:
+                print(f"[warn] no timecode track in {self.path}: {e}")
 
     def stats(self):
-        return {"drops": self.cap.drops + self.late_drops, "sysmem_frames": self.sysmem_frames}
+        return {"drops": self.cap.drops + self.late_drops, "sysmem_frames": self.sysmem_frames,
+                "av": self.av_stats()}
 
 
 class RawRecording(Recording):
@@ -938,6 +1413,13 @@ class RawRecording(Recording):
             except OSError:
                 pass
             return
+        if self.tc:
+            self.writer.meta["timecode"] = self.tc              # REC-11
+        self.writer.meta["sync"] = self.av_stats()              # REC-09
+        try:
+            arh.pack_header(self.writer.meta)
+        except ValueError:                                      # 4 KB header: the sync figures go
+            self.writer.meta.pop("sync", None)                  # to the take's sidecar only
         try:
             self.writer.finalize()
         except OSError as e:
@@ -958,4 +1440,4 @@ class RawRecording(Recording):
     def stats(self):
         return {"drops": self.cap.drops, "disk_drops": self.disk_drops,
                 "buffer": self.buffer_fill(),
-                "frames": self.writer.frames if self.writer else 0}
+                "frames": self.writer.frames if self.writer else 0, "av": self.av_stats()}

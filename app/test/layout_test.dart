@@ -229,7 +229,10 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(seconds: 1));
       final takeScroll = find.descendant(of: find.byType(DraggableScrollableSheet), matching: find.byType(Scrollable)).first;
-      for (var i = 0; i < 8 && find.text('REC_20251231_235959_H264_720p.mp4').evaluate().isEmpty; i++) {
+      // (the jobs card behind the sheet names the same file: look inside the sheet)
+      final variant = find.descendant(
+          of: find.byType(DraggableScrollableSheet), matching: find.text('REC_20251231_235959_H264_720p.mp4'));
+      for (var i = 0; i < 12 && variant.evaluate().isEmpty; i++) {
         await tester.drag(takeScroll, const Offset(0, -200));
         await tester.pump(const Duration(milliseconds: 200));
       }

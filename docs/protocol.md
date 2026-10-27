@@ -53,7 +53,7 @@ Pushed to every session whenever they change (whoever changed them), newest valu
 
 | Topic | Data |
 |---|---|
-| `recorder` | status: `available, caps, signal, capture, recording, preview, disk, mode, mode_text, last, simulate` |
+| `recorder` | status: `available, caps, signal, capture, recording, preview, disk, mode, mode_text, last, simulate`, and for film work: `storage` `{path, free, total, need, rate, seconds_left, speed, measured, ok, warning, testing}` (bytes, bytes/s; `ok` null = disk not measured, REC-12), `audio_inputs` `[{id: hdmi\|alsa:<card>, name, usb?}]` (REC-09), `monitor` `{analysis, zooms, lut, audio_source, luts: [{id, name, builtin}], lut_error, bands: [{from, to, colour, meaning}]}` (REC-13), `clock_synced` (true/false/null, REC-11), `take` `{next, tc, markers}` (`next`: what the slate makes of the next take's name, e.g. `S12A_SH3_T04` or `REC` - the date and time follow; the current take's start timecode and marker count, REC-15), `gpio` `{button: {pin, ok, error, presses}, tally: {pin, ok, error, on}}` (REC-16); `recording` also has `tc` and `av` `{video_s, frames, audio_s?, drift_ms?}` |
 | `recorder.settings` | the recording settings (see `recorder.settings.set`) |
 | `jobs` | list of jobs `{id, title, codec, state, source, output, progress, fps, eta, live, error, options, verify, attempt, max_attempts, note}`; `state`: queued, running, **verifying** (FFV1 being compared with its RAW), **retrying** (failed, runs again shortly - GAL-10), done, failed, cancelled; `note`: what happened on the way (RAW repaired, damage skipped, retries, resumed after a restart - GAL-09/10); `verify`: `{ok, frames, audio_bytes, detail, raw_deleted?}` or null; `codec` `verify` = an on-demand check |
 | `gallery` | summary `{version, takes, files, size, folder}`; fetch `gallery.list` when `version` changes |
@@ -97,7 +97,13 @@ Other events: `stats` `{data}` (after `stats.subscribe`), `term.exit` `{term, co
 | `in.text` | `s` | types Unicode text |
 | `in.pointer` | | `{x, y}` |
 | `recorder.status` | | the `recorder` topic |
-| `recorder.start` / `recorder.stop` | | `{file, ...}` |
+| `recorder.start` / `recorder.stop` | start: `force?` (record although the disk was measured too slow, REC-12) | `{file, ...}` |
+| `recorder.mark` | `label?` | a marker in the take being recorded `{tc, frames, t, label}` (REC-15) |
+| `recorder.disk_test` | | measures the storage folder's disk: `{speed, bytes, seconds, at, device, fs, mount, direct, figures}` (REC-12); refused while recording |
+| `recorder.inputs` | | `{inputs: [{id, name, usb?}], current}`: the audio inputs (REC-09) |
+| `recorder.luts` | | `{luts: [{id, name, builtin}], current}` (REC-13) |
+| `recorder.lut.add` | `name`, `text` (the .cube file's content) | checked (3D or 1D .cube), saved as `cube:<name>` |
+| `recorder.lut.delete` | `lut` (`cube:<name>`) | the list; the monitoring LUT is turned off if it was this one |
 | `recorder.settings.get` | | settings |
 | `recorder.settings.set` | `settings` (a partial object, e.g. `{"h265": {"bitrate": 60}}`) | validated, saved, published |
 | `recorder.edid` | `value` (4k60, 4k30, 1080p, keep) | |
@@ -107,12 +113,14 @@ Other events: `stats` `{data}` (after `stats.subscribe`), `term.exit` `{term, co
 | `camera.select` | `source`, `mode?` (V4L2: `"MJPG 1280x720@30"`), `spec?` (test: `"1920x1080@30"`) | recorder status (`source`, `camera`); saved in config.json (CAM-01) |
 | `recorder.test_signal` | `present` (test source only) | status |
 | `gallery.list` | `kind?` (RAW, H.265, H.264, FFV1, VIDEO) | `{folder, version, takes}` |
-| `gallery.get` | `take` | one take `{id, title, created, day, month, size, duration, kinds, recording, items}`; `day` (`YYYY-MM-DD`) and `month` (`YYYY-MM`) are the board's date of the take, so every controller groups alike (GAL-01); an H.265/H.264 item carries `mse` (its RFC 6381 codec string, e.g. `hvc1.1.6.L150.B0`, GAL-11) |
+| `gallery.get` | `take` | one take `{id, title, created, day, month, size, duration, kinds, recording, items, slate, meta}` - `slate` "Scene 12A · Shot 3 · Take 4" or null, `meta` the sidecar's summary `{scene, shot, take, tc, rate, good, notes, markers: [{tc, frames, t, label}], drift_ms, audio_source, clock_synced, drops}` or null (REC-15, GAL-13); `day` (`YYYY-MM-DD`) and `month` (`YYYY-MM`) are the board's date of the take, so every controller groups alike (GAL-01); an H.265/H.264 item carries `mse` (its RFC 6381 codec string, e.g. `hvc1.1.6.L150.B0`, GAL-11) |
 | `gallery.bundle` | `takes?`, `files?`, `day?`, `month?`, `kind?` (default `all`) | `{id, name, url, files, size, skipped: [{file, why}], expires}`: the files to download together (GAL-12) - files still recorded or written are left out in `skipped`; `url` (`/api/bundle/<id>.zip`) serves them as one ZIP for an hour |
 | `gallery.targets` | | `{targets: [{id, title, available, description, options}]}`; `options.bitrate_max` (Mbit/s): 200 for the VPU targets |
 | `gallery.convert` | `file, target, quality?, scale?, preset?, bitrate?, rc?, chroma?, replace_raw?` | the new job (`bitrate` Mbit/s, 0.1 - `bitrate_max`; `rc` vbr / cbr); `replace_raw` (FFV1 from RAW, default = setting `raw.ffv1_replace_raw`): check the copy, then delete the RAW |
 | `gallery.verify` | `file` (the take's FFV1 or RAW), `delete_raw` | a *verify* job: decodes the FFV1 and compares every frame plane and audio sample with the RAW byte for byte; with `delete_raw` the RAW is deleted only if all of it is identical (GAL-08) |
 | `gallery.delete` | `file` | refused while it is recorded or converted |
+| `gallery.annotate` | `take`, any of `good` (bool), `notes`, `scene`, `shot`, `take_no` | the take's `meta` (GAL-13) |
+| `gallery.csv` | `takes?`, `day?`, `month?` | `{name, rows, csv}`: one row per file, Resolve's metadata columns (GAL-13) |
 | `gallery.delete_take` | `take` | |
 | `jobs.list` / `jobs.clear` / `jobs.cancel` | `job` (cancel: the job's number - never `id`, which is the request's own number) | `{jobs}` / job |
 | `screen.status` | | the `screen` topic |
@@ -209,3 +217,26 @@ Binary messages: `[version u8 = 1][flags u8: bit0 keyframe][pts_us u64 BE][Annex
 a new viewer gets a keyframe right away; a viewer more than ~8 frames behind skips to the next
 keyframe (requested at once) - live beats complete. The encoder stops ~5 s
 after the last viewer leaves (REC-06).
+
+**Film work (REC-10, REC-13, REC-14).** A viewer that sends nothing gets nothing more. A viewer
+may send text:
+
+- `{"type":"hello","want":["levels","analysis"]}` - then gets
+  - `levels`: text `{"type":"levels","peak":[dB...],"rms":[dB...]}` ten times a second (one value
+    per channel, dBFS; recorded audio, also when not recording);
+  - `analysis`: binary `[version u8 = 2][kind u8 = 1][json length u16 BE][JSON][payload]` four
+    times a second while the settings show zebras, false colour or a scope. JSON
+    `{gw, gh, ww, wl, ire_max: 110, range}`; payload = `hist` (128 bytes: share per 1 % IRE,
+    0..127 %, sqrt-scaled 0..255) + `wave` (`wl` x `ww` bytes: row i = IRE [i, i+1) x 110 / wl,
+    **row 0 = 0 %**, column = 1/ww of the width, sqrt-scaled 0..255) + `map` (`gw` x `gh` bytes,
+    rows from the top: each cell's level as IRE x 2, i.e. 200 = 100 %). Zebras = cells at or
+    over `monitor.zebra_level`; false colour = the `bands` of the `recorder` topic. Measured on
+    the full captured frame, not the preview.
+- `{"type":"zoom","on":true,"x":0.5,"y":0.5}` - focus zoom around that point (0..1 of the whole
+  picture) at the settings' `monitor.zoom` ratio. Reply `{"type":"zoom","on":true,"ratio","x","y",
+  "width","height","src_width","src_height","crop":[left,top,w,h],"pixels"}` (`pixels`: screen
+  pixels per source pixel of the stream, 1 = 1:1) and, when the size changes, a new `config`
+  (with `"zoom": true`); this viewer's video frames are then the crop's. Sending another point
+  moves it (only a new `zoom` comes back). `{"type":"zoom","on":false}` - or a refusal
+  `{"type":"zoom","on":false,"error"}` (e.g. 3 viewers zoomed already) - brings the whole
+  picture back with its `config` and a keyframe. The zoom is per viewer.

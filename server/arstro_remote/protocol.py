@@ -17,6 +17,9 @@ Frame types:
                      after a reconnect can never show up twice).
     0x04 VIDEO     - encoded video access unit (recorder worker -> daemon only),
                      payload = [flags u8 (bit0 keyframe)][pts_us u64 BE][Annex-B bytes]
+    0x05 BLOB      - tagged binary data (recorder worker -> daemon only): a viewer's focus zoom
+                     access units, exposure data (REC-13, REC-14),
+                     payload = [json length u16 BE][JSON object][bytes]
 
 JSON conventions:
     request   {"id": 7, "op": "wifi.scan", ...params}
@@ -35,6 +38,7 @@ T_JSON = 0x01
 T_TERM = 0x02
 T_TERM_OUT = 0x03
 T_VIDEO = 0x04
+T_BLOB = 0x05
 
 HEADER = struct.Struct(">BI")
 OFFSET = struct.Struct(">Q")
@@ -76,6 +80,20 @@ def decode_video(payload: bytes):
     return bool(flags & 1), pts, payload[VIDEO_HEAD.size:]
 
 
+BLOB_HEAD = struct.Struct(">H")
+
+
+def encode_blob(meta: dict, data: bytes) -> bytes:
+    js = json.dumps(meta, separators=(",", ":")).encode("utf-8")
+    return encode(T_BLOB, BLOB_HEAD.pack(len(js)) + js + data)
+
+
+def decode_blob(payload: bytes):
+    """-> (meta dict, data)"""
+    n = BLOB_HEAD.unpack_from(payload, 0)[0]
+    return json.loads(payload[2:2 + n]), payload[2 + n:]
+
+
 def decode_term_out(payload: bytes):
     """-> (term_id, offset, data)"""
     return payload[0], OFFSET.unpack_from(payload, 1)[0], payload[1 + OFFSET.size:]
@@ -92,7 +110,7 @@ class FrameDecoder:
         frames = []
         while len(self._buf) >= HEADER.size:
             ftype, length = HEADER.unpack_from(self._buf, 0)
-            if ftype not in (T_JSON, T_TERM, T_TERM_OUT, T_VIDEO):
+            if ftype not in (T_JSON, T_TERM, T_TERM_OUT, T_VIDEO, T_BLOB):
                 raise ProtocolError("unknown frame type 0x%02x" % ftype)
             if length > MAX_FRAME:
                 raise ProtocolError("frame too large: %d" % length)

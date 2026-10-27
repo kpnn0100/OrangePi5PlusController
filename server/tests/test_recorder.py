@@ -25,6 +25,7 @@ import urllib.request
 from harness import check, nal_types, run, test, wait_until
 
 from arstro_remote.client import Client
+from arstro_remote.recorder import arh
 from arstro_remote.paths import control_socket_path, load_config
 from arstro_remote.web import auth, ws
 
@@ -98,8 +99,9 @@ def teardown(c):
             c.a.call("recorder.stop")
     finally:
         o = c.orig_settings
-        c.a.call("recorder.settings.set", settings={k: o[k] for k in ("mode", "h265", "raw", "audio",
-                                                                       "storage", "edid", "preview")})
+        c.a.call("recorder.settings.set", settings={k: o[k] for k in ("mode", "h265", "raw", "audio", "storage",
+                                                                       "edid", "preview", "monitor", "slate",
+                                                                       "gpio", "storage_guard") if k in o})
         c.a.call("recorder.source", simulate=c.orig_source, timeout=40)
         try:
             os.remove(c.backup)                       # restored: nothing left to recover
@@ -632,6 +634,247 @@ def a_changed_pixel_is_caught_and_the_raw_is_kept(c):
         c.a.call("gallery.delete_take", take=take)
     finally:
         c.a.call("recorder.settings.set", settings={"raw": c.orig_settings["raw"], "mode": c.orig_settings["mode"]})
+
+
+# ------------------------------------------------------------- film work (REC-09..16, GAL-13)
+def _sidecar(c, take):
+    with open(os.path.join(c.tmp, take + ".take.json")) as f:
+        return json.load(f)
+
+
+def _ws(c, want=("levels", "analysis")):
+    conn = ws.connect("ws://127.0.0.1:%d/ws/preview" % c.port, {"Authorization": "Bearer " + c.token})
+    conn.send_text(json.dumps({"type": "hello", "want": list(want)}))
+    conn.sock.settimeout(6)
+    return conn
+
+
+def _collect(conn, secs, stop=None):
+    """What a viewer gets for `secs`; `after_config`: the video frames since the last config."""
+    out = {"levels": [], "analysis": [], "video": [], "text": [], "after_config": []}
+    end = time.monotonic() + secs
+    while time.monotonic() < end:
+        op, data = conn.recv_message()
+        if op == ws.OP_TEXT:
+            m = json.loads(data)
+            (out["levels"] if m.get("type") == "levels" else out["text"]).append(m)
+            if m.get("type") == "config":
+                out["after_config"] = []
+            if stop and stop(m):
+                break
+        elif data[0] == 2:
+            n = struct.unpack_from(">H", data, 2)[0]
+            out["analysis"].append((json.loads(data[4:4 + n]), data[4 + n:]))
+        else:
+            out["video"].append((data[1] & 1, data[10:]))
+            out["after_config"].append(data[1] & 1)
+    return out
+
+
+@test("REC-15", "REC-11", "REC-09", "GAL-13", "ARC-03")
+def a_take_has_its_slate_timecode_markers_and_sync(c):
+    c.a.call("recorder.settings.set", settings={"mode": "raw", "raw": {"h264": False, "hq": False, "ffv1": False},
+                                                "audio": {"record": True},
+                                                "slate": {"scene": "T1", "shot": "2", "take": 7, "auto": True}})
+    try:
+        r = c.a.call("recorder.start", timeout=30)
+        check(r["file"].startswith("ST1_SH2_T07_") and r["file"].endswith(".arh"), r["file"])
+        take = r["file"][:-4]
+        ok = c.b.wait_state("recorder", lambda d: (d["recording"].get("tc") or "").count(":") == 3, 5)
+        check(ok, "no start timecode in the status within 5 s")
+        tc = c.b.state["recorder"]["recording"]["tc"]
+        time.sleep(1.2)
+        m = c.a.call("recorder.mark", label="clap")
+        check(m["label"] == "clap" and m["frames"] > 20 and m["tc"] > tc, m)
+        time.sleep(1.5)
+        c.a.call("recorder.stop", timeout=60)
+        side = _sidecar(c, take)
+        check(side["timecode"]["tc"] == tc and side["slate"]["take"] == 7, side)
+        check(side["markers"][0]["tc"] == m["tc"], side["markers"])
+        sync = side["sync"]
+        check(sync.get("audio_s") and sync.get("video_s") and abs(sync["drift_ms"]) < 150, sync)
+        check(arh.ArhReader(os.path.join(c.tmp, r["file"])).meta["timecode"]["tc"] == tc, "RAW header timecode")
+        check(c.a.call("recorder.settings.get")["slate"]["take"] == 8, "the take number did not count up")
+        t = c.a.call("gallery.get", take=take)
+        check(t["slate"] == "Scene T1 · Shot 2 · Take 7" and t["meta"]["tc"] == tc, (t["slate"], t["meta"]))
+        c.b.wait_state("gallery", lambda g: True, 10)
+        v0 = (c.b.state.get("gallery") or {}).get("version", 0)
+        meta = c.a.call("gallery.annotate", take=take, good=True, notes="focus on the eyes")
+        check(meta["good"] and meta["notes"] == "focus on the eyes", meta)
+        check(c.b.wait_state("gallery", lambda g: g["version"] > v0, 10),
+              "another controller was not told about the note (GAL-07, GAL-13)")
+        sheet = c.a.call("gallery.csv", takes=[take])
+        row = next(iter(__import__("csv").DictReader(__import__("io").StringIO(sheet["csv"]))))
+        check(row["File Name"] == r["file"] and row["Good Take"] == "1" and row["Start TC"] == tc, row)
+        check(row["Markers"].startswith(m["tc"]) and row["Scene"] == "T1", row)
+    finally:
+        c.a.call("recorder.settings.set", settings={"audio": {"record": False}, "slate": c.orig_settings.get(
+            "slate", {"scene": "", "shot": "", "take": 1, "auto": True})})
+
+
+@test("REC-09", "REC-11")
+def h265_mov_keeps_pcm_and_carries_timecode(c):
+    if not c.a.call("recorder.status")["caps"].get("vpu_h265"):
+        print("      (no VPU H.265 here - checked on the board)")
+        return
+    c.a.call("recorder.settings.set", settings={"mode": "h265", "audio": {"record": True},
+                                                "h265": {"container": "mov", "bitrate": 20}})
+    try:
+        take = _record(c, 3)
+        path = os.path.join(c.tmp, take + ".mov")
+        probe = json.loads(subprocess.run(["ffprobe", "-v", "error", "-print_format", "json", "-show_streams", path],
+                                          capture_output=True, text=True).stdout)
+        codecs = {s["codec_type"]: s["codec_name"] for s in probe["streams"] if s["codec_type"] != "data"}
+        check(codecs.get("video") == "hevc" and codecs.get("audio") == "pcm_s16le", codecs)
+        tmcd = [s for s in probe["streams"] if s.get("codec_tag_string") == "tmcd"]
+        tc = _sidecar(c, take)["timecode"]["tc"]
+        check(tmcd and tmcd[0]["tags"]["timecode"] == tc, "tmcd %s != %s" % (tmcd, tc))
+        if c.a.call("recorder.status")["caps"].get("vpu_h264"):
+            job = c.a.call("gallery.convert", file=take + ".mov", target="h264-vpu")
+            done = wait_until(lambda: next((j for j in c.a.call("jobs.list")["jobs"] if j["id"] == job["id"]
+                                            and j["state"] in ("done", "failed")), None), 90, 1)
+            check(done and done["state"] == "done", done)
+            p2 = json.loads(subprocess.run(["ffprobe", "-v", "error", "-print_format", "json", "-show_streams",
+                                            os.path.join(c.tmp, done["output"])],
+                                           capture_output=True, text=True).stdout)
+            check(any(s.get("tags", {}).get("timecode") == tc for s in p2["streams"]), "the copy lost the timecode")
+    finally:
+        c.a.call("recorder.settings.set", settings={"mode": c.orig_settings["mode"], "audio": {"record": False},
+                                                    "h265": c.orig_settings["h265"]})
+
+
+@test("REC-10", "REC-13", "REC-14")
+def meters_exposure_and_a_zoom_of_ones_own(c):
+    c.a.call("recorder.settings.set", settings={"monitor": {"scope": "waveform", "zebra": True, "zoom": 2}})
+    a, b = _ws(c), _ws(c, ())
+    try:
+        r = _collect(a, 4)
+        check(len(r["levels"]) >= 20 and len(r["levels"][-1]["peak"]) >= 1, "meters: %d readings" % len(r["levels"]))
+        check(len(r["analysis"]) >= 8, "exposure data: %d in 4 s" % len(r["analysis"]))
+        meta, payload = r["analysis"][-1]
+        check(len(payload) == 128 + meta["wl"] * meta["ww"] + meta["gw"] * meta["gh"], meta)
+        # the test bars' own levels (white 100 %, blue 7.3 % on Rec.709), not a re-matrixed copy;
+        # the bars scroll sideways, but every row of them holds all seven
+        cells = payload[128 + meta["wl"] * meta["ww"]:]
+        row = cells[20 * meta["gw"]:21 * meta["gw"]]
+        white, blue = max(row) / 2, min(row) / 2
+        # blue is 7.2 % with the Rec.709 matrix, 11.4 % with Rec.601 (videotestsrc's choice varies by
+        # version); a re-matrixed copy - the bug this guards - read 1.4 %
+        check(abs(white - 100) <= 1.5 and 5 <= blue <= 13, "levels: white %.1f %%, blue %.1f %%" % (white, blue))
+        cfg = next(t for t in r["text"] if t["type"] == "config")
+        a.send_text(json.dumps({"type": "zoom", "on": True, "x": 0.25, "y": 0.75}))
+        r = _collect(a, 4)
+        z = next((t for t in r["text"] if t["type"] == "zoom"), None)
+        check(z and z["on"] and z["ratio"] == 2, z)
+        sw, sh = z["src_width"], z["src_height"]
+        check(z["crop"][2] == (sw // 2) & ~1 and z["crop"][0] == 0 and z["crop"][1] + z["crop"][3] == sh, z["crop"])
+        zc = next(t for t in r["text"] if t["type"] == "config")
+        check(zc["width"] == z["width"] and zc.get("zoom"), zc)
+        check(r["after_config"] and r["after_config"][0] == 1, "the zoom stream did not start on a keyframe")
+        other = _collect(b, 2)
+        check(len(other["video"]) >= 30 and not any(t["type"] == "zoom" for t in other["text"]),
+              "another viewer was disturbed by this one's zoom")
+        a.send_text(json.dumps({"type": "zoom", "on": True, "x": 0.9, "y": 0.1}))
+        r = _collect(a, 2)
+        moved = [t for t in r["text"] if t["type"] == "zoom"]
+        check(moved and moved[-1]["crop"][0] > 0 and not any(t["type"] == "config" for t in r["text"]),
+              "moving the zoom should change the crop, not the stream")
+        a.send_text(json.dumps({"type": "zoom", "on": False}))
+        r = _collect(a, 3)
+        back = [t for t in r["text"] if t["type"] in ("zoom", "config")]
+        check(back and back[0] == {"type": "zoom", "on": False, "error": None} and back[-1]["width"] == cfg["width"],
+              back)
+        c.a.call("recorder.settings.set", settings={"monitor": {"lut": "slog3"}})
+        ok = c.b.wait_state("recorder", lambda d: "LUT" in ((d["preview"].get("stream") or {}).get("path") or ""), 8)
+        check(ok, "the preview did not switch to the LUT")
+        r = _collect(a, 2)
+        check(len(r["video"]) > 20, "no picture through the LUT")
+    finally:
+        a.close()
+        b.close()
+        c.a.call("recorder.settings.set", settings={"monitor": c.orig_settings.get("monitor") or {
+            "lut": "off", "scope": "off", "zebra": False, "zoom": 3}})
+
+
+@test("REC-14", "REC-03")
+def zooming_a_422_picture_keeps_the_take(c):
+    """Cameras send 4:2:2 (NV16), which videocrop cannot crop: the zoom must cut it itself,
+    and a zoom must never stop the capture - let alone a take being recorded."""
+    c.a.call("recorder.source", simulate="1280x720@30:NV16", timeout=60)
+    conn = None
+    try:
+        check(wait_until(lambda: c.a.call("recorder.status")["signal"].get("present"), 20), "no test signal")
+        c.a.call("recorder.settings.set", settings={"mode": "raw", "raw": {"h264": False, "hq": False, "ffv1": False}})
+        conn = _ws(c, ())
+        _collect(conn, 2)
+        r = c.a.call("recorder.start", timeout=30)
+        conn.send_text(json.dumps({"type": "zoom", "on": True, "x": 0.5, "y": 0.5}))
+        got = _collect(conn, 4)
+        z = [t for t in got["text"] if t["type"] == "zoom"]
+        check(z and z[0]["on"] and not any(t.get("on") is False for t in z), "zoom refused or dropped: %s" % z)
+        check(len(got["after_config"]) >= 60 and got["after_config"][0] == 1, "zoomed frames: %d" % len(got["after_config"]))
+        st = c.a.call("recorder.status")
+        check(st["recording"].get("active") and st["recording"]["file"] == r["file"], "the take stopped: %s" % st["recording"])
+        s = c.a.call("recorder.stop", timeout=60)
+        check(s["file"] == r["file"] and not s.get("reason"), s)
+    finally:
+        if conn:
+            conn.close()
+        c.a.call("recorder.source", simulate=c.source, timeout=60)
+
+
+@test("REC-12")
+def time_left_and_the_slow_disk_guard(c):
+    from arstro_remote.paths import state_dir
+    r = c.a.call("recorder.disk_test", timeout=120)
+    check(r["speed"] > 0 and r["figures"]["speed"] == r["speed"], r)
+    c.a.call("recorder.settings.set", settings={"mode": "raw", "raw": {"h264": False, "hq": False, "ffv1": False}})
+    st = c.a.call("recorder.status")["storage"]
+    check(st["need"] and st["seconds_left"] == int(st["free"] / st["need"]), st)
+    # pretend the disk is slow (as a measurement would say on a USB stick)
+    p = os.path.join(state_dir(), "disk_speed.json")
+    with open(p) as f:
+        d = json.load(f)
+    for k in d:
+        if d[k]["speed"] == r["speed"]:
+            d[k]["speed"] = 1_000_000
+    with open(p, "w") as f:
+        json.dump(d, f)
+    try:
+        st = c.a.call("recorder.status")["storage"]
+        check(st["ok"] is False and "1 MB/s" in st["warning"], st)
+        res = c.a.request("recorder.start")
+        check(res["ok"] is False and "disk too slow" in res["error"], res)
+        r2 = c.a.call("recorder.start", force=True, timeout=30)
+        time.sleep(1)
+        c.a.call("recorder.stop", timeout=60)
+        check(r2["file"], r2)
+    finally:
+        c.a.call("recorder.disk_test", timeout=120)          # the real figure back
+        c.a.call("recorder.settings.set", settings={"mode": c.orig_settings["mode"]})
+
+
+@test("REC-13", "REC-09", "REC-16")
+def luts_inputs_and_gpio_problems_are_shown(c):
+    n = 2
+    cube = "LUT_3D_SIZE 2\n" + "\n".join("%d %d %d" % (r, g, b) for b in (0, 1) for g in (0, 1) for r in (0, 1))
+    r = c.a.call("recorder.lut.add", name="Test ident", text=cube)
+    check(r["id"] == "cube:Test ident" and any(l["id"] == r["id"] for l in r["luts"]), r)
+    bad = c.a.request("recorder.lut.add", name="broken", text="LUT_3D_SIZE %d\n0 0 0\n" % n)
+    check(bad["ok"] is False, bad)
+    c.a.call("recorder.settings.set", settings={"monitor": {"lut": "cube:Test ident"}})
+    c.a.call("recorder.lut.delete", lut="cube:Test ident")
+    check(c.a.call("recorder.settings.get")["monitor"]["lut"] == "off", "the deleted LUT is still shown")
+    ins = c.a.call("recorder.inputs")
+    check(ins["inputs"][0]["id"] == "hdmi" and ins["current"] in [i["id"] for i in ins["inputs"]], ins)
+    check(c.a.request("recorder.settings.set", settings={"audio": {"source": "usb"}})["ok"] is False, "bad input")
+    c.a.call("recorder.settings.set", settings={"gpio": {"button": "gpiochip99:1"}})
+    try:
+        ok = c.b.wait_state("recorder", lambda d: (d.get("gpio") or {}).get("button", {}).get("ok") is False, 5)
+        check(ok, "a GPIO line that cannot be had is not reported")
+        check(c.b.state["recorder"]["gpio"]["button"]["error"], c.b.state["recorder"]["gpio"])
+    finally:
+        c.a.call("recorder.settings.set", settings={"gpio": {"button": ""}})
 
 
 if __name__ == "__main__":

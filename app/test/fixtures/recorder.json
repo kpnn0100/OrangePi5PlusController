@@ -37,7 +37,14 @@
    "rate": 497000000,
    "drops": 0,
    "audio": true,
-   "stopping": false
+   "stopping": false,
+   "tc": "12:00:00;04",
+   "av": {
+    "video_s": 83.4,
+    "frames": 2499,
+    "audio_s": 83.42,
+    "drift_ms": 20.0
+   }
   },
   "preview": {
    "viewers": 2,
@@ -61,6 +68,131 @@
    "size": 6548898617,
    "duration": 10.4
   },
+  "storage": {
+   "path": "/home/pi/Videos/HDMI-Recorder",
+   "free": 463899164672,
+   "total": 498996408320,
+   "need": 497664000,
+   "rate": 497000000,
+   "seconds_left": 933,
+   "speed": 1450000000,
+   "measured": {
+    "speed": 1450000000,
+    "bytes": 1073741824,
+    "seconds": 0.74,
+    "at": 1767225000,
+    "device": "/dev/nvme0n1p1",
+    "fs": "ext4",
+    "mount": "/",
+    "direct": true
+   },
+   "ok": true,
+   "warning": null,
+   "testing": false
+  },
+  "audio_inputs": [
+   {
+    "id": "hdmi",
+    "name": "HDMI input (from the camera)"
+   },
+   {
+    "id": "alsa:U192k",
+    "name": "UMC202HD 192k",
+    "usb": true
+   }
+  ],
+  "monitor": {
+   "analysis": true,
+   "zooms": 0,
+   "lut": "S-Log3 → Rec.709 (approx.)",
+   "audio_source": "UMC202HD 192k",
+   "luts": [
+    {
+     "id": "slog3",
+     "name": "S-Log3 → Rec.709 (approx.)",
+     "builtin": true
+    },
+    {
+     "id": "vlog",
+     "name": "V-Log → Rec.709 (approx.)",
+     "builtin": true
+    },
+    {
+     "id": "hlg",
+     "name": "HLG → Rec.709",
+     "builtin": true
+    },
+    {
+     "id": "log",
+     "name": "Any log: contrast only",
+     "builtin": true
+    },
+    {
+     "id": "cube:FX3 Rec709",
+     "name": "FX3 Rec709",
+     "builtin": false
+    }
+   ],
+   "lut_error": null,
+   "bands": [
+    {
+     "from": -10,
+     "to": 2.5,
+     "colour": "#7b2cbf",
+     "meaning": "black clipped"
+    },
+    {
+     "from": 2.5,
+     "to": 10,
+     "colour": "#1e5bff",
+     "meaning": "near black"
+    },
+    {
+     "from": 40,
+     "to": 46,
+     "colour": "#2ecc40",
+     "meaning": "18 % grey"
+    },
+    {
+     "from": 52,
+     "to": 58,
+     "colour": "#ff7eb6",
+     "meaning": "skin (one stop over grey)"
+    },
+    {
+     "from": 92,
+     "to": 98,
+     "colour": "#ffdc00",
+     "meaning": "near white"
+    },
+    {
+     "from": 98,
+     "to": 200,
+     "colour": "#ff2a2a",
+     "meaning": "white clipped"
+    }
+   ]
+  },
+  "clock_synced": true,
+  "take": {
+   "next": "S12A_SH3_T05_20260101_120124",
+   "tc": "12:00:00;04",
+   "markers": 2
+  },
+  "gpio": {
+   "button": {
+    "pin": "gpiochip1:15",
+    "ok": true,
+    "error": null,
+    "presses": 3
+   },
+   "tally": {
+    "pin": "gpiochip1:16",
+    "ok": false,
+    "error": "line 16 of /dev/gpiochip1 is busy (used by sysfs)",
+    "on": false
+   }
+  },
   "simulate": null
  },
  "recorder.settings": {
@@ -69,7 +201,7 @@
    "bitrate": 160,
    "rc": "vbr",
    "gop": 1.0,
-   "container": "mp4"
+   "container": "mov"
   },
   "raw": {
    "h264": true,
@@ -85,13 +217,39 @@
    "when": "during"
   },
   "audio": {
-   "record": true
+   "record": true,
+   "source": "alsa:U192k"
   },
   "storage": "/home/pi/Videos/HDMI-Recorder with a rather long folder name/archive",
   "edid": "4k30",
   "preview": {
    "quality": "medium"
-  }
+  },
+  "monitor": {
+   "guides": "2.39",
+   "safe": true,
+   "center": true,
+   "zebra": true,
+   "zebra_level": 95,
+   "false_color": false,
+   "scope": "waveform",
+   "meters": true,
+   "lut": "cube:FX3 Rec709",
+   "zoom": 3
+  },
+  "slate": {
+   "scene": "12A",
+   "shot": "3",
+   "take": 5,
+   "auto": true
+  },
+  "gpio": {
+   "button": "gpiochip1:15",
+   "button_active_low": true,
+   "tally": "gpiochip1:16",
+   "tally_active_low": false
+  },
+  "storage_guard": true
  },
  "jobs": [
   {
@@ -179,8 +337,8 @@
  ],
  "gallery": {
   "version": 3,
-  "takes": 2,
-  "files": 4,
+  "takes": 3,
+  "files": 5,
   "size": 12000000000,
   "folder": "/home/pi/Videos/HDMI-Recorder"
  },
@@ -218,6 +376,83 @@
       "busy": false,
       "url": "/api/media/REC_20260101_120000.arh",
       "verified": null
+     }
+    ],
+    "meta": {
+     "scene": "12A",
+     "shot": "3",
+     "take": 5,
+     "tc": "12:00:00;04",
+     "rate": "30000/1001",
+     "good": false,
+     "notes": "",
+     "markers": [],
+     "drift_ms": null,
+     "audio_source": "UMC202HD 192k",
+     "clock_synced": true,
+     "drops": null
+    },
+    "slate": "Scene 12A · Shot 3 · Take 5"
+   },
+   {
+    "meta": {
+     "scene": "12A",
+     "shot": "3",
+     "take": 4,
+     "tc": "11:30:00;12",
+     "rate": "30000/1001",
+     "good": true,
+     "notes": "Best performance; boom dips at the end",
+     "markers": [
+      {
+       "tc": "11:30:08;03",
+       "frames": 241,
+       "t": 8.04,
+       "label": "clap"
+      },
+      {
+       "tc": "11:30:41;20",
+       "frames": 1245,
+       "t": 41.54,
+       "label": "line flub"
+      }
+     ],
+     "drift_ms": -45.0,
+     "audio_source": "UMC202HD 192k",
+     "clock_synced": false,
+     "drops": 0
+    },
+    "slate": "Scene 12A · Shot 3 · Take 4",
+    "id": "S12A_SH3_T04_20260101_113000",
+    "day": "2026-01-01",
+    "month": "2026-01",
+    "title": "1 Jan 2026  11:30:00",
+    "created": 1767267000,
+    "size": 1250000000,
+    "duration": 52.1,
+    "kinds": [
+     "H.265"
+    ],
+    "recording": false,
+    "items": [
+     {
+      "id": "S12A_SH3_T04_20260101_113000_H265.mov",
+      "kind": "H.265",
+      "codec": "hevc",
+      "size": 1250000000,
+      "width": 3840,
+      "height": 2160,
+      "fps": 29.97,
+      "duration": 52.1,
+      "audio": true,
+      "pixel_format": "yuv420p",
+      "problem": null,
+      "mtime": 1767267053,
+      "recording": false,
+      "busy": false,
+      "url": "/api/media/S12A_SH3_T04_20260101_113000_H265.mov",
+      "verified": null,
+      "mse": "hvc1.1.6.L150.B0"
      }
     ]
    },
@@ -313,7 +548,9 @@
        "checked": "2026-01-01T00:00:00+0000"
       }
      }
-    ]
+    ],
+    "meta": null,
+    "slate": null
    }
   ]
  },
@@ -541,5 +778,118 @@
  },
  "term.open": {
   "term": 1
+ },
+ "recorder.mark": {
+  "tc": "12:00:31;10",
+  "frames": 820,
+  "t": 27.37,
+  "label": ""
+ },
+ "recorder.disk_test": {
+  "speed": 1450000000,
+  "bytes": 1073741824,
+  "seconds": 0.74,
+  "at": 1767225000,
+  "device": "/dev/nvme0n1p1",
+  "fs": "ext4",
+  "mount": "/",
+  "direct": true,
+  "figures": {
+   "path": "/home/pi/Videos/HDMI-Recorder",
+   "free": 463899164672,
+   "total": 498996408320,
+   "need": 497664000,
+   "rate": 497000000,
+   "seconds_left": 933,
+   "speed": 1450000000,
+   "measured": {
+    "speed": 1450000000,
+    "bytes": 1073741824,
+    "seconds": 0.74,
+    "at": 1767225000,
+    "device": "/dev/nvme0n1p1",
+    "fs": "ext4",
+    "mount": "/",
+    "direct": true
+   },
+   "ok": true,
+   "warning": null,
+   "testing": false
+  }
+ },
+ "gallery.csv": {
+  "name": "arstro-takes-2026-01-01.csv",
+  "rows": 2,
+  "csv": "File Name,Clip Directory,Scene,Shot,Take,Good Take,Comments,Start TC,End TC,Duration TC,FPS,Resolution,Codec,Audio,Markers,A/V Sync (ms),Dropped Frames,Date Recorded,Clock Synced\r\nS12A_SH3_T04_20260101_113000_H265.mov,/home/pi/Videos/HDMI-Recorder,12A,3,4,1,Best performance; boom dips at the end,11:30:00;12,11:30:52;15,00:00:52;03,29.97,3840x2160,H.265,yes,11:30:08;03 clap | 11:30:41;20 line flub,-45.0,0,2026-01-01 11:30:00,no\r\n"
+ },
+ "gallery.annotate": {
+  "scene": "12A",
+  "shot": "3",
+  "take": 4,
+  "tc": "11:30:00;12",
+  "rate": "30000/1001",
+  "good": true,
+  "notes": "Best performance; boom dips at the end",
+  "markers": [
+   {
+    "tc": "11:30:08;03",
+    "frames": 241,
+    "t": 8.04,
+    "label": "clap"
+   },
+   {
+    "tc": "11:30:41;20",
+    "frames": 1245,
+    "t": 41.54,
+    "label": "line flub"
+   }
+  ],
+  "drift_ms": -45.0,
+  "audio_source": "UMC202HD 192k",
+  "clock_synced": false,
+  "drops": 0
+ },
+ "io.gpio.header": {
+  "board": "Orange Pi 5 Plus",
+  "pins": [
+   {
+    "pin": 1,
+    "name": "3.3V",
+    "alt": "",
+    "power": "3.3V"
+   },
+   {
+    "pin": 7,
+    "name": "GPIO1_B7",
+    "alt": "PWM",
+    "gpio": {
+     "bank": 1,
+     "line": 15,
+     "number": 47
+    },
+    "chip": "/dev/gpiochip1",
+    "state": {
+     "line": 15,
+     "used": true,
+     "consumer": "arstro-recorder"
+    }
+   },
+   {
+    "pin": 11,
+    "name": "GPIO1_C0",
+    "alt": "",
+    "gpio": {
+     "bank": 1,
+     "line": 16,
+     "number": 48
+    },
+    "chip": "/dev/gpiochip1",
+    "state": {
+     "line": 16,
+     "used": false
+    }
+   }
+  ],
+  "enable_hint": null
  }
 }

@@ -3,6 +3,9 @@
 // Messages: text {"type":"config"|"state", ...}; binary [ver u8][flags u8][pts_us u64 BE][Annex-B AU].
 // Decoding: WebCodecs when the page is a secure context (https or localhost) - lowest latency;
 // otherwise Media Source Extensions through the vendored jmuxer (plain http on the LAN).
+// Film work (REC-10, REC-13, REC-14): after setWant([...]) the player says `hello` on every
+// connection; then text `levels` / `zoom` and binary version-2 exposure data arrive too (routed
+// by the first byte: 1 = video, 2 = analysis). send() talks back (the focus zoom).
 
 import { h, loadScript } from "./core.js";
 
@@ -41,6 +44,7 @@ export class PreviewPlayer {
     this.playing = false;
     this.config = null;
     this.stats = { frames: 0, bytes: 0, since: performance.now() };
+    this.want = null;                 // what this viewer asks for in `hello` (null: says nothing)
     this.video.addEventListener("playing", () => this.setPlaying(true));
     this.events = [];                 // last events, for bug reports (window.arstroPreview)
     window.arstroPreview = this;
@@ -80,9 +84,18 @@ export class PreviewPlayer {
     ws.binaryType = "arraybuffer";
     this.ws = ws;
     this.needKey = true;
+    ws.onopen = () => {
+      if (this.ws !== ws) return;
+      this.sendHello();
+      this.cb.onOpen?.();
+    };
     ws.onmessage = (e) => {
-      if (typeof e.data === "string") this.onText(JSON.parse(e.data));
-      else this.onFrame(new Uint8Array(e.data));
+      if (typeof e.data === "string") {
+        let msg;
+        // a silent channel may come as -Infinity dB, which JSON does not allow
+        try { msg = JSON.parse(e.data); } catch (x) { msg = JSON.parse(e.data.replace(/-Infinity/g, "-999")); }
+        this.onText(msg);
+      } else this.onFrame(new Uint8Array(e.data));
     };
     ws.onclose = () => {
       if (this.ws !== ws) return;
@@ -95,8 +108,35 @@ export class PreviewPlayer {
     };
   }
 
+  /** Ask for meters / exposure data (REC-10, REC-13): sent now and on every reconnect. */
+  setWant(list) {
+    const key = list.join(",");
+    if (this.want && this.want.join(",") === key) return;
+    this.want = list;
+    this.sendHello();
+  }
+
+  sendHello() {
+    if (this.want) this.send({ type: "hello", want: this.want });
+  }
+
+  /** A text message to the server (hello, zoom); false when not connected. */
+  send(obj) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
+    this.ws.send(JSON.stringify(obj));
+    return true;
+  }
+
+  /** Start decoding afresh at the next keyframe (the stream changed source, e.g. the zoom). */
+  restart() {
+    if (this.ws) this.teardown(true);
+  }
+
   onText(msg) {
-    this.note(msg.type + " " + (msg.state || `${msg.width}x${msg.height}`));
+    if (msg.type === "levels") return this.cb.onLevels?.(msg);
+    this.note(msg.type + " " + (msg.state || (msg.type === "zoom" ? (msg.on ? `on ${msg.width}x${msg.height}` : "off " + (msg.error || ""))
+                                                                  : `${msg.width}x${msg.height}`)));
+    if (msg.type === "zoom") return this.cb.onZoom?.(msg);
     if (msg.type === "config") {
       const changed = !this.config || this.config.width !== msg.width || this.config.height !== msg.height;
       this.config = msg;
@@ -109,6 +149,7 @@ export class PreviewPlayer {
   }
 
   onFrame(buf) {
+    if (buf[0] === 2) return this.cb.onAnalysis?.(buf);       // exposure data (REC-13)
     if (buf.length <= HEAD || buf[0] !== 1) return;
     const key = (buf[1] & 1) === 1;
     const pts = Number(new DataView(buf.buffer, buf.byteOffset + 2, 8).getBigUint64(0));

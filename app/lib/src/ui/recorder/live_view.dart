@@ -6,11 +6,16 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../media.dart';
 import '../../remote_client.dart';
+import '../widgets.dart' show backHandlers;
 import 'common.dart';
+import 'monitor.dart';
 import 'record_button.dart';
 import 'settings_sheet.dart';
 
-/// Live tab (REC-01..07): preview over Wi-Fi, the record button, status and settings.
+/// Live tab (REC-01..07): preview over Wi-Fi, the record button, status and settings - and for
+/// film work the on-set monitoring over the picture and the tally (REC-10, REC-13), the focus
+/// zoom (tap the picture, REC-14), timecode, slate and markers (REC-11, REC-15) and the storage
+/// figures with the disk test (REC-12).
 class LiveView extends StatefulWidget {
   const LiveView({super.key, required this.client, required this.active, required this.onOpenGallery});
   final RemoteClient client;
@@ -22,7 +27,8 @@ class LiveView extends StatefulWidget {
 }
 
 class _LiveViewState extends State<LiveView> with WidgetsBindingObserver {
-  late final PreviewController _preview = PreviewController(widget.client.media);
+  late final PreviewController _preview =
+      PreviewController(widget.client.media, want: const ['levels', 'analysis'])..onZoomError = _zoomRefused;
   bool _previewOn = true;
   bool _pending = false;
   bool _foreground = true;
@@ -46,7 +52,21 @@ class _LiveViewState extends State<LiveView> with WidgetsBindingObserver {
     _tick = Timer.periodic(const Duration(milliseconds: 250), (_) {
       if (mounted && _rec['recording']?['active'] == true) setState(() {});
     });
+    backHandlers.add(_onBack);
     _onRecorder();
+  }
+
+  /// Android back leaves the focus zoom first (REC-14).
+  bool _onBack() {
+    if (!widget.active || !_preview.zoomed) return false;
+    _preview.zoomOff();
+    return true;
+  }
+
+  void _zoomRefused(String error) {
+    if (!mounted) return;
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+        SnackBar(content: Text('Focus zoom: $error'), backgroundColor: const Color(0xFF5A2330)));
   }
 
   @override
@@ -64,6 +84,7 @@ class _LiveViewState extends State<LiveView> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    backHandlers.remove(_onBack);
     media.removeListener(_sync);
     client.topic('recorder').removeListener(_onRecorder);
     _tick?.cancel();
@@ -101,8 +122,50 @@ class _LiveViewState extends State<LiveView> with WidgetsBindingObserver {
   Future<void> _toggleRecording() async {
     final active = asMap(_rec['recording'])['active'] == true;
     setState(() => _pending = true);
-    await runOp(context, client, active ? 'recorder.stop' : 'recorder.start', const {}, null, const Duration(seconds: 60));
+    if (active) {
+      await runOp(context, client, 'recorder.stop', const {}, null, const Duration(seconds: 60));
+    } else {
+      await _start();
+    }
     if (mounted) setState(() => _pending = false);
+  }
+
+  /// REC-12: a disk measured too slow refuses the start - the user may record anyway.
+  Future<void> _start({bool force = false}) async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    try {
+      await client.request('recorder.start', {if (force) 'force': true}, const Duration(seconds: 60));
+    } catch (e) {
+      final msg = e.toString();
+      if (!force && msg.startsWith('disk too slow') && mounted) {
+        final why = msg.replaceFirst(RegExp(r'\s*\(record anyway: force\)\s*$'), '');
+        if (await confirm(context, 'Record anyway?', '${why[0].toUpperCase()}${why.substring(1)}.',
+                ok: 'Record anyway') &&
+            mounted) {
+          await _start(force: true);
+        }
+        return;
+      }
+      messenger?.showSnackBar(SnackBar(content: Text(msg), backgroundColor: const Color(0xFF5A2330)));
+    }
+  }
+
+  Future<void> _mark() async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    final m = await runOp(context, client, 'recorder.mark');
+    if (m != null) {
+      messenger?.showSnackBar(
+          SnackBar(content: Text('Marker at ${asMap(m)['tc'] ?? '–'}'), duration: const Duration(seconds: 2)));
+    }
+  }
+
+  Future<void> _testDisk() async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    final r = await runOp(context, client, 'recorder.disk_test', const {}, null, const Duration(seconds: 90));
+    if (r != null) {
+      final m = asMap(r);
+      messenger?.showSnackBar(SnackBar(content: Text('This disk writes ${perSec(m['speed'] as num?)}')));
+    }
   }
 
   double get _elapsed {
@@ -158,9 +221,7 @@ class _LiveViewState extends State<LiveView> with WidgetsBindingObserver {
                 AnimatedOpacity(
                   opacity: playing ? 1 : 0,
                   duration: const Duration(milliseconds: 400),
-                  child: Center(
-                    child: AspectRatio(aspectRatio: _preview.aspect, child: Texture(textureId: _preview.textureId!)),
-                  ),
+                  child: IgnorePointer(ignoring: !playing, child: _monitor(rec, settings)),
                 ),
               AnimatedOpacity(
                 opacity: playing ? 0 : 1,
@@ -179,7 +240,7 @@ class _LiveViewState extends State<LiveView> with WidgetsBindingObserver {
                                 : ''),
                         style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.white)),
                   ]))),
-              if (sig['present'] == true && sig['width'] != null)
+              if (sig['present'] == true && sig['width'] != null && !(_preview.zoomed && playing))
                 Positioned(right: 10, top: 10, child: _glass(Text(
                     '${sig['width']}×${sig['height']} · ${((sig['fps'] as num?) ?? 0).round()} fps',
                     style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.white)))),
@@ -204,6 +265,7 @@ class _LiveViewState extends State<LiveView> with WidgetsBindingObserver {
                     onPressed: () => _fullscreen(context),
                   ),
                 ),
+              if (r['active'] == true) const _Tally(radius: 18),
             ]),
           ),
         ),
@@ -296,22 +358,47 @@ class _LiveViewState extends State<LiveView> with WidgetsBindingObserver {
     });
   }
 
+  /// The picture with its monitoring (REC-13) and focus zoom (REC-14).
+  Widget _monitor(Map<String, dynamic> rec, Map<String, dynamic> settings) => MonitorLayer(
+        preview: _preview,
+        monitor: asMap(settings['monitor']),
+        bands: asList(asMap(rec['monitor'])['bands']),
+        canZoom: _preview.playing,
+      );
+
   void _fullscreen(BuildContext context) {
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     Navigator.of(context).push(PageRouteBuilder(
       opaque: true,
       transitionDuration: const Duration(milliseconds: 250),
-      pageBuilder: (_, _, _) => GestureDetector(
-        onTap: () => Navigator.of(context).pop(),
-        child: ColoredBox(
-          color: Colors.black,
-          child: Center(
-            child: ListenableBuilder(
-              listenable: _preview,
-              builder: (_, _) => _preview.textureId == null
-                  ? const SizedBox()
-                  : AspectRatio(aspectRatio: _preview.aspect, child: Texture(textureId: _preview.textureId!)),
-            ),
+      pageBuilder: (_, _, _) => ListenableBuilder(
+        listenable: Listenable.merge([_preview, client.topic('recorder'), client.topic('recorder.settings')]),
+        builder: (context, _) => PopScope(
+          // back leaves the focus zoom first, then full screen
+          canPop: !_preview.zoomed,
+          onPopInvokedWithResult: (didPop, _) {
+            if (!didPop) _preview.zoomOff();
+          },
+          child: ColoredBox(
+            color: Colors.black,
+            child: Stack(fit: StackFit.expand, children: [
+              if (_preview.textureId != null)
+                _monitor(_rec, asMap(client.topic('recorder.settings').value)),
+              if (asMap(_rec['recording'])['active'] == true) const _Tally(radius: 0),
+              Positioned(
+                right: 8,
+                bottom: 8,
+                child: SafeArea(
+                  child: IconButton(
+                    tooltip: 'Leave full screen',
+                    color: Colors.white,
+                    style: IconButton.styleFrom(backgroundColor: Colors.black45),
+                    icon: const Icon(Icons.fullscreen_exit_rounded),
+                    onPressed: () => Navigator.of(context).maybePop(),
+                  ),
+                ),
+              ),
+            ]),
           ),
         ),
       ),
@@ -340,6 +427,11 @@ class _LiveViewState extends State<LiveView> with WidgetsBindingObserver {
                     ? 'Starting…'
                     : 'Tap to record';
     final last = asMap(rec['last']);
+    final take = asMap(rec['take']);
+    final storage = asMap(rec['storage']);
+    final av = asMap(r['av']);
+    final tc = take['tc'] as String? ?? r['tc'] as String?;
+    final muted = theme.colorScheme.onSurfaceVariant;
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       Card(
         margin: EdgeInsets.zero,
@@ -363,6 +455,47 @@ class _LiveViewState extends State<LiveView> with WidgetsBindingObserver {
             ),
             const SizedBox(height: 2),
             Text(hint, textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis, style: theme.textTheme.bodySmall),
+            // REC-11, REC-15: the take's timecode and markers while recording, else the next take's name
+            const SizedBox(height: 10),
+            if (active && !stopping)
+              Wrap(
+                alignment: WrapAlignment.center,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                spacing: 10,
+                runSpacing: 6,
+                children: [
+                  if (tc != null)
+                    Text('TC $tc',
+                        style: theme.textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w600, fontFeatures: const [FontFeature.tabularFigures()])),
+                  Text('${take['markers'] ?? 0} marker${take['markers'] == 1 ? '' : 's'}',
+                      style: theme.textTheme.bodySmall),
+                  FilledButton.tonalIcon(
+                    style: FilledButton.styleFrom(visualDensity: VisualDensity.compact),
+                    onPressed: _mark,
+                    icon: const Icon(Icons.bookmark_add_outlined, size: 18),
+                    label: const Text('Set marker'),
+                  ),
+                ],
+              )
+            else if (take['next'] != null)
+              Text('Next take ${take['next']}',
+                  textAlign: TextAlign.center,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodySmall?.copyWith(color: muted)),
+            if (rec['clock_synced'] == false)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                  const Icon(Icons.schedule_rounded, size: 15, color: kWarn),
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: Text('Board clock not synced (NTP): the timecode may not match other devices',
+                        maxLines: 2, style: theme.textTheme.bodySmall?.copyWith(color: kWarn)),
+                  ),
+                ]),
+              ),
           ]),
         ),
       ),
@@ -399,6 +532,7 @@ class _LiveViewState extends State<LiveView> with WidgetsBindingObserver {
                       Metric('Data rate', mbit(r['rate'] as num?)),
                       Metric('Dropped', '${r['drops'] ?? 0}'),
                       Metric('Free', size(disk['free'] as num?)),
+                      if (av['drift_ms'] != null) Metric('A/V sync', '${(av['drift_ms'] as num).round()} ms'),
                     ])
                   : MetricGrid(key: const ValueKey('idle'), [
                       Metric('Signal', sig['present'] == true ? '${sig['width']}×${sig['height']}' : '–',
@@ -415,6 +549,10 @@ class _LiveViewState extends State<LiveView> with WidgetsBindingObserver {
           ]),
         ),
       ),
+      if (storage.isNotEmpty) ...[
+        const SizedBox(height: 12),
+        _StorageCard(storage: storage, recording: active, onTest: _testDisk),
+      ],
       if (last.isNotEmpty && !active) ...[
         const SizedBox(height: 12),
         Card(
@@ -455,4 +593,81 @@ class _BlinkState extends State<_Blink> with SingleTickerProviderStateMixin {
 
   @override
   Widget build(BuildContext context) => FadeTransition(opacity: Tween(begin: 1.0, end: 0.3).animate(_c), child: widget.child);
+}
+
+/// The recording tally (REC-13): a red frame round the picture while recording.
+class _Tally extends StatelessWidget {
+  const _Tally({required this.radius});
+  final double radius;
+
+  @override
+  Widget build(BuildContext context) => IgnorePointer(
+        child: Container(
+          key: const Key('tally'),
+          decoration: BoxDecoration(
+            border: Border.all(color: kRec, width: 4),
+            borderRadius: BorderRadius.circular(radius),
+          ),
+        ),
+      );
+}
+
+/// Storage you can trust (REC-12): free space, the time left at the mode's rate, the disk's
+/// measured speed, the warning, and the disk test.
+class _StorageCard extends StatelessWidget {
+  const _StorageCard({required this.storage, required this.recording, required this.onTest});
+  final Map<String, dynamic> storage;
+  final bool recording;
+  final VoidCallback onTest;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final testing = storage['testing'] == true;
+    final warning = storage['warning'] as String?;
+    final speed = storage['speed'] as num?;
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 8, 16),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            Expanded(
+              child: Text('STORAGE', style: theme.textTheme.labelMedium?.copyWith(letterSpacing: 1.1, fontWeight: FontWeight.w600)),
+            ),
+            TextButton.icon(
+              onPressed: recording || testing ? null : onTest,
+              icon: testing
+                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.speed_rounded, size: 18),
+              label: Text(testing ? 'Testing…' : 'Test disk'),
+            ),
+          ]),
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: MetricGrid([
+              Metric('Time left', timeLeft(storage['seconds_left'] as num?)),
+              Metric('Free', size(storage['free'] as num?)),
+              Metric(recording ? 'Writing' : 'Mode needs', perSec(storage['rate'] as num?)),
+              Metric('Disk speed', speed == null ? 'Not measured' : perSec(speed)),
+            ]),
+          ),
+          if (warning != null && warning.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Icon(Icons.warning_amber_rounded, size: 18, color: storage['ok'] == false ? kRec : kWarn),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text('${warning[0].toUpperCase()}${warning.substring(1)}',
+                      style: theme.textTheme.bodySmall?.copyWith(color: storage['ok'] == false ? kRec : kWarn)),
+                ),
+              ]),
+            ),
+          ],
+        ]),
+      ),
+    );
+  }
 }

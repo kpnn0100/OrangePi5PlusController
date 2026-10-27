@@ -19,7 +19,8 @@ case "$mods" in *" screen "*)
 esac
 case "$mods" in *" camera "*)
     optional+=(gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good
-               gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly ffmpeg v4l-utils) ;;
+               gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly ffmpeg v4l-utils
+               python3-numpy) ;;              # numpy: exposure data, LUTs (REC-13)
 esac
 
 installed() { dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q "ok installed"; }

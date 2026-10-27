@@ -2,6 +2,17 @@ import 'dart:math';
 
 import 'package:flutter/material.dart';
 
+/// Back-button handlers of what is shown inside the main screen (the live view's focus zoom,
+/// REC-14): the main screen asks them first; the newest that returns true has used the press.
+final List<bool Function()> backHandlers = [];
+
+bool handleBack() {
+  for (final h in backHandlers.reversed) {
+    if (h()) return true;
+  }
+  return false;
+}
+
 /// Card with a small uppercase title row.
 class SectionCard extends StatelessWidget {
   const SectionCard({super.key, required this.title, required this.child, this.icon, this.trailing, this.padding});

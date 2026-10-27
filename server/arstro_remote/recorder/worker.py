@@ -12,10 +12,16 @@ server (Bluetooth sessions, shells) down with it. The server spawns it:
              "settings": {...}, "audio": true}
             {"cmd": "record_stop", "req": 4}
             {"cmd": "edid", "value": "4k60"}
+            {"cmd": "audio_source", "value": "hdmi" | "alsa:<card>"}            (REC-09)
+            {"cmd": "monitor", "analysis": true, "lut": {"id", "path"} | null}  (REC-13)
+            {"cmd": "zoom", "id": 3, "on": true, "x": 0.5, "y": 0.5, "ratio": 3} (REC-14)
+            {"cmd": "zoom_keyframe", "id": 3}
             {"cmd": "shutdown"}
   stdout  protocol frames (protocol.py): JSON events {"ev": "caps"|"status"|"stream"|
-          "recording_started"|"recording_stopped"|"reply", ...} and VIDEO frames with the
-          preview's H.264 access units. Everything else a library prints goes to stderr.
+          "recording_started"|"recording_timecode"|"recording_stopped"|"levels"|"zoom"|"reply", ...},
+          VIDEO frames with the preview's H.264 access units and BLOB frames with a zoomed
+          viewer's access units ({"z": id, "k": keyframe, "p": pts_us}) or exposure data
+          ({"a": 1, grid sizes}, monitor.py). Everything else a library prints goes to stderr.
 """
 
 import argparse
@@ -74,9 +80,9 @@ class Worker:
         from gi.repository import GLib, Gst
         from . import v4l2
         from .capture import Capture
-        from ..protocol import encode_json, encode_video
+        from ..protocol import encode_blob, encode_json, encode_video
         self.GLib, self.Gst = GLib, Gst
-        self.encode_json, self.encode_video = encode_json, encode_video
+        self.encode_json, self.encode_video, self.encode_blob = encode_json, encode_video, encode_blob
         self.v4l2 = v4l2
         self.loop = GLib.MainLoop()
         if args.camera:
@@ -95,6 +101,9 @@ class Worker:
         self._link_checked = 0.0
         self.last_status = None
         self.stopping_replies = {}
+        self.zoom_wanted = {}             # viewer id -> (x, y, ratio): kept across capture restarts
+        self.analysis_wanted = False
+        self.lut_spec = None
 
     # --------------------------------------------------------------- output
     def emit(self, **obj):
@@ -109,6 +118,44 @@ class Worker:
         except OSError:
             pass
 
+    def _on_zoom_au(self, zid, key, pts, data):
+        try:
+            _write(self.encode_blob({"z": zid, "k": key, "p": pts}, data))
+        except OSError:
+            pass
+
+    def _on_analysis(self, meta, payload):
+        try:
+            _write(self.encode_blob(dict(meta, a=1), payload))
+        except OSError:
+            pass
+
+    # ------------------------------------------------------- monitoring events
+    def on_levels(self, peak, rms):
+        if self.preview_on:
+            self.emit(ev="levels", peak=peak, rms=rms)
+
+    def on_zoom(self, zid, error=None):
+        self.zoom_wanted.pop(zid, None)
+        self.emit(ev="zoom", id=zid, on=False, error=error)
+
+    def on_recording_timecode(self, rec):
+        self.emit(ev="recording_timecode", path=rec.path, tc=rec.tc, wall=rec.first_wall)
+
+    def _reattach(self):
+        """Capture (re)started: the viewers' zooms and the analysis come back with it."""
+        for zid, (x, y, ratio) in list(self.zoom_wanted.items()):
+            self._zoom(zid, x, y, ratio)
+        self.cap.set_analysis(self.analysis_wanted and self.preview_on, self._on_analysis)
+
+    def _zoom(self, zid, x, y, ratio):
+        try:
+            z = self.cap.start_zoom(zid, x, y, ratio, self._on_zoom_au)
+            self.emit(ev="zoom", **z.describe())
+        except (RuntimeError, self.GLib.Error) as e:
+            self.zoom_wanted.pop(zid, None)
+            self.emit(ev="zoom", id=zid, on=False, error=str(e))
+
     # ------------------------------------------------------- capture events
     def on_signal(self, text):
         print(f"[info] signal: {text or 'none'}")
@@ -118,10 +165,11 @@ class Worker:
     def on_capture(self, running):
         if running:
             if self.pending_record:
-                self._do_record(self.pending_record)
+                self._record_when_audio(self.pending_record, time.monotonic() + 1.5)
                 self.pending_record = None
             if self.preview_on:
                 self._start_stream()
+                self._reattach()
         self._status(force=True)
 
     def on_capture_error(self, message):
@@ -194,8 +242,13 @@ class Worker:
                 self._update_wanted()          # may start the capture -> on_capture starts the stream
                 if self.cap.pipeline:
                     self._start_stream(force=changed)
+                    self._reattach()
             elif not on and self.preview_on:
                 self.preview_on = False
+                self.cap.set_analysis(False)   # nobody looks: a recording alone needs none of it
+                for zid in list(self.cap.zooms):
+                    self.cap.stop_zoom(zid)
+                self.zoom_wanted.clear()
                 self.cap.stop_stream()
                 self._update_wanted()
             self._status(force=True)
@@ -228,6 +281,43 @@ class Worker:
                 if ok:
                     self.v4l2.remember_edid(self.dev, cmd["value"])
             self._reply(cmd, error=None if ok else "could not set the EDID")
+        elif c == "audio_source":
+            v = cmd.get("value") or "hdmi"
+            if v != self.cap.audio_source:
+                self.cap.audio_source = v
+                self.cap.audio_failed = False
+                if self.cap.pipeline and not self.cap.recording:
+                    self.cap.restart()
+                    if self.preview_on:
+                        self._reattach()
+            self._reply(cmd, applied=not self.cap.recording)
+        elif c == "monitor":
+            self.analysis_wanted = bool(cmd.get("analysis"))
+            self.cap.set_analysis(self.analysis_wanted and self.preview_on, self._on_analysis)
+            spec = cmd.get("lut") or None
+            if spec != self.lut_spec:
+                self.lut_spec = spec
+                self.cap.lut = self._build_lut(spec)
+                if self.preview_on and self.cap.pipeline:
+                    self._start_stream(force=True)
+            self._status(force=True)
+        elif c == "zoom":
+            zid = int(cmd.get("id", 0))
+            if cmd.get("on"):
+                x = min(1.0, max(0.0, float(cmd.get("x", 0.5))))
+                y = min(1.0, max(0.0, float(cmd.get("y", 0.5))))
+                ratio = int(cmd.get("ratio") or 3)
+                self.zoom_wanted[zid] = (x, y, ratio)
+                if self.cap.pipeline and self.cap.timing:
+                    self._zoom(zid, x, y, ratio)
+            else:
+                self.zoom_wanted.pop(zid, None)
+                self.cap.stop_zoom(zid)
+                self.emit(ev="zoom", id=zid, on=False)
+        elif c == "zoom_keyframe":
+            z = self.cap.zooms.get(int(cmd.get("id", 0)))
+            if z:
+                z.force_keyframe()
         elif c == "status":
             self._status(force=True)
         elif c == "sim_signal" and self.sim:
@@ -235,6 +325,35 @@ class Worker:
             self.cap.poll()
         elif c == "shutdown":
             self.quit()
+
+    def _record_when_audio(self, cmd, deadline):
+        """A take that started the capture (nobody watching: the record button, the CLI) waits
+        for the audio's first buffers, or it would be recorded without sound (REC-09, REC-16)."""
+        cap = self.cap
+        if cap.audio_in_pipeline and not cap.audio_alive() and cap.pipeline and time.monotonic() < deadline:
+            self.GLib.timeout_add(50, lambda: self._record_when_audio(cmd, deadline) and False)
+            return
+        if cap.pipeline:
+            self._do_record(cmd)
+        else:
+            self._reply(cmd, error="capture stopped before the recording could start")
+
+    def _build_lut(self, spec):
+        if not spec:
+            return None
+        from . import monitor
+        if not monitor.available():
+            print("[warn] LUT needs numpy (python3-numpy)")
+            return None
+        try:
+            if spec.get("path"):
+                with open(spec["path"]) as f:
+                    return monitor.LutTable.build(spec["id"], cube_text=f.read(), name=spec.get("name"))
+            return monitor.LutTable.build(spec["id"])
+        except (OSError, ValueError, KeyError) as e:
+            print(f"[warn] LUT {spec.get('id')}: {e}")
+            self.emit(ev="lut_error", id=spec.get("id"), error=str(e))
+            return None
 
     def _do_record(self, cmd):
         try:
@@ -274,13 +393,16 @@ class Worker:
                  "elapsed": round(el, 1), "size": rec.size_bytes(),
                  "rate": round(rec.size_bytes() / el) if el > 1 else 0,
                  "drops": st.get("drops", 0) + st.get("disk_drops", 0), "buffer": st.get("buffer"),
-                 "audio": rec.with_audio, "stopping": rec.stopping}
+                 "audio": rec.with_audio, "stopping": rec.stopping,
+                 "tc": rec.tc["tc"] if rec.tc else None, "av": st.get("av")}
         return {
             "signal": self._signal_info(),
             "capture": {"running": bool(cap.pipeline), "fps": round(cap.fps_measured, 2),
                         "drops": cap.drops, "audio": cap.has_audio, "error": cap.last_error},
             "stream": cap.stream.describe() if cap.stream else None,
             "preview_on": self.preview_on,
+            "monitor": {"analysis": bool(cap.analysis), "zooms": len(cap.zooms),
+                        "lut": cap.lut.name if cap.lut else None, "audio_source": cap.audio_source},
             "recording": r,
         }
 
@@ -327,13 +449,15 @@ class Worker:
         self.loop.quit()
 
     def capabilities(self):
-        from . import gpu
+        from . import gpu, monitor
         f = self.Gst.ElementFactory.find
         return {"vpu_h265": bool(f("mpph265enc")), "vpu_h264": bool(f("mpph264enc")),
                 "x265": bool(f("x265enc")), "ffv1": bool(f("avenc_ffv1")), "gpu_ffv1": gpu.available(),
                 "audio": bool(self.audio_card) or (bool(self.sim) and not getattr(self.sim, "device", None)),
                 "device": self.dev or getattr(self.sim, "device", None),
                 "simulate": bool(self.sim) and not getattr(self.sim, "device", None),
+                "analysis": monitor.available(), "lut": monitor.available(),
+                "pcm_mov": bool(f("qtmux")),
                 "camera": getattr(self.sim, "device", None)}
 
     def run(self):

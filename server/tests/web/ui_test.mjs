@@ -382,6 +382,227 @@ test("verified_ffv1_replaces_the_raw", ["GAL-08", "REC-04", "ARC-03"], async () 
   }
 });
 
+// ------------------------------------------------------------------- film work (REC-09..16, GAL-13)
+const MON_OFF = { guides: "off", safe: false, center: false, zebra: false, false_color: false, scope: "off", meters: true };
+
+/** Wait for the live picture; returns false (and logs why) when there is none. */
+async function livePicture(page) {
+  await go(page, "recorder");
+  return !!(await until(() => page.$(".preview.playing"), 20000));
+}
+
+test("live_meters_overlays_scope_and_tally", ["REC-10", "REC-13", "REC-12"], async () => {
+  const before = await op("recorder.settings.get");
+  const st = await op("recorder.status");
+  const page = await newPage();
+  try {
+    if (before.mode === "h265" && !(st.caps && st.caps.vpu_h265)) await op("recorder.settings.set", { settings: { mode: "raw" } });
+    await op("recorder.settings.set", { settings: { monitor: { guides: "off", safe: false, center: false, zebra: true, zebra_level: 50,
+                                                               false_color: true, scope: "waveform", meters: true } } });
+    check(await livePicture(page), "no live picture within 20 s");
+    // the player asked for meters and exposure data (hello); the levels fill the meters
+    const want = await page.evaluate(() => window.arstroPreview.want);
+    check(want.includes("levels") && want.includes("analysis"), "hello want: " + JSON.stringify(want));
+    check(await until(() => page.$$eval(".meter-rows .meter:not(.scale)", (r) => r.length), 8000), "no audio meter rows");
+    // overlays (guides, safe areas, cross; zebras and false colour from the exposure map) and the waveform
+    const covered = () => page.evaluate(() => {
+      const c = document.querySelector(".preview .mon-ov");
+      const d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
+      let n = 0;
+      for (let i = 3; i < d.length; i += 16) if (d[i]) n++;
+      return n / (d.length / 16);
+    });
+    if (st.caps && st.caps.analysis) {
+      check(await until(async () => (await covered()) > 0.2, 8000), "zebras / false colour do not cover the picture");
+      const wave = await until(() => page.evaluate(() => {
+        const c = document.querySelector(".scope");
+        const d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
+        let n = 0;
+        for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 40 && d[i + 1] > d[i] + 40) n++;
+        return n;
+      }), 8000);
+      check(wave, "the waveform shows nothing");
+    } else console.log("      (no exposure data on this board: overlays of guides only)");
+    // a 2.39 guide shades about a quarter of a 16:9 picture; safe areas and the cross are lines
+    await op("recorder.settings.set", { settings: { monitor: { zebra: false, false_color: false, guides: "2.39", safe: true, center: true } } });
+    const guidesOnly = await until(async () => { const c = await covered(); return c > 0.2 && c < 0.4 ? c : null; }, 4000);
+    check(guidesOnly, "the 2.39 guide is not drawn alone: " + (await covered()).toFixed(3));
+    // storage you can trust (REC-12): the time left at the mode's rate
+    check(await page.$eval(".rec-stats", (e) => e.textContent.includes("Time left")), "no time left shown");
+    await shot(page, "live-monitoring");
+    // meters off: hidden, and the player stops asking for levels
+    await op("recorder.settings.set", { settings: { monitor: { meters: false, scope: "off" } } });
+    check(await until(() => page.$(".mon-strip.hidden"), 3000), "meters / scope still shown");
+    check(!(await page.evaluate(() => window.arstroPreview.want)).includes("levels"), "still asking for levels");
+    // REC-13 tally: a red frame while recording
+    await op("recorder.start");
+    check(await until(() => page.$(".preview.tally"), 6000), "no tally while recording");
+    await shot(page, "live-tally");
+    await op("recorder.stop");
+    check(await until(() => page.$(".preview:not(.tally)"), 10000), "tally still on after the stop");
+    const last = (await op("recorder.status")).last;
+    if (last && last.file) await op("gallery.delete_take", { take: last.file.replace(/\.[^.]+$/, "").replace(/_(H265|H264.*|FFV1)$/, "") }).catch(() => {});
+  } finally {
+    if ((await op("recorder.status")).recording.active) await op("recorder.stop").catch(() => {});
+    await op("recorder.settings.set", { settings: { mode: before.mode, monitor: { ...MON_OFF, ...before.monitor } } });
+    await page.close();
+  }
+});
+
+test("focus_zoom_click_moves_and_esc", ["REC-14"], async () => {
+  const page = await newPage();
+  try {
+    check(await livePicture(page), "no live picture within 20 s");
+    await page.evaluate(() => {
+      window.__sent = [];
+      const ws = window.arstroPreview.ws, send = ws.send.bind(ws);
+      ws.send = (d) => { window.__sent.push(JSON.parse(d)); send(d); };
+    });
+    const sig = (await op("recorder.status")).signal;
+    const whole = await page.evaluate(() => window.arstroPreview.config && window.arstroPreview.config.width);
+    // click the picture at 75 % / 30 % of the whole picture (the box is 16:9 like the test pattern)
+    const box = await page.$eval(".preview", (e) => { const r = e.getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; });
+    await page.mouse.click(box[0] + box[2] * 0.75, box[1] + box[3] * 0.3);
+    const sent = await until(() => page.evaluate(() => window.__sent.find((m) => m.type === "zoom") || null), 3000);
+    check(sent && sent.on === true && Math.abs(sent.x - 0.75) < 0.03 && Math.abs(sent.y - 0.3) < 0.03, "zoom message: " + JSON.stringify(sent));
+    check(await until(() => page.$(".preview.zoomed"), 8000), "the zoom reply did not arrive");
+    const badge = await page.$eval(".zoom-badge", (e) => e.textContent);
+    check(/^Zoom \d+× · /.test(badge), "zoom badge: " + badge);
+    // the video now is the crop's (a new config, smaller than the whole picture), at full resolution
+    const cfg = await until(() => page.evaluate(() => { const c = window.arstroPreview.config; return c && c.zoom ? c : null; }), 5000);
+    check(cfg && cfg.width < sig.width, "video is not the crop: " + JSON.stringify(cfg));
+    check(await until(() => page.$(".preview.playing.zoomed"), 8000), "the zoomed picture does not play");
+    check(await until(async () => (await op("recorder.status")).monitor.zooms === 1, 3000), "server does not count the zoom");
+    check(!(await page.$eval(".zoom-loc", (e) => e.classList.contains("hidden"))), "no locator while zoomed");
+    await shot(page, "focus-zoom");
+    // clicking the zoomed picture moves the zoom: a point inside the crop -> whole-picture coordinates
+    const z = await page.evaluate(() => window.__sent.length);
+    await page.mouse.click(box[0] + box[2] * 0.1, box[1] + box[3] * 0.5);
+    const moved = await until(() => page.evaluate((n) => window.__sent.slice(n).find((m) => m.type === "zoom") || null, z), 3000);
+    check(moved && moved.on && moved.x < sent.x && moved.x > sent.x - 0.4, "move: " + JSON.stringify(moved));
+    // Esc: the whole picture again
+    await page.keyboard.press("Escape");
+    check(await until(() => page.evaluate(() => window.__sent.some((m) => m.type === "zoom" && m.on === false)), 3000), "Esc sent no zoom off");
+    check(await until(() => page.$(".preview.playing:not(.zoomed)"), 8000), "the whole picture did not come back");
+    // the whole picture at the preview's own size again (whatever quality the board is set to)
+    check(await until(() => page.evaluate((w) => window.arstroPreview.config && window.arstroPreview.config.width === w && !window.arstroPreview.config.zoom,
+                                         whole), 5000), "video is still the crop");
+    check(await until(async () => (await op("recorder.status")).monitor.zooms === 0, 3000), "server still zooms");
+  } finally {
+    await page.close();
+  }
+});
+
+test("monitoring_slate_gpio_settings_round_trip", ["REC-13", "REC-14", "REC-15", "REC-16", "REC-12", "REC-09", "ARC-03"], async () => {
+  const before = await op("recorder.settings.get");
+  const page = await newPage();
+  try {
+    await go(page, "recorder");
+    await page.click(".mode-card");
+    await page.waitForSelector(".sheet.show .mon-set");
+    const titles = await page.$$eval(".sheet.show .set-group-title", (e) => e.map((x) => x.textContent));
+    for (const t of ["Audio", "Slate", "Monitoring", "Storage", "Record button & tally"]) check(titles.includes(t), "no settings group " + t);
+    const get = async () => op("recorder.settings.get");
+    // web -> server
+    await page.select('.sheet.show select[aria-label="Frame guides"]', "1.85");
+    check(await until(async () => (await get()).monitor.guides === "1.85", 3000), "guides not saved");
+    const target = before.monitor.zoom === 4 ? ["6×", 6] : ["4×", 4];
+    check(await clickText(page, ".sheet.show .mon-set .seg button", target[0]), "zoom ratio button missing");
+    check(await until(async () => (await get()).monitor.zoom === target[1], 3000), "zoom ratio not saved");
+    await page.evaluate(() => document.querySelector('.sheet.show input[aria-label="Safe areas"]').click());
+    check(await until(async () => (await get()).monitor.safe === !before.monitor.safe, 3000), "safe areas not saved");
+    const scene = await page.$('.sheet.show input[data-slate="scene"]');
+    await scene.click({ clickCount: 3 });
+    await scene.type("7B");
+    await page.keyboard.press("Tab");
+    check(await until(async () => (await get()).slate.scene === "7B", 3000), "slate scene not saved");
+    check(await until(async () => (await op("recorder.status")).take.next.startsWith("S7B"), 3000), "the next take is not named by the slate");
+    check(await until(() => page.$eval(".sheet.show [data-next-take]", (e) => e.textContent.startsWith("S7B")), 3000), "next take not shown");
+    await page.evaluate(() => document.querySelector('.sheet.show input[aria-label="Storage guard"]').click());
+    check(await until(async () => (await get()).storage_guard === !before.storage_guard, 3000), "storage guard not saved");
+    const gpio = await page.$('.sheet.show input[data-gpio="tally"]');
+    await gpio.click({ clickCount: 3 });
+    await gpio.type("gpiochip0:7");
+    await page.keyboard.press("Tab");
+    check(await until(async () => (await get()).gpio.tally === "gpiochip0:7", 3000), "tally line not saved");
+    const inputs = (await op("recorder.status")).audio_inputs || [];
+    check(await page.$$eval(".sheet.show select.audio-src option", (o) => o.length) >= inputs.length, "audio inputs not offered");
+    // server ("the CLI") -> the open sheet
+    await op("recorder.settings.set", { settings: { monitor: { guides: "4:3" } } });
+    check(await until(() => page.$eval('.sheet.show select[aria-label="Frame guides"]', (e) => e.value === "4:3"), 3000),
+          "the open sheet did not follow the other controller");
+    await shot(page, "settings-monitoring");
+    await page.keyboard.press("Escape");
+  } finally {
+    await op("recorder.settings.set", { settings: { monitor: { ...MON_OFF, ...before.monitor }, slate: before.slate,
+                                                    storage_guard: before.storage_guard, gpio: before.gpio } }).catch((e) => console.log("restore:", e.message));
+    await page.close();
+  }
+});
+
+test("gallery_take_notes_markers_and_csv", ["GAL-13", "REC-15", "REC-11", "REC-09"], async () => {
+  const before = await op("recorder.settings.get");
+  const st = await op("recorder.status");
+  if (before.mode === "h265" && !(st.caps && st.caps.vpu_h265)) await op("recorder.settings.set", { settings: { mode: "raw" } });
+  let take = null;
+  const page = await newPage();
+  try {
+    await op("recorder.start");
+    // a marker needs the take's timecode (its first frame): try until it has one
+    const mark = await until(() => op("recorder.mark", { label: "boom in shot" }).catch(() => null), 10000, 300);
+    check(mark && mark.tc, "no marker");
+    await sleep(1200);
+    take = (await op("recorder.stop")).file.replace(/\.[^.]+$/, "").replace(/_(H265|H264.*|FFV1)$/, "");
+    await go(page, "gallery");
+    const card = `.take[data-take="${take}"]`;
+    check(await until(() => page.$(card), 15000), "new take not listed");
+    check(await page.$eval(card, (e) => e.textContent.includes("1")) && await page.$(card + " .thumb .tc"), "start timecode / marker not on the card");
+    await page.click(card);
+    await page.waitForSelector(".sheet.show .take-edit");
+    check(await page.$eval(".sheet.show .markers", (e, tc) => e.textContent.includes(tc) && e.textContent.includes("boom in shot"), mark.tc),
+          "marker not listed in the take");
+    // good take, then slate + notes - from the web to the server
+    check(await clickText(page, ".sheet.show .good-btn", "Mark good"), "no good-take button");
+    check(await until(async () => (await op("gallery.get", { take })).meta.good === true, 3000), "good take not saved");
+    check(await until(() => page.$(card + " .good-flag"), 3000), "card shows no good flag");
+    await page.$eval('.sheet.show [data-k="scene"]', (e) => { e.value = "12A"; e.dispatchEvent(new Event("input")); });
+    await page.$eval('.sheet.show [data-k="shot"]', (e) => { e.value = "3"; });
+    await page.$eval('.sheet.show [data-k="take_no"]', (e) => { e.value = "4"; });
+    await page.$eval('.sheet.show [data-k="notes"]', (e) => { e.value = "focus buzz at the end"; });
+    check(await clickText(page, ".sheet.show .take-edit button", "Save"), "no save button");
+    const t = await until(async () => { const x = await op("gallery.get", { take }); return x.meta.notes ? x : null; }, 3000);
+    check(t && t.slate === "Scene 12A · Shot 3 · Take 4" && t.meta.notes === "focus buzz at the end", "annotate: " + JSON.stringify(t && t.meta));
+    check(await until(() => page.$eval(card + " .take-title", (e) => e.textContent === "Scene 12A · Shot 3 · Take 4"), 3000), "card title is not the slate");
+    await shot(page, "take-notes");
+    await page.keyboard.press("Escape");
+    await sleep(400);
+    // the editor's sheet: select the take, export a CSV
+    check(await clickText(page, ".view-head button", "Select"), "Select button missing");
+    await page.click(card);
+    await page.evaluate(() => {
+      window.__blob = null;
+      const make = URL.createObjectURL;
+      URL.createObjectURL = (b) => { window.__blob = b; return make(b); };
+      HTMLAnchorElement.prototype.click = function () { window.__dl = [this.href, this.download]; };
+    });
+    check(await clickText(page, ".selbar button", "CSV"), "CSV button missing");
+    const csv = await until(() => page.evaluate(async () => (window.__blob ? [window.__dl[1], await window.__blob.text()] : null)), 8000);
+    check(csv && csv[0].endsWith(".csv"), "no CSV download: " + JSON.stringify(csv && csv[0]));
+    const lines = csv[1].trim().split(/\r?\n/);
+    check(lines[0].startsWith("File Name,") && lines[0].includes("Good Take"), "CSV header: " + lines[0]);
+    check(lines.some((l) => l.includes(take) && l.includes("focus buzz at the end") && l.includes("12A")), "CSV row: " + lines.slice(1).join(" / "));
+    await shot(page, "gallery-csv");
+  } finally {
+    if ((await op("recorder.status")).recording.active) {
+      const f = (await op("recorder.stop").catch(() => ({}))).file;
+      take = take || (f && f.replace(/\.[^.]+$/, "").replace(/_(H265|H264.*|FFV1)$/, ""));
+    }
+    if (take) await op("gallery.delete_take", { take }).catch(() => {});
+    await op("recorder.settings.set", { settings: { mode: before.mode, slate: before.slate } }).catch(() => {});
+    await page.close();
+  }
+});
+
 test("terminal_shared_between_browsers", ["TERM-01", "TERM-02", "TERM-04", "TERM-05", "ARC-03"], async () => {
   const a = await newPage();
   await go(a, "terminal");

@@ -243,6 +243,54 @@ def find_hdmiin_audio():
     return None
 
 
+def audio_inputs():
+    """Audio interfaces that can record (REC-09): [{"id": "alsa:<card id>", "name"}], the HDMI
+    input's own card left out (it is the "hdmi" input)."""
+    out = []
+    try:
+        with open("/proc/asound/cards") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        m = re.match(r"\s*(\d+)\s+\[(\S+)\s*\]:\s*(.*)$", line)
+        if not m or "hdmiin" in m.group(2).lower():
+            continue
+        num, card, desc = m.groups()
+        if not glob.glob("/proc/asound/card%s/pcm*c" % num):
+            continue                                  # playback only
+        name = desc.split(" - ", 1)[-1].strip() or card
+        out.append({"id": "alsa:" + card, "name": name, "usb": "USB" in desc})
+    return out
+
+
+def alsa_card_present(card):
+    return any(i["id"] == "alsa:" + card for i in audio_inputs())
+
+
+def find_pulse_source(card):
+    """PulseAudio's source for an ALSA card id, when PulseAudio runs and owns it (the device
+    is then busy for a direct open)."""
+    try:
+        with open("/proc/asound/cards") as f:
+            num = next((m.group(1) for m in (re.match(r"\s*(\d+)\s+\[(\S+)\s*\]", ln) for ln in f)
+                        if m and m.group(2) == card), None)
+        if num is None:
+            return None
+        out = subprocess.run(["pactl", "list", "sources"], capture_output=True, text=True, timeout=3).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    name = None
+    for line in out.splitlines():
+        line = line.strip()
+        if line.startswith("Name:"):
+            name = line.split(":", 1)[1].strip()
+        elif line.startswith("alsa.card = ") and line.split("=", 1)[1].strip().strip('"') == num:
+            if name and not name.endswith(".monitor"):
+                return name
+    return None
+
+
 class SimulatedSignal:
     """Stand-in for the HDMI RX port (--simulate): a test pattern with a fixed timing.
 

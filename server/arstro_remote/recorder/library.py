@@ -14,7 +14,7 @@ import threading
 import time
 from datetime import datetime
 
-from . import arh
+from . import arh, takes as takes_mod
 
 RAW, H265, H264, FFV1, OTHER = "RAW", "H.265", "H.264", "FFV1", "VIDEO"
 KINDS = (RAW, H265, H264, FFV1, OTHER)
@@ -190,7 +190,9 @@ class Library:
             # GAL-01: the board's date of the take - the same clock as the title - so every
             # controller groups the gallery by month and day alike.
             day = datetime.fromtimestamp(created).strftime("%Y-%m-%d")
+            side = takes_mod.load(folder, base)          # slate, timecode, notes (REC-15, GAL-13)
             out.append({
+                "meta": takes_mod.summary(side), "slate": takes_mod.slate_title(side),
                 "id": base, "title": _title(base), "created": created, "day": day, "month": day[:7],
                 "size": sum(i["size"] for i in items),
                 "duration": max((i["duration"] or 0) for i in items),

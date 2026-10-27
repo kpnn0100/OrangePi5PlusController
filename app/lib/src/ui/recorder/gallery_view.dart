@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show setEquals;
 import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 
@@ -8,7 +9,9 @@ import 'common.dart';
 /// Gallery (GAL-01..09): takes grouped by month and day with thumbnails, jobs, a sheet per take
 /// to play, download, convert or delete its files, and many takes at once - a day, a month or any
 /// set - saved to the phone. The list comes over Bluetooth; thumbnails, playback and downloads
-/// come over Wi-Fi.
+/// come over Wi-Fi. For film work (GAL-13) each take shows its slate, start timecode, good-take
+/// star, markers and A/V sync; a take's notes, good flag and slate are edited in its sheet, and
+/// the selected takes (a day, a month) are exported as the editor's CSV sheet.
 class GalleryView extends StatefulWidget {
   const GalleryView({super.key, required this.client, required this.active});
   final RemoteClient client;
@@ -134,6 +137,39 @@ class _GalleryViewState extends State<GalleryView> {
     } catch (e) {
       messenger.showSnackBar(SnackBar(content: Text(e.toString())));
     }
+  }
+
+  /// GAL-13: the editor's sheet of the selection - a whole day or month by its name, else the
+  /// takes - saved into Downloads/Arstro like the downloads (no Wi-Fi needed).
+  Future<void> _exportCsv() async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final r = asMap(await client.request('gallery.csv', _csvScope(), const Duration(seconds: 30)));
+      final name = r['name'] as String? ?? 'arstro-takes.csv';
+      final where = await MediaLink.saveText(name, r['csv'] as String? ?? '');
+      messenger.showSnackBar(SnackBar(
+          content: Text('Saved $name · ${r['rows']} row${r['rows'] == 1 ? '' : 's'} · ${where ?? 'Downloads/Arstro/$name'}')));
+      if (mounted) {
+        setState(() {
+          _selecting = false;
+          _selected.clear();
+        });
+      }
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('CSV export failed: $e')));
+    }
+  }
+
+  Map<String, dynamic> _csvScope() {
+    if (_filter == 'all') {
+      for (final (month, days) in groupTakes(_takes ?? const [])) {
+        for (final (day, ts) in days) {
+          if (setEquals({for (final t in ts) t['id']}, _selected)) return {'day': day};
+        }
+        if (setEquals({for (final (_, ts) in days) for (final t in ts) t['id']}, _selected)) return {'month': month};
+      }
+    }
+    return {'takes': _selected.toList()};
   }
 
   Future<void> _load() async {
@@ -279,6 +315,7 @@ class _GalleryViewState extends State<GalleryView> {
                     canDownload: media.ready,
                     onClear: () => setState(_selected.clear),
                     onDownload: _downloadSelected,
+                    onCsv: _exportCsv,
                   ),
                 ),
               ),
@@ -374,12 +411,13 @@ class _GroupHead extends StatelessWidget {
 /// the filter shows, how big - and Download.
 class _SelectionBar extends StatelessWidget {
   const _SelectionBar({required this.takes, required this.kind, required this.canDownload, required this.onClear,
-                       required this.onDownload});
+                       required this.onDownload, required this.onCsv});
   final List<Map<String, dynamic>> takes;
   final String kind;
   final bool canDownload;
   final VoidCallback onClear;
   final VoidCallback onDownload;
+  final VoidCallback onCsv;
 
   @override
   Widget build(BuildContext context) {
@@ -403,6 +441,10 @@ class _SelectionBar extends StatelessWidget {
         child: Row(children: [
           Expanded(child: Text(text, maxLines: 2, overflow: TextOverflow.ellipsis, style: theme.textTheme.bodyMedium)),
           TextButton(onPressed: takes.isEmpty ? null : onClear, child: const Text('Clear')),
+          Tooltip(
+            message: 'Export the takes as a CSV for the editor (DaVinci Resolve metadata)',
+            child: TextButton(onPressed: takes.isEmpty ? null : onCsv, child: const Text('CSV')),
+          ),
           FilledButton.icon(
             onPressed: ready.isEmpty || !canDownload ? null : onDownload,
             icon: const Icon(Icons.download, size: 18),
@@ -459,6 +501,18 @@ String _thumbPath(Map<String, dynamic> take) {
   return m == null ? (title, null) : (m.group(1)!, m.group(2));
 }
 
+/// A take's A/V sync (REC-09, GAL-13): (drift in ms, more than one frame?) or null if unknown.
+(double, bool)? avDrift(Map<String, dynamic> meta, List<Map<String, dynamic>> items) {
+  final d = (meta['drift_ms'] as num?)?.toDouble();
+  if (d == null) return null;
+  double? fps;
+  final rate = RegExp(r'^(\d+)/(\d+)$').firstMatch('${meta['rate'] ?? ''}');
+  if (rate != null && int.parse(rate.group(2)!) > 0) fps = int.parse(rate.group(1)!) / int.parse(rate.group(2)!);
+  fps ??= items.map((i) => (i['fps'] as num?)?.toDouble()).whereType<double>().firstOrNull;
+  final frameMs = 1000 / (fps == null || fps <= 0 ? 30 : fps);
+  return (d, d.abs() > frameMs);
+}
+
 class Thumb extends StatelessWidget {
   const Thumb({super.key, required this.take, required this.media, this.fit = BoxFit.cover});
   final Map<String, dynamic> take;
@@ -504,6 +558,10 @@ class _TakeCard extends StatelessWidget {
     final theme = Theme.of(context);
     final items = asList(take['items']);
     final (date, time) = _titleParts(take['title'] as String? ?? '');
+    final meta = asMap(take['meta']);
+    final slate = take['slate'] as String?;
+    final markers = asList(meta['markers']).length;
+    final drift = avDrift(meta, items);
     return Card(
       margin: EdgeInsets.zero,
       clipBehavior: Clip.antiAlias,
@@ -532,6 +590,26 @@ class _TakeCard extends StatelessWidget {
                       shadows: const [Shadow(blurRadius: 4)]),
                 ),
               ),
+              if (meta['good'] == true)
+                const Positioned(
+                  right: 6,
+                  top: 6,
+                  child: Icon(Icons.star_rounded, color: kWarn, size: 24, shadows: [Shadow(blurRadius: 4)],
+                      semanticLabel: 'Good take'),
+                ),
+              if (meta['tc'] != null && take['recording'] != true)
+                Positioned(
+                  left: 8,
+                  bottom: 8,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(color: Colors.black.withValues(alpha: 0.7), borderRadius: BorderRadius.circular(6)),
+                    child: Text('${meta['tc']}',
+                        style: const TextStyle(
+                            fontSize: 11.5, fontWeight: FontWeight.w600, color: Colors.white,
+                            fontFeatures: [FontFeature.tabularFigures()])),
+                  ),
+                ),
               if (take['duration'] != null)
                 Positioned(
                   right: 8,
@@ -548,19 +626,22 @@ class _TakeCard extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
-              Text(time ?? date,
+              Text(slate ?? time ?? date,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600)),
-              Text('${time != null ? '$date · ' : ''}${items.length} file${items.length == 1 ? '' : 's'} · ${size(take['size'] as num?)}',
+              Text('${slate != null && time != null ? '$time · ' : ''}${time != null ? '$date · ' : ''}'
+                  '${items.length} file${items.length == 1 ? '' : 's'} · ${size(take['size'] as num?)}',
                   maxLines: 1, overflow: TextOverflow.ellipsis, style: theme.textTheme.bodySmall),
               const SizedBox(height: 6),
               // one line of format tags; extra ones are clipped, never overflow
               SizedBox(
                 height: 22,
                 child: Wrap(spacing: 4, runSpacing: 4, clipBehavior: Clip.hardEdge, children: [
+                  if (drift != null && drift.$2) Tag('A/V ${drift.$1.round()} ms', color: kWarn),
                   for (final k in List<String>.from(take['kinds'] as List? ?? const []))
                     Tag(kindLabel(k), color: kindColor(k)),
+                  if (markers > 0) Tag('$markers marker${markers == 1 ? '' : 's'}'),
                 ]),
               ),
             ]),
@@ -786,6 +867,8 @@ class _TakeSheetState extends State<_TakeSheet> {
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
       children: [
         Text(t['title'] as String? ?? '', style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w600)),
+        if (t['slate'] != null)
+          Text(t['slate'] as String, style: theme.textTheme.titleSmall?.copyWith(color: theme.colorScheme.primary)),
         const SizedBox(height: 12),
         // at most ~half the screen height, so the file list stays visible in landscape
         Center(
@@ -799,6 +882,13 @@ class _TakeSheetState extends State<_TakeSheet> {
               ),
             ),
           ),
+        ),
+        const SizedBox(height: 14),
+        _TakeInfo(
+          key: ValueKey(t['id']),
+          client: client,
+          take: t,
+          onMeta: (m) => setState(() => _take = {...t, 'meta': m}),
         ),
         const SizedBox(height: 14),
         Row(children: [
@@ -1007,6 +1097,176 @@ class _TakeSheetState extends State<_TakeSheet> {
         ),
       ]),
     );
+  }
+}
+
+// ------------------------------------------------------------------ take notes (GAL-13)
+/// A take's film data: slate, start timecode, A/V sync, markers - and what the crew adds
+/// afterwards: good take, notes, a corrected scene / shot / take (`gallery.annotate`).
+class _TakeInfo extends StatefulWidget {
+  const _TakeInfo({super.key, required this.client, required this.take, required this.onMeta});
+  final RemoteClient client;
+  final Map<String, dynamic> take;
+  final ValueChanged<Map<String, dynamic>> onMeta;
+
+  @override
+  State<_TakeInfo> createState() => _TakeInfoState();
+}
+
+class _TakeInfoState extends State<_TakeInfo> {
+  late final _notes = TextEditingController(text: '${_meta['notes'] ?? ''}');
+  late final _scene = TextEditingController(text: '${_meta['scene'] ?? ''}');
+  late final _shot = TextEditingController(text: '${_meta['shot'] ?? ''}');
+  late final _takeNo = TextEditingController(text: '${_meta['take'] ?? ''}');
+  bool _busy = false;
+
+  Map<String, dynamic> get _meta => asMap(widget.take['meta']);
+
+  @override
+  void didUpdateWidget(_TakeInfo old) {
+    super.didUpdateWidget(old);
+    final was = asMap(old.take['meta']), now = _meta;
+    void follow(TextEditingController c, String k) {
+      if ('${was[k] ?? ''}' != '${now[k] ?? ''}' && c.text == '${was[k] ?? ''}') c.text = '${now[k] ?? ''}';
+    }
+    follow(_notes, 'notes');
+    follow(_scene, 'scene');
+    follow(_shot, 'shot');
+    follow(_takeNo, 'take');
+  }
+
+  @override
+  void dispose() {
+    _notes.dispose();
+    _scene.dispose();
+    _shot.dispose();
+    _takeNo.dispose();
+    super.dispose();
+  }
+
+  Future<void> _annotate(Map<String, dynamic> change, String ok) async {
+    setState(() => _busy = true);
+    final r = await runOp(context, widget.client, 'gallery.annotate', {'take': widget.take['id'], ...change}, ok);
+    if (!mounted) return;
+    setState(() => _busy = false);
+    if (r is Map && r.isNotEmpty) widget.onMeta(asMap(r));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final m = _meta;
+    final muted = theme.colorScheme.onSurfaceVariant;
+    final good = m['good'] == true;
+    final drift = avDrift(m, asList(widget.take['items']));
+    final markers = asList(m['markers']);
+    final lines = <(String, Color?)>[
+      if (m['tc'] != null) ('Start TC ${m['tc']}${_fps(m['rate']) != null ? ' · ${_fps(m['rate'])} fps' : ''}', null),
+      if (m['clock_synced'] == false) ('The clock was not synced (NTP) when this take was made', kWarn),
+      if (drift != null)
+        drift.$2
+            ? ('A/V sync: audio and video differ by ${drift.$1.abs().round()} ms - more than a frame', kWarn)
+            : ('A/V in sync (${drift.$1.abs().round()} ms)', null),
+      if ((m['drops'] as num? ?? 0) > 0) ('${m['drops']} dropped frames', kRec),
+      if (m['audio_source'] != null) ('Audio: ${m['audio_source']}', null),
+    ];
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 6, 14, 14),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainer,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: theme.colorScheme.outlineVariant.withValues(alpha: 0.5)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Row(children: [
+          Expanded(
+            child: Text('TAKE', style: theme.textTheme.labelMedium?.copyWith(letterSpacing: 1.1, fontWeight: FontWeight.w600)),
+          ),
+          FilterChip(
+            key: const Key('take-good'),
+            avatar: Icon(good ? Icons.star_rounded : Icons.star_border_rounded, color: good ? kWarn : muted, size: 18),
+            label: const Text('Good take'),
+            showCheckmark: false,
+            selected: good,
+            onSelected: _busy ? null : (v) => _annotate({'good': v}, v ? 'Marked as a good take' : 'Take updated'),
+          ),
+        ]),
+        for (final (text, colour) in lines)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text(text, style: theme.textTheme.bodySmall?.copyWith(color: colour)),
+          ),
+        if (markers.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          Text('Markers', style: theme.textTheme.labelLarge),
+          for (final mk in markers)
+            Padding(
+              padding: const EdgeInsets.only(top: 3),
+              child: Row(children: [
+                const Icon(Icons.bookmark_outline_rounded, size: 15),
+                const SizedBox(width: 6),
+                Text('${mk['tc'] ?? ''}',
+                    style: theme.textTheme.bodySmall?.copyWith(fontFeatures: const [FontFeature.tabularFigures()])),
+                const SizedBox(width: 8),
+                Expanded(child: Text('${mk['label'] ?? ''}', style: theme.textTheme.bodySmall, overflow: TextOverflow.ellipsis)),
+              ]),
+            ),
+        ],
+        const SizedBox(height: 12),
+        TextField(
+          key: const Key('take-notes'),
+          controller: _notes,
+          minLines: 1,
+          maxLines: 4,
+          decoration: const InputDecoration(labelText: 'Notes', hintText: 'Notes for the editor', isDense: true),
+        ),
+        Align(
+          alignment: Alignment.centerRight,
+          child: TextButton(
+            key: const Key('take-notes-save'),
+            onPressed: _busy ? null : () => _annotate({'notes': _notes.text}, 'Take updated'),
+            child: const Text('Save notes'),
+          ),
+        ),
+        Row(children: [
+          Expanded(
+            child: TextField(key: const Key('take-scene'), controller: _scene,
+                decoration: const InputDecoration(labelText: 'Scene', isDense: true)),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: TextField(key: const Key('take-shot'), controller: _shot,
+                decoration: const InputDecoration(labelText: 'Shot', isDense: true)),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: TextField(key: const Key('take-no'), controller: _takeNo, keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: 'Take', isDense: true)),
+          ),
+        ]),
+        Align(
+          alignment: Alignment.centerRight,
+          child: TextButton(
+            key: const Key('take-slate-save'),
+            onPressed: _busy
+                ? null
+                : () => _annotate({
+                      'scene': _scene.text.trim(),
+                      'shot': _shot.text.trim(),
+                      if (int.tryParse(_takeNo.text.trim()) != null) 'take_no': int.parse(_takeNo.text.trim()),
+                    }, 'Take updated'),
+            child: const Text('Save slate'),
+          ),
+        ),
+      ]),
+    );
+  }
+
+  static String? _fps(Object? rate) {
+    final m = RegExp(r'^(\d+)/(\d+)$').firstMatch('${rate ?? ''}');
+    if (m == null || int.parse(m.group(2)!) == 0) return null;
+    final f = int.parse(m.group(1)!) / int.parse(m.group(2)!);
+    return f == f.roundToDouble() ? f.toStringAsFixed(0) : f.toStringAsFixed(2);
   }
 }
 

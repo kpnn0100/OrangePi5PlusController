@@ -61,6 +61,18 @@ String size(num? bytes) {
   return '${i == 0 ? v.toStringAsFixed(0) : v.toStringAsFixed(v >= 100 ? 0 : 1)} ${u[i]}';
 }
 
+/// A data rate in bytes per second: "497 MB/s".
+String perSec(num? bytesPerSec) => bytesPerSec == null ? '–' : '${size(bytesPerSec)}/s';
+
+/// Time left on the disk (REC-12): "4 h 12 min", "35 min", "50 s".
+String timeLeft(num? seconds) {
+  if (seconds == null) return '–';
+  final s = seconds.floor();
+  if (s >= 3600) return '${s ~/ 3600} h ${(s ~/ 60) % 60} min';
+  if (s >= 60) return '${s ~/ 60} min';
+  return '$s s';
+}
+
 String mbit(num? bytesPerSec) {
   if (bytesPerSec == null || bytesPerSec == 0) return '0 Mb/s';
   final v = bytesPerSec * 8 / 1e6;

@@ -21,7 +21,7 @@ gi.require_version("Gst", "1.0")
 gi.require_version("GstVideo", "1.0")
 from gi.repository import GLib, Gst, GstVideo  # noqa: E402
 
-from . import arh, mppenc  # noqa: E402
+from . import arh, mppenc, takes, timecode  # noqa: E402
 from .gstutil import gst_buffer  # noqa: E402
 
 CODECS = {
@@ -184,6 +184,32 @@ def transcode(args):
             except (OSError, ValueError) as e:
                 print("repair of %s failed: %s - reading around the damage" % (args.input, e), file=sys.stderr)
         return _transcode(args)
+
+
+def source_timecode(src, reader=None):
+    """The start timecode of the take a source file belongs to (REC-11): its sidecar, read now
+    (a copy made during recording finishes after the take has one), else the RAW header."""
+    from .library import clip_id
+    side = takes.load(os.path.dirname(os.path.abspath(src)), clip_id(os.path.basename(src)))
+    tc = side.get("timecode")
+    if not tc and reader is not None:
+        try:
+            tc = arh.ArhReader(src).meta.get("timecode")
+        except (OSError, ValueError):
+            tc = None
+    return tc if isinstance(tc, dict) and tc.get("rate") else None
+
+
+def _stamp_timecode(part, out, src, reader=None):
+    """Give a finished .mov / .mp4 copy its take's timecode track; never fails the job."""
+    if not out.endswith((".mov", ".mp4")):
+        return
+    tc = source_timecode(src, reader)
+    if tc:
+        try:
+            timecode.add_tmcd(part, tc)
+        except (OSError, ValueError) as e:
+            print(f"[warn] no timecode track: {e}", file=sys.stderr)
 
 
 def _damage(reader):
@@ -360,6 +386,7 @@ def _transcode(args):
     pipe.set_state(Gst.State.NULL)
 
     if result["code"] == 0:
+        _stamp_timecode(part, out, args.input, reader)
         os.replace(part, out)
         emit(state="done", frames=encoded[0], output=out,
              seconds=round(time.monotonic() - t0, 1), damaged=_damage(reader))
@@ -390,7 +417,9 @@ def transcode_ffv1_gpu(args):
     part = out + ".part"
     base = [exe, "-hide_banner", "-nostdin", "-v", "error", "-y",
             "-init_hw_device", "vulkan=vk:0", "-filter_hw_device", "vk"]
+    tc = source_timecode(args.input)
     enc = ["-c:v", "ffv1_vulkan", "-coder", "rice", "-slicecrc", "1",   # rice: 3x faster on this GPU
+           *(["-timecode", tc["tc"]] if tc else []),                      # REC-11: a TIMECODE tag
            "-progress", "pipe:1", "-nostats", "-f", "matroska", part]
     reader, audio_r, audio_w, total = None, None, None, 0
 
@@ -601,6 +630,7 @@ def transcode_media(args):
         vpu.stop()
     pipe.set_state(Gst.State.NULL)
     if result["code"] == 0:
+        _stamp_timecode(part, out, args.input)
         os.replace(part, out)
         emit(state="done", frames=encoded[0], output=out, seconds=round(time.monotonic() - t0, 1))
     else:

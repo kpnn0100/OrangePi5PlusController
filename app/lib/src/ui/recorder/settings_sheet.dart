@@ -1,10 +1,14 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../remote_client.dart';
 import 'common.dart';
 
-/// Recording settings (REC-04, REC-07, REC-08). Every change is sent at once and the
-/// sheet follows `recorder.settings`, so edits from the web or the CLI show up live.
+/// Recording settings (REC-04, REC-07, REC-08) and the film work (REC-09 audio input and
+/// container, REC-12 storage guard, REC-13/14 monitoring and focus zoom, REC-15 slate, REC-16
+/// record button and tally). Every change is sent at once and the sheet follows
+/// `recorder.settings`, so edits from the web or the CLI show up live.
 Future<void> showRecorderSettings(BuildContext context, RemoteClient client) {
   return showModalBottomSheet<void>(
     context: context,
@@ -32,6 +36,7 @@ class _SettingsBody extends StatefulWidget {
 
 class _SettingsBodyState extends State<_SettingsBody> {
   double? _bitrate;                       // while the slider is dragged
+  double? _zebra;                         // while the zebra level is dragged
   final _storage = TextEditingController();
   final _sim = TextEditingController(text: '1920x1080@30');
   bool _storageEdited = false;
@@ -46,8 +51,16 @@ class _SettingsBodyState extends State<_SettingsBody> {
     super.dispose();
   }
 
-  Future<void> _set(Map<String, dynamic> patch) =>
-      runOp(context, client, 'recorder.settings.set', {'settings': patch});
+  Future<void> _set(Map<String, dynamic> patch) async {
+    if (!mounted) {
+      // a field saved as the sheet closes: no snack bar to show it in
+      try {
+        await client.request('recorder.settings.set', {'settings': patch});
+      } catch (_) {}
+      return;
+    }
+    await runOp(context, client, 'recorder.settings.set', {'settings': patch});
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -58,7 +71,15 @@ class _SettingsBodyState extends State<_SettingsBody> {
         final rec = asMap(client.topic('recorder').value);
         final caps = asMap(rec['caps']);
         if (st.isEmpty) return const Center(child: CircularProgressIndicator());
-        final h265 = asMap(st['h265']), raw = asMap(st['raw']);
+        final h265 = asMap(st['h265']), raw = asMap(st['raw']), audio = asMap(st['audio']);
+        final inputs = [
+          ...asList(rec['audio_inputs']),
+          if (rec['audio_inputs'] == null) {'id': 'hdmi', 'name': 'HDMI input'},
+        ];
+        if (!inputs.any((i) => i['id'] == (audio['source'] ?? 'hdmi'))) {
+          inputs.add({'id': audio['source'], 'name': '${audio['source']} (not connected)'});
+        }
+        final audioName = inputs.where((i) => i['id'] == (audio['source'] ?? 'hdmi')).firstOrNull?['name'] as String?;
         if (!_storageEdited) _storage.text = st['storage'] as String? ?? '';
         final sim = rec['simulate'] as String?;
         final theme = Theme.of(context);
@@ -96,8 +117,9 @@ class _SettingsBodyState extends State<_SettingsBody> {
                 _Row('Keyframe interval', 'Shorter = easier editing, bigger files',
                     _seg<double>({0.5: '0.5 s', 1.0: '1 s', 2.0: '2 s', 5.0: '5 s'}, (h265['gop'] as num?)?.toDouble(),
                         (v) => _set({'h265': {'gop': v}}))),
-                _Row('Container', 'MKV survives a power cut; MP4 plays everywhere',
-                    _seg<String>({'mp4': 'MP4', 'mkv': 'MKV'}, h265['container'] as String?,
+                // REC-09: the container decides the audio: PCM as it came (MOV, MKV) or AAC (MP4)
+                _Row('Container', _containers[h265['container']] ?? _containers['mov'],
+                    _seg<String>({'mov': 'MOV', 'mkv': 'MKV', 'mp4': 'MP4'}, h265['container'] as String?,
                         (v) => _set({'h265': {'container': v}}))),
               ])
             else ...[
@@ -182,10 +204,23 @@ class _SettingsBodyState extends State<_SettingsBody> {
                           (v) => _set({'raw': {'when': v}}))),
               ]),
             ],
+            ..._monitoring(st, rec),
             const _Group('Input'),
             _Card([
-              _SwitchRow('Record audio', caps['audio'] == true ? 'HDMI audio' : 'No HDMI audio device',
-                  asMap(st['audio'])['record'] == true, caps['audio'] == true ? (v) => _set({'audio': {'record': v}}) : null),
+              _SwitchRow('Record audio', audioName ?? (caps['audio'] == true ? 'HDMI audio' : 'No HDMI audio device'),
+                  audio['record'] == true,
+                  caps['audio'] == true || (audio['source'] ?? 'hdmi') != 'hdmi' ? (v) => _set({'audio': {'record': v}}) : null),
+              // REC-09: the HDMI input's audio or an audio interface (XLR microphones over USB)
+              _Row('Audio input', 'The HDMI input, or an audio interface (e.g. USB with XLR microphones)',
+                  DropdownButton<String>(
+                    key: const Key('audio-source'),
+                    value: audio['source'] as String? ?? 'hdmi',
+                    items: [
+                      for (final i in inputs)
+                        DropdownMenuItem(value: i['id'] as String, child: Text(i['name'] as String? ?? '${i['id']}')),
+                    ],
+                    onChanged: (v) => v == null ? null : _set({'audio': {'source': v}}),
+                  )),
               _Row('Preview quality', 'Shared by every viewer',
                   _seg<String>({'low': '360p', 'medium': '720p', 'high': '1080p'}, asMap(st['preview'])['quality'] as String?,
                       (v) => _set({'preview': {'quality': v}}))),
@@ -194,6 +229,8 @@ class _SettingsBodyState extends State<_SettingsBody> {
                       (v) => _set({'edid': v})),
                   stacked: true),
             ]),
+            ..._slate(st, rec),
+            ..._gpio(st, rec),
             const _Group('Storage'),
             _Card([
               Padding(
@@ -217,6 +254,9 @@ class _SettingsBodyState extends State<_SettingsBody> {
                   ),
                 ]),
               ),
+              // REC-12
+              _SwitchRow('Storage guard', 'Refuse a take the measured disk cannot keep up with (you can still record anyway)',
+                  st['storage_guard'] != false, (v) => _set({'storage_guard': v})),
             ]),
             const _Group('Source'),
             _Card([
@@ -243,6 +283,224 @@ class _SettingsBodyState extends State<_SettingsBody> {
     );
   }
 
+  // ----------------------------------------------------------- monitoring (REC-13, REC-14)
+  List<Widget> _monitoring(Map<String, dynamic> st, Map<String, dynamic> rec) {
+    final m = asMap(st['monitor']);
+    final status = asMap(rec['monitor']);
+    final luts = asList(status['luts']);
+    final lut = m['lut'] as String? ?? 'off';
+    final userLut = luts.where((l) => l['id'] == lut && l['builtin'] != true).firstOrNull;
+    final level = (_zebra ?? ((m['zebra_level'] as num?) ?? 95).toDouble()).clamp(50.0, 109.0);
+    final bands = asList(status['bands']);
+    return [
+      const _Group('Monitoring'),
+      Padding(
+        padding: const EdgeInsets.fromLTRB(4, 0, 4, 8),
+        child: Text('On the live picture, the same for every viewer. Never in the recording.',
+            style: Theme.of(context).textTheme.bodySmall),
+      ),
+      _Card([
+        _Row('Frame guides', 'Where the picture will be cut',
+            DropdownButton<String>(
+              key: const Key('mon-guides'),
+              value: _guides.containsKey(m['guides']) ? m['guides'] as String : 'off',
+              items: [for (final e in _guides.entries) DropdownMenuItem(value: e.key, child: Text(e.value))],
+              onChanged: (v) => v == null ? null : _set({'monitor': {'guides': v}}),
+            )),
+        _SwitchRow('Safe areas', 'Action 93 % · title 90 %', m['safe'] == true, (v) => _set({'monitor': {'safe': v}}),
+            key: const Key('mon-safe')),
+        _SwitchRow('Centre cross', null, m['center'] == true, (v) => _set({'monitor': {'center': v}}),
+            key: const Key('mon-center')),
+        _SwitchRow('Zebras', 'Stripes where the picture is at or over the level', m['zebra'] == true,
+            (v) => _set({'monitor': {'zebra': v}}), key: const Key('mon-zebra')),
+        if (m['zebra'] == true)
+          _Row('Zebra level', '${level.round()} %',
+              Slider(
+                key: const Key('mon-zebra-level'),
+                value: level,
+                min: 50,
+                max: 109,
+                divisions: 59,
+                onChanged: (v) => setState(() => _zebra = v),
+                onChangeEnd: (v) async {
+                  await _set({'monitor': {'zebra_level': v.round()}});
+                  if (mounted) setState(() => _zebra = null);
+                },
+              ),
+              stacked: true),
+        _SwitchRow('False colour', 'Exposure as colours', m['false_color'] == true,
+            (v) => _set({'monitor': {'false_color': v}}), key: const Key('mon-false-colour')),
+        if (m['false_color'] == true && bands.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Wrap(spacing: 10, runSpacing: 6, children: [
+              for (final b in bands)
+                Row(mainAxisSize: MainAxisSize.min, children: [
+                  Container(
+                    width: 12,
+                    height: 12,
+                    decoration: BoxDecoration(color: _colour(b['colour']), borderRadius: BorderRadius.circular(3)),
+                  ),
+                  const SizedBox(width: 5),
+                  Text('${b['meaning']}', style: Theme.of(context).textTheme.bodySmall),
+                ]),
+            ]),
+          ),
+        _Row('Scope', 'Luma of the full captured frame',
+            _seg<String>({'off': 'Off', 'histogram': 'Histogram', 'waveform': 'Waveform'}, m['scope'] as String?,
+                (v) => _set({'monitor': {'scope': v}}))),
+        _SwitchRow('Audio meters', 'Peak and RMS per channel', m['meters'] != false,
+            (v) => _set({'monitor': {'meters': v}}), key: const Key('mon-meters')),
+        _Row('Focus zoom', 'Tap the live picture to zoom in and check focus; 3× is 1:1 pixels for 4K',
+            _seg<int>({2: '2×', 3: '3×', 4: '4×', 6: '6×', 8: '8×'}, (m['zoom'] as num?)?.toInt(),
+                (v) => _set({'monitor': {'zoom': v}}))),
+        _Row('LUT', 'Shows log footage as normal video (preview only)',
+            Row(mainAxisSize: MainAxisSize.min, children: [
+              DropdownButton<String>(
+                key: const Key('mon-lut'),
+                value: lut == 'off' || luts.any((l) => l['id'] == lut) ? lut : 'off',
+                items: [
+                  const DropdownMenuItem(value: 'off', child: Text('Off')),
+                  for (final l in luts)
+                    DropdownMenuItem(value: l['id'] as String, child: Text(l['name'] as String? ?? '${l['id']}')),
+                ],
+                onChanged: (v) => v == null ? null : _set({'monitor': {'lut': v}}),
+              ),
+              if (userLut != null)
+                IconButton(
+                  tooltip: 'Delete this LUT',
+                  icon: const Icon(Icons.delete_outline),
+                  onPressed: () async {
+                    if (!await confirm(context, 'Delete the LUT?', '${userLut['name']} is removed from the Pi.')) return;
+                    if (mounted) await runOp(context, client, 'recorder.lut.delete', {'lut': userLut['id']}, 'LUT deleted');
+                  },
+                ),
+            ]),
+            stacked: true),
+        if (status['lut_error'] != null)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Text('${status['lut_error']}', style: Theme.of(context).textTheme.bodySmall?.copyWith(color: kWarn)),
+          ),
+      ]),
+    ];
+  }
+
+  // ------------------------------------------------------------------- slate (REC-15)
+  List<Widget> _slate(Map<String, dynamic> st, Map<String, dynamic> rec) {
+    final sl = asMap(st['slate']);
+    final next = asMap(rec['take'])['next'];
+    return [
+      const _Group('Slate'),
+      _Card([
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          child: Row(children: [
+            Expanded(
+              child: _TextSetting(
+                key: const Key('slate-scene'),
+                label: 'Scene',
+                value: '${sl['scene'] ?? ''}',
+                onSave: (v) => _set({'slate': {'scene': v}}),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: _TextSetting(
+                key: const Key('slate-shot'),
+                label: 'Shot',
+                value: '${sl['shot'] ?? ''}',
+                onSave: (v) => _set({'slate': {'shot': v}}),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: _TextSetting(
+                key: const Key('slate-take'),
+                label: 'Take',
+                value: '${sl['take'] ?? 1}',
+                number: true,
+                onSave: (v) async {
+                  final n = int.tryParse(v);
+                  if (n != null) await _set({'slate': {'take': n}});
+                },
+              ),
+            ),
+          ]),
+        ),
+        _SwitchRow('Count up after each take',
+            'The take number goes up by one when a take ends${next != null ? '\nNext take: $next' : ''}',
+            sl['auto'] != false, (v) => _set({'slate': {'auto': v}}), key: const Key('slate-auto')),
+      ]),
+    ];
+  }
+
+  // ------------------------------------------------------ record button & tally (REC-16)
+  List<Widget> _gpio(Map<String, dynamic> st, Map<String, dynamic> rec) {
+    final g = asMap(st['gpio']);
+    final status = asMap(rec['gpio']);
+    final t = Theme.of(context).textTheme;
+    Widget state(String which) {
+      final s = asMap(status[which]);
+      final (text, colour) = status['error'] != null && s.isEmpty
+          ? ('${status['error']}', kWarn)
+          : s['error'] != null
+              ? ('${s['error']}', kRec)
+              : s['ok'] == true
+                  ? (which == 'button'
+                      ? 'Ready${(s['presses'] ?? 0) > 0 ? ' · ${s['presses']} presses' : ''}'
+                      : 'Ready · ${s['on'] == true ? 'on' : 'off'}', kOk)
+                  : ('Not used', null);
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: Text(text, key: Key('gpio-$which-state'), style: t.bodySmall?.copyWith(color: colour)),
+      );
+    }
+
+    Widget line(String which, String label) => Padding(
+          padding: const EdgeInsets.only(top: 10, bottom: 4),
+          child: Row(children: [
+            Expanded(
+              child: _TextSetting(
+                key: Key('gpio-$which'),
+                label: label,
+                hint: 'gpiochip1:15 - empty = none',
+                value: '${g[which] ?? ''}',
+                onSave: (v) => _set({'gpio': {which: v}}),
+              ),
+            ),
+            IconButton(
+              tooltip: 'Choose a header pin',
+              icon: const Icon(Icons.pin_outlined),
+              onPressed: () async {
+                final pin = await _pickPin(context, client);
+                if (pin != null) await _set({'gpio': {which: pin}});
+              },
+            ),
+          ]),
+        );
+
+    return [
+      const _Group('Record button & tally'),
+      _Card([
+        Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          line('button', 'Record button'),
+          Text('A GPIO input: a push button to ground starts or stops recording', style: t.bodySmall),
+          state('button'),
+        ]),
+        _SwitchRow('Button active low', 'A push button to ground (pulled up)', g['button_active_low'] != false,
+            (v) => _set({'gpio': {'button_active_low': v}})),
+        Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          line('tally', 'Tally light'),
+          Text('A GPIO output: on while recording, blinks while a take is finished', style: t.bodySmall),
+          state('tally'),
+        ]),
+        _SwitchRow('Tally active low', 'The light is on when the line is low', g['tally_active_low'] == true,
+            (v) => _set({'gpio': {'tally_active_low': v}})),
+      ]),
+    ];
+  }
+
   Widget _seg<T>(Map<T, String> options, T? value, ValueChanged<T> onChanged, {Set<T> disabled = const {}}) {
     return SegmentedButton<T>(
       showSelectedIcon: false,
@@ -258,6 +516,125 @@ class _SettingsBodyState extends State<_SettingsBody> {
       },
     );
   }
+}
+
+const _containers = {
+  'mov': 'MOV: PCM audio, opens in every editor',
+  'mkv': 'MKV: PCM audio, survives a power cut',
+  'mp4': 'MP4: AAC audio, plays everywhere',
+};
+
+const _guides = {'off': 'Off', '2.39': '2.39:1', '1.85': '1.85:1', '16:9': '16:9', '4:3': '4:3', '1:1': '1:1', '9:16': '9:16'};
+
+Color _colour(Object? hex) {
+  final m = RegExp(r'^#?([0-9a-fA-F]{6})$').firstMatch('${hex ?? ''}');
+  return m == null ? Colors.grey : Color(0xFF000000 | int.parse(m.group(1)!, radix: 16));
+}
+
+/// The board's header pins with a GPIO line (`io.gpio.header`), as `gpiochipN:LINE` (REC-16).
+Future<String?> _pickPin(BuildContext context, RemoteClient client) async {
+  Map<String, dynamic> h;
+  try {
+    h = asMap(await client.request('io.gpio.header'));
+  } catch (e) {
+    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString())));
+    return null;
+  }
+  final pins = [
+    for (final p in asList(h['pins']))
+      if (p['gpio'] is Map && p['chip'] is String) p,
+  ];
+  if (!context.mounted) return null;
+  if (pins.isEmpty) {
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No GPIO header known on this board')));
+    return null;
+  }
+  return showDialog<String>(
+    context: context,
+    builder: (c) => SimpleDialog(
+      title: Text(h['board'] != null ? 'Header pins · ${h['board']}' : 'Header pins'),
+      children: [
+        for (final p in pins)
+          () {
+            final id = '${(p['chip'] as String).split('/').last}:${asMap(p['gpio'])['line']}';
+            final used = asMap(p['state'])['used'] == true || p['held'] != null;
+            return SimpleDialogOption(
+              onPressed: () => Navigator.pop(c, id),
+              child: Text('Pin ${p['pin']} · ${p['name']} · $id${used ? ' · in use' : ''}'),
+            );
+          }(),
+      ],
+    ),
+  );
+}
+
+/// A text setting, saved on Enter or when the field loses focus; it follows the Pi's value
+/// while it is not being edited.
+class _TextSetting extends StatefulWidget {
+  const _TextSetting({super.key, required this.label, required this.value, required this.onSave, this.hint,
+                      this.number = false});
+  final String label;
+  final String value;
+  final String? hint;
+  final bool number;
+  final Future<void> Function(String value) onSave;
+
+  @override
+  State<_TextSetting> createState() => _TextSettingState();
+}
+
+class _TextSettingState extends State<_TextSetting> {
+  late final _c = TextEditingController(text: widget.value);
+  final _focus = FocusNode();
+  String? _sent;
+
+  @override
+  void initState() {
+    super.initState();
+    _focus.addListener(_onFocus);
+  }
+
+  void _onFocus() {
+    if (!_focus.hasFocus) _save();
+  }
+
+  @override
+  void didUpdateWidget(_TextSetting old) {
+    super.didUpdateWidget(old);
+    if (old.value != widget.value) _sent = null;
+    if (!_focus.hasFocus && _c.text != widget.value) _c.text = widget.value;
+  }
+
+  @override
+  void dispose() {
+    _focus.removeListener(_onFocus);
+    // the sheet closed while this was edited: still save it, once the sheet has gone
+    final v = _c.text.trim();
+    if (_focus.hasFocus && v != widget.value && v != _sent) {
+      final save = widget.onSave;
+      scheduleMicrotask(() => save(v));
+    }
+    _c.dispose();
+    _focus.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    final v = _c.text.trim();
+    if (v == widget.value || v == _sent) return;
+    _sent = v;
+    widget.onSave(v);
+  }
+
+  @override
+  Widget build(BuildContext context) => TextField(
+        controller: _c,
+        focusNode: _focus,
+        keyboardType: widget.number ? TextInputType.number : TextInputType.text,
+        textInputAction: TextInputAction.done,
+        decoration: InputDecoration(labelText: widget.label, hintText: widget.hint, isDense: true),
+        onSubmitted: (_) => _save(),
+      );
 }
 
 /// Which copy sub-sections are open (view state, kept while the app runs).
@@ -430,7 +807,7 @@ class _Row extends StatelessWidget {
 }
 
 class _SwitchRow extends StatelessWidget {
-  const _SwitchRow(this.title, this.sub, this.value, this.onChanged);
+  const _SwitchRow(this.title, this.sub, this.value, this.onChanged, {super.key});
   final String title;
   final String? sub;
   final bool value;

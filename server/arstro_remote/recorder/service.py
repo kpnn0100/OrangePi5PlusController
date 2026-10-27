@@ -5,6 +5,12 @@
     viewers <── Preview <──H.264 access units── worker
 
 Publishes the hub topics "recorder", "recorder.settings", "jobs" and "gallery" (ARC-03).
+
+For film work (REC-09..REC-16): every take gets a sidecar (takes.py) with its slate, its
+time-of-day timecode, markers, notes and the A/V sync measured over it; the slate counts up;
+the storage block says what the disk can do and how long is left; viewers of the live
+preview can ask for meters, exposure data and their own focus zoom (preview.py); a GPIO
+button and tally light follow the recording (gpio_ctl.py).
 """
 
 import json
@@ -18,10 +24,12 @@ import threading
 import time
 from datetime import datetime
 
-from ..protocol import T_JSON, T_VIDEO, FrameDecoder, ProtocolError, decode_video
+from ..protocol import T_BLOB, T_JSON, T_VIDEO, FrameDecoder, ProtocolError, decode_blob, decode_video
 from ..session import OpError
-from . import arh, jobs as jobs_mod, library, settings as settings_mod, thumbs
+from . import arh, jobs as jobs_mod, library, monitor, settings as settings_mod, storage, takes, thumbs, timecode
+from .gpio_ctl import RecorderGpio
 from .preview import Preview
+from .v4l2 import audio_inputs
 
 log = logging.getLogger("arstro.recorder")
 
@@ -51,7 +59,8 @@ class RecorderService:
         self.camera = ctx.config.get("camera_device") or None      # a V4L2 camera instead (CAM-02)
         self.settings = settings_mod.load()
         self.library = library.Library()
-        self.preview = Preview(self._on_viewers, lambda: self._send({"cmd": "keyframe"}, quiet=True))
+        self.preview = Preview(self._on_viewers, lambda: self._send({"cmd": "keyframe"}, quiet=True),
+                               on_message=self._on_viewer_message, on_leave=self._on_viewer_leave)
         self.jobs = None
         self.proc = None
         self._wlock = threading.Lock()
@@ -72,6 +81,11 @@ class RecorderService:
         self._raw_to_delete = {}       # RAW path -> job whose FFV1 copy was verified (GAL-08)
         self._plays = {m: [] for m in PLAY_LIMIT}     # mode -> [(viewer address, Popen)]
         self._play_lock = threading.Lock()
+        self.gpio = None                  # RecorderGpio (REC-16)
+        self.disk_testing = False         # REC-12
+        self.take = None                  # the take being recorded: {"name", "folder", "wall", "tc", "rate"}
+        self._next_take = None            # what recorder.start decided for the next take
+        self.lut_error = None
 
     # ------------------------------------------------------------ lifecycle
     @property
@@ -92,12 +106,19 @@ class RecorderService:
         n = self.jobs.resume()
         if n:
             log.info("resumed %d conversion job(s) cut off by a restart or power loss", n)
+        try:
+            self.gpio = RecorderGpio(self._gpio_press)
+            self.gpio.configure(self.settings["gpio"])
+        except Exception as e:                       # no GPIO on this machine: say so in the status
+            log.info("record button / tally unavailable: %s", e)
         self._spawn_worker()
         threading.Thread(target=self._gallery_loop, name="gallery", daemon=True).start()
 
     def shutdown(self):
         self._stopping = True
         self.preview.close_all()
+        if self.gpio:
+            self.gpio.close()
         if self.proc and self.proc.poll() is None:
             self._send({"cmd": "shutdown"}, quiet=True)
             try:
@@ -135,6 +156,8 @@ class RecorderService:
             logf.close()
         log.info("recorder worker started (pid %d, source %s)", self.proc.pid, self.source_id())
         threading.Thread(target=self._reader, args=(self.proc,), name="recorder-rx", daemon=True).start()
+        self._send({"cmd": "audio_source", "value": self.settings["audio"]["source"]}, quiet=True)
+        self._sync_monitor()
         if self.preview.count:
             self._send({"cmd": "preview", "on": True, "quality": self._quality()}, quiet=True)
 
@@ -150,6 +173,15 @@ class RecorderService:
                     if ftype == T_VIDEO:
                         key, pts, au = decode_video(payload)
                         self.preview.frame(key, pts, au)
+                    elif ftype == T_BLOB:
+                        meta, data = decode_blob(payload)
+                        if "z" in meta:                       # a viewer's focus zoom (REC-14)
+                            zid = meta["z"]
+                            self.preview.zoom_frame(zid, meta.get("k"), meta.get("p", 0), data,
+                                                    lambda z=zid: self._send({"cmd": "zoom_keyframe", "id": z},
+                                                                             quiet=True))
+                        elif meta.pop("a", None):              # exposure data (REC-13)
+                            self.preview.analysis(meta, data)
                     elif ftype == T_JSON:
                         try:
                             self._on_event(json.loads(payload))
@@ -179,6 +211,18 @@ class RecorderService:
     # --------------------------------------------------------- worker events
     def _on_event(self, ev):
         kind = ev.pop("ev", None)
+        if kind == "levels":
+            self.preview.levels(ev.get("peak") or [], ev.get("rms") or [])
+            return
+        if kind == "zoom":
+            self.preview.zoom_state(ev.get("id"), ev)
+            if ev.get("on"):              # its first keyframe may have come before this: ask again
+                self._send({"cmd": "zoom_keyframe", "id": ev.get("id")}, quiet=True)
+            return
+        if kind == "recording_timecode":
+            self._take_timecode(ev)
+        elif kind == "lut_error":
+            self.lut_error = "LUT %s: %s" % (ev.get("id"), ev.get("error"))
         if kind == "caps":
             self.caps = ev
             self._restarts = 0
@@ -186,6 +230,8 @@ class RecorderService:
             self.worker_status = ev
             rec = ev.get("recording")
             self.recording_path = rec["path"] if rec else None
+            if self.gpio:
+                self.gpio.set_tally("busy" if rec and rec.get("stopping") else "on" if rec else "off")
             sig = ev.get("signal") or {}
             if not sig.get("present"):
                 self.preview.set_state("no-signal", sig.get("why") or "No HDMI signal")
@@ -195,6 +241,7 @@ class RecorderService:
             self.preview.set_config({k: ev.get(k) for k in ("width", "height", "fps", "bitrate", "quality")})
         elif kind == "recording_started":
             self.recording_path = ev["path"]
+            self._take_started(ev)
             planned = self._planned.pop("next", [])
             if self.settings["mode"] == "raw" and self.settings["raw"]["when"] == "during":
                 for codec, opts in planned:
@@ -208,6 +255,7 @@ class RecorderService:
                                    "error": ev.get("error"), "size": ev.get("size"),
                                    "duration": ev.get("duration")}
             self.recording_path = None
+            self._take_stopped(ev)
             for codec, opts in self._planned.pop(path, []):
                 if ev.get("size") and path and os.path.exists(path):
                     self._main(self.jobs.add, path, codec, opts, False)
@@ -276,7 +324,8 @@ class RecorderService:
         except OSError:
             disk = {"path": self.storage, "free": 0, "total": 0}
         s = self.settings
-        mode = ("H.265 %d Mb/s %s" % (s["h265"]["bitrate"], s["h265"]["container"].upper())
+        mode = ("H.265 %d Mb/s %s%s" % (s["h265"]["bitrate"], s["h265"]["container"].upper(),
+                                        " · AAC" if s["h265"]["container"] == "mp4" else " · PCM")
                 if s["mode"] == "h265" else "RAW" + "".join(
                     " +" + {"h264-vpu": "H.264", "h265-vpu": "HQ", "h265-x265": "HQ", "ffv1": "FFV1", "ffv1-gpu": "FFV1"}[c]
                     for c, _ in self._planned_jobs()))
@@ -290,6 +339,15 @@ class RecorderService:
                         "stream": ws.get("stream"), "quality": self._quality(), "path": "/ws/preview",
                         "state": self.preview.state.get("state")},
             "disk": disk,
+            "storage": storage.figures(self.storage, s, ws.get("signal"),
+                                       (ws.get("recording") or {}).get("rate") or None, self.disk_testing),
+            "audio_inputs": self._inputs(),
+            "monitor": dict(ws.get("monitor") or {}, luts=monitor.lut_list(), lut_error=self.lut_error,
+                            bands=monitor.describe_bands()),
+            "clock_synced": timecode.clock_synced(),
+            "take": {"next": takes.take_prefix(s["slate"]), "tc": (self.take or {}).get("tc"),
+                     "markers": len((self.take or {}).get("markers", []))},
+            "gpio": self.gpio.state if self.gpio else {"error": "no GPIO on this machine"},
             "mode": s["mode"], "mode_text": mode,
             "last": self.last_recording,
             "simulate": None if self.camera else self.simulate,
@@ -345,9 +403,10 @@ class RecorderService:
                 log.exception("repair scan")
             try:
                 takes = self._scan()
-                fp = json.dumps([(t["id"], [(i["id"], i["kind"], i["busy"], i["problem"],
-                                            None if i["recording"] else (i["size"], i["mtime"]))
-                                           for i in t["items"]]) for t in takes])
+                # the sidecar's summary too: a good take, notes or markers reach every controller (GAL-13)
+                fp = json.dumps([(t["id"], t.get("meta"), [(i["id"], i["kind"], i["busy"], i["problem"],
+                                                           None if i["recording"] else (i["size"], i["mtime"]))
+                                                          for i in t["items"]]) for t in takes])
                 self._gallery = takes
                 if fp != self._gallery_fp:
                     self._gallery_fp = fp
@@ -503,7 +562,7 @@ class RecorderService:
     def op_recorder_status(self, _s, _m):
         return self.status()
 
-    def op_recorder_start(self, session, _m):
+    def op_recorder_start(self, session, msg):
         st = self.status()
         if not st["available"]:
             raise OpError("recorder is not running")
@@ -518,7 +577,14 @@ class RecorderService:
             raise OpError("not enough space in %s (%s free, need 3 GB)" % (folder, library.fmt_size(free)))
         s = self.settings
         mode = s["mode"]
-        base = os.path.join(folder, datetime.now().strftime("REC_%Y%m%d_%H%M%S"))
+        sto = st["storage"]
+        if s.get("storage_guard", True) and sto.get("ok") is False and not msg.get("force"):
+            raise OpError("disk too slow: " + sto["warning"] + " (record anyway: force)")
+        name = takes.take_name(s["slate"])
+        base = os.path.join(folder, name)
+        self._next_take = {"name": name, "folder": folder, "slate": dict(s["slate"]),
+                           "audio": self._input_name(s["audio"]["source"]) if s["audio"]["record"] else None,
+                           "who": "%s %d" % (session.controller, session.num)}
         self._planned["next"] = self._planned_jobs()
         log.info("recording requested by session %d (%s): %s", session.num, session.controller, mode)
         data = self._request({"cmd": "record_start", "mode": mode, "path_base": base,
@@ -637,6 +703,16 @@ class RecorderService:
             self._send({"cmd": "edid", "value": new["edid"]}, quiet=True)
         if new["storage"] != old["storage"]:
             self._gallery_wake.set()
+        if new["audio"]["source"] != old["audio"]["source"]:
+            self._send({"cmd": "audio_source", "value": new["audio"]["source"]}, quiet=True)
+        if new["monitor"] != old["monitor"]:
+            if new["monitor"]["lut"] != old["monitor"]["lut"]:
+                self.lut_error = None
+            self._sync_monitor()
+            if new["monitor"]["zoom"] != old["monitor"]["zoom"]:
+                self._rezoom()
+        if new["gpio"] != old["gpio"] and self.gpio:
+            self.gpio.configure(new["gpio"])
         self._publish_status()
         return new
 
@@ -834,9 +910,249 @@ class RecorderService:
             except FileNotFoundError:
                 pass
         thumbs.drop(take["id"])
+        takes.delete(self.storage, take["id"])
         log.info("deleted take %s (session %d, %s)", take["id"], session.num, session.controller)
         self._gallery_wake.set()
         return {"deleted": done}
+
+    # ------------------------------------------------------ film work (REC-09..16, GAL-13)
+    def _inputs(self):
+        return [{"id": "hdmi", "name": "HDMI input (from the camera)"}] + audio_inputs()
+
+    def _input_name(self, source):
+        return next((i["name"] for i in self._inputs() if i["id"] == source), source)
+
+    def _sync_monitor(self):
+        """Tell the worker what the viewers need: exposure data, the preview's LUT."""
+        m = self.settings["monitor"]
+        need = m["zebra"] or m["false_color"] or m["scope"] != "off"
+        analysis = bool(need and self.preview.wanting("analysis"))
+        lut = None
+        if m["lut"] != "off":
+            path = monitor.lut_path(m["lut"])
+            if path is None:
+                lut = {"id": m["lut"]}
+            elif os.path.exists(path):
+                lut = {"id": m["lut"], "path": path, "name": m["lut"][5:]}
+            else:
+                self.lut_error = "LUT %s is gone" % m["lut"][5:]
+        self._send({"cmd": "monitor", "analysis": analysis, "lut": lut}, quiet=True)
+
+    def _on_viewer_message(self, viewer, msg):
+        t = msg.get("type")
+        if t == "hello":
+            self._sync_monitor()
+        elif t == "zoom":
+            if msg.get("on"):
+                try:
+                    x, y = float(msg.get("x", 0.5)), float(msg.get("y", 0.5))
+                except (TypeError, ValueError):
+                    return
+                self._send({"cmd": "zoom", "id": viewer.id, "on": True, "x": x, "y": y,
+                            "ratio": self.settings["monitor"]["zoom"]}, quiet=True)
+            else:
+                self._send({"cmd": "zoom", "id": viewer.id, "on": False}, quiet=True)
+
+    def _on_viewer_leave(self, viewer):
+        if viewer.zoom is not None:
+            self._send({"cmd": "zoom", "id": viewer.id, "on": False}, quiet=True)
+        if "analysis" in viewer.want:
+            self._sync_monitor()
+
+    def _rezoom(self):
+        """The zoom ratio changed in the settings: zoomed viewers get it at once."""
+        with self.preview.lock:
+            zoomed = [v for v in self.preview.viewers if v.zoom]
+        for v in zoomed:
+            self._send({"cmd": "zoom", "id": v.id, "on": True, "x": v.zoom.get("x", 0.5),
+                        "y": v.zoom.get("y", 0.5), "ratio": self.settings["monitor"]["zoom"]}, quiet=True)
+
+    def _take_started(self, ev):
+        nt, self._next_take = self._next_take or {}, None
+        name = library.clip_id(os.path.basename(ev["path"]))
+        folder = os.path.dirname(ev["path"])
+        sig = (self.worker_status or {}).get("signal") or {}
+        self.take = {"name": name, "folder": folder, "markers": []}
+
+        def init(d):
+            d.update(version=1, take=name, slate=nt.get("slate") or dict(self.settings["slate"]),
+                     source=sig.get("text"), clock_synced=timecode.clock_synced(),
+                     good=False, notes="", markers=[], started_by=nt.get("who"))
+            d["sync"] = {"audio": nt.get("audio")}
+        takes.update(folder, name, init)
+
+    def _take_timecode(self, ev):
+        if not self.take:
+            return
+        self.take.update(tc=ev["tc"]["tc"], tcd=ev["tc"], wall=ev.get("wall"))
+        takes.update(self.take["folder"], self.take["name"], lambda d: d.update(timecode=ev["tc"]))
+
+    def _take_stopped(self, ev):
+        t, self.take = self.take, None
+        if not t:
+            return
+        st = ev.get("stats") or {}
+        av = st.get("av") or {}
+
+        def done(d):
+            sync = d.setdefault("sync", {})
+            sync.update({k: av[k] for k in ("audio_s", "video_s", "drift_ms") if k in av})
+            d.update(frames=av.get("frames"), drops=st.get("drops", 0) + st.get("disk_drops", 0),
+                     duration=ev.get("duration"), stop_reason=ev.get("reason"), error=ev.get("error"))
+        takes.update(t["folder"], t["name"], done)
+        if av.get("drift_ms") is not None and t.get("tcd"):
+            frame_ms = 1000.0 / max(1, t["tcd"].get("base", 30))
+            if abs(av["drift_ms"]) > frame_ms:
+                log.warning("take %s: audio and video differ by %.0f ms over %.0f s (REC-09)",
+                            t["name"], av["drift_ms"], av.get("video_s", 0))
+        sl = self.settings["slate"]
+        if sl.get("auto") and ev.get("size"):
+            nxt = min(999, int(sl.get("take") or 1) + 1)
+            self.settings = settings_mod.apply_patch({"slate": {"take": nxt}})
+            self.hub.publish("recorder.settings", self.settings)
+
+    def op_recorder_mark(self, session, msg):
+        """A marker in the take being recorded, at this moment (REC-15)."""
+        t = self.take
+        if not t or not self.recording_path:
+            raise OpError("not recording")
+        if not t.get("tcd") or not t.get("wall"):
+            raise OpError("the take has no timecode yet - try again in a moment")
+        label = str(msg.get("label") or "")[:80]
+        secs = max(0.0, time.time() - t["wall"])
+        tc = t["tcd"]
+        n, d = (int(x) for x in tc["rate"].split("/"))
+        frames = int(secs * n / d)
+        m = {"tc": timecode.offset_label(tc, frames), "frames": frames, "t": round(secs, 2), "label": label}
+        t["markers"].append(m)
+        takes.update(t["folder"], t["name"], lambda dd: dd.setdefault("markers", []).append(m))
+        log.info("marker %s %s in %s (session %d, %s)", m["tc"], label, t["name"], session.num, session.controller)
+        self._publish_status()
+        return m
+
+    def op_recorder_disk_test(self, session, _m):
+        """Measure the storage folder's write speed (REC-12); a few seconds, ~1 GB written."""
+        if self.recording_path:
+            raise OpError("not while recording - it would steal the take's disk time")
+        if self.disk_testing:
+            raise OpError("a disk test is running")
+        self.disk_testing = True
+        self._publish_status()
+        try:
+            os.makedirs(self.storage, exist_ok=True)
+            res = storage.measure(self.storage)
+        except OSError as e:
+            raise OpError("disk test failed: %s" % e)
+        finally:
+            self.disk_testing = False
+        log.info("disk test of %s by session %d (%s): %d MB/s", self.storage, session.num,
+                 session.controller, res["speed"] // 1_000_000)
+        self._publish_status()
+        return dict(res, figures=self.status()["storage"])
+
+    def op_recorder_inputs(self, _s, _m):
+        return {"inputs": self._inputs(), "current": self.settings["audio"]["source"]}
+
+    def op_recorder_luts(self, _s, _m):
+        return {"luts": monitor.lut_list(), "current": self.settings["monitor"]["lut"]}
+
+    def op_recorder_lut_add(self, session, msg):
+        """Add a .cube LUT for the preview (its text), e.g. the camera maker's log -> Rec.709."""
+        if not monitor.available():
+            raise OpError("LUTs need numpy on the board (python3-numpy)")
+        try:
+            name = monitor.check_lut_name(msg.get("name"))
+            text = msg.get("text") or ""
+            if len(text) > 16 << 20:
+                raise ValueError("a .cube file of more than 16 MB is not a monitoring LUT")
+            monitor.parse_cube(text)
+        except ValueError as e:
+            raise OpError(str(e))
+        os.makedirs(monitor.lut_dir(), exist_ok=True)
+        path = os.path.join(monitor.lut_dir(), name + ".cube")
+        with open(path + ".tmp", "w") as f:
+            f.write(text)
+        os.replace(path + ".tmp", path)
+        log.info("LUT %s added by session %d (%s)", name, session.num, session.controller)
+        if self.settings["monitor"]["lut"] == "cube:" + name:
+            self._send({"cmd": "monitor", "analysis": False, "lut": None}, quiet=True)
+            self._sync_monitor()
+        self._publish_status()
+        return {"id": "cube:" + name, "luts": monitor.lut_list()}
+
+    def op_recorder_lut_delete(self, session, msg):
+        lut_id = str(msg.get("lut") or "")
+        path = monitor.lut_path(lut_id)
+        if not path or not os.path.exists(path):
+            raise OpError("no LUT %s (built-in LUTs cannot be deleted)" % lut_id)
+        os.remove(path)
+        log.info("LUT %s deleted by session %d (%s)", lut_id, session.num, session.controller)
+        if self.settings["monitor"]["lut"] == lut_id:
+            self.op_recorder_settings_set(session, {"settings": {"monitor": {"lut": "off"}}})
+        self._publish_status()
+        return {"luts": monitor.lut_list()}
+
+    def op_gallery_annotate(self, session, msg):
+        """Good take, notes, or the slate of a take after the fact (GAL-13)."""
+        take = self._take(msg.get("take"))
+        patch = {}
+        if "good" in msg:
+            patch["good"] = bool(msg["good"])
+        if "notes" in msg:
+            patch["notes"] = str(msg["notes"] or "")[:2000]
+        slate = {}
+        for k in ("scene", "shot"):
+            if k in msg:
+                v = str(msg[k] or "")
+                if takes.clean(v) != v:
+                    raise OpError("%s: up to 16 letters, digits or -" % k)
+                slate[k] = v
+        if "take_no" in msg:
+            try:
+                n = int(msg["take_no"])
+            except (TypeError, ValueError):
+                raise OpError("take_no must be a number")
+            if not 1 <= n <= 999:
+                raise OpError("take_no must be 1-999")
+            slate["take"] = n
+        if not patch and not slate:
+            raise OpError("nothing to change: good, notes, scene, shot or take_no")
+
+        def apply(d):
+            d.update(patch)
+            if slate:
+                d.setdefault("slate", {}).update(slate)
+        d = takes.update(self.storage, take["id"], apply)
+        log.info("take %s annotated by session %d (%s): %s", take["id"], session.num, session.controller,
+                 dict(patch, **slate))
+        self._gallery_wake.set()
+        return takes.summary(d)
+
+    def op_gallery_csv(self, _s, msg):
+        """The takes as a sheet for the editor (GAL-13): one row per file."""
+        all_takes = self._scan()
+        want = set(msg.get("takes") or [])
+        day, month = msg.get("day"), msg.get("month")
+        sel = [t for t in all_takes if (not want or t["id"] in want) and (not day or t["day"] == day)
+               and (not month or t["month"] == month)]
+        if not sel:
+            raise OpError("no takes to list")
+        for t in sel:
+            t["meta_full"] = takes.load(self.storage, t["id"])
+        tag = day or month or (sel[0]["id"] if len(sel) == 1 else datetime.now().strftime("%Y%m%d"))
+        return {"name": "arstro-takes-%s.csv" % tag, "rows": sum(len(t["items"]) for t in sel),
+                "csv": takes.to_csv(sel, self.storage)}
+
+    def _gpio_press(self):
+        """The record button (REC-16): start or stop, like any controller."""
+        who = _GpioSession()
+        if self.recording_path:
+            self.op_recorder_stop(who, {})
+        else:
+            try:
+                self.op_recorder_start(who, {})
+            except OpError as e:
+                log.warning("record button: %s", e)
 
     def op_jobs_list(self, _s, _m):
         return {"jobs": [j.describe() for j in self.jobs.jobs]}
@@ -856,3 +1172,9 @@ class RecorderService:
     def op_jobs_clear(self, _s, _m):
         self._main(self.jobs.clear_finished)
         return {"jobs": [j.describe() for j in self.jobs.jobs]}
+
+
+class _GpioSession:
+    """Who did it, for the log, when the record button on the rig is pressed (REC-16)."""
+    num = 0
+    controller = "gpio button"

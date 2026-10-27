@@ -173,7 +173,7 @@ The app gets the web addresses and the password over Bluetooth (`web.info`), pro
 | `server/arstro_remote/ntwb/` | the NTWB protocol (`spec.py`), framing, manifests, the Apps host, the Python app SDK |
 | `server/examples/ntwb/hello/` | the example NTWB app (Python SDK + web UI), also the test fixture |
 | `docs/ntwb/` | NTWB narrative (`NTWB.md`) and the generated reference (`API.md`, `api.json`) |
-| `server/arstro_remote/recorder/` | recorder service, worker, capture pipeline, jobs, gallery library |
+| `server/arstro_remote/recorder/` | recorder service, worker, capture pipeline, jobs, gallery library; for film work: `timecode.py` (time-of-day timecode, the MOV/MP4 `tmcd` track), `takes.py` (slate names, the take sidecar, the editor's CSV), `storage.py` (data rates, disk speed test, time left), `monitor.py` (exposure data, LUTs), `gpio_ctl.py` (record button, tally light) |
 | `server/arstro_remote/web/` | HTTP/WebSocket server and the web UI (`static/`, no build step) |
 | `server/tests/` | requirement-tagged tests (`harness.py`; `test_modules.py` starts its own throwaway instance), browser tests in `tests/web/` |
 | `app/` | Flutter Android app (`lib/src/ui/recorder/` = Recorder tab, native code in `android/.../kotlin`) |
