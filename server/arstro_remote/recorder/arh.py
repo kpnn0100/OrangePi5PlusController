@@ -278,12 +278,13 @@ class ArhReader:
             per += a["rate"] * a["channels"] * 2 / self.fps
         return int((os.path.getsize(self.path) - HEADER_SIZE) / per)
 
-    def chunks(self, types=(VFRM, AUDS), follow=False, idle_timeout=15.0, stop=None):
+    def chunks(self, types=(VFRM, AUDS), follow=False, idle_timeout=15.0, stop=None, read=True):
         """Yield (type, pts, seq, payload) for chunks of the given types.
 
         With follow=True, waits at the end of the file for more data until the
         END chunk arrives, or the file stops growing for idle_timeout seconds
-        (recorder crashed). `stop` is an optional threading.Event.
+        (recorder crashed). `stop` is an optional threading.Event. With read=False
+        the payload is not read: (offset, size) of it in the file instead.
         """
         frame_size = self.video["frame_size"]
         with open(self.path, "rb") as f:
@@ -304,8 +305,8 @@ class ArhReader:
                             if ctype == VFRM:
                                 last_pts = max(last_pts, pts)
                             if ctype in types:
-                                payload = f.read(psize)
-                                if len(payload) == psize:
+                                payload = f.read(psize) if read else (pos + CHUNK.size, psize)
+                                if not read or len(payload) == psize:
                                     yield ctype, pts, seq, payload
                                     pos += CHUNK.size + psize
                                     continue
@@ -445,13 +446,14 @@ def needs_repair(path, quiet_s=60):
     return not in_use(path)
 
 
-def cfr_frames(reader, follow=False, stop=None, max_fill_s=10):
+def cfr_frames(reader, follow=False, stop=None, max_fill_s=10, read=True):
     """The video as a constant frame rate sequence: (pts, seq, payload, repeated) - a gap in
     the capture sequence (dropped frames, a damaged stretch) repeats the previous frame, at
-    most max_fill_s worth. The encoders and the lossless check walk exactly this sequence."""
+    most max_fill_s worth. The encoders and the lossless check walk exactly this sequence.
+    With read=False the payload is its (offset, size) in the file (chunks)."""
     cap = int(reader.fps * max_fill_s)
     last_seq, prev = None, None
-    for _t, pts, seq, data in reader.chunks((VFRM,), follow, stop=stop):
+    for _t, pts, seq, data in reader.chunks((VFRM,), follow, stop=stop, read=read):
         if last_seq is not None and prev is not None:
             for _ in range(min(max(0, seq - last_seq - 1), cap)):
                 yield pts, seq, prev, True

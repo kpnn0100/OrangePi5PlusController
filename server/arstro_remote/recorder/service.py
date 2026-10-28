@@ -39,7 +39,8 @@ TARGETS = [   # (id, title, needs capability, description)
      "Plays everywhere (phones, browsers). Hardware encoder, several times real time. Optional downscale."),
     ("h265-vpu", "H.265 · VPU", "vpu_h265", "Small high-quality files. Hardware encoder, faster than real time."),
     ("h265-x265", "H.265 · x265", "x265", "Best quality per MB. CPU encoder, very slow at 4K."),
-    ("ffv1", "FFV1 lossless · CPU", "ffv1", "Mathematically lossless .mkv, every core (~11 fps at 4K)."),
+    ("ffv1", "FFV1 lossless · CPU", "ffv1",
+     "Mathematically lossless .mkv, every core - and the GPU too when it is set up (~16 fps at 4K, else ~10)."),
     ("ffv1-gpu", "FFV1 lossless · GPU", "gpu_ffv1", "Same lossless file on the GPU: slower, leaves the CPU free."),
 ]
 

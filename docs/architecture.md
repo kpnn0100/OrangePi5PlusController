@@ -22,7 +22,7 @@ web UI are thin controllers: they send ops and render the state events the serve
  │                         │                     controllers · web                     │
  │   TerminalPool (shared PTYs, replay ring)   stats.py   wifi.py (nmcli)              │
  │   RecorderService ── worker IPC ──► recorder worker process (GStreamer, HDMI RX)    │
- │        │   └── JobManager ──► transcode processes (VPU / x265 / FFV1 / GPU FFV1)     │
+ │        │   └── JobManager ──► transcode processes (VPU / x265 / FFV1 lanes / GPU FFV1)│
  │        └── Preview fan-out ──► /ws/preview viewers (one encoder, many viewers)       │
  │   input helper process (X11 XTEST)                                                   │
  └──────────────────────────────────────────────────────────────────────────────────────┘
@@ -147,6 +147,14 @@ HDMI RX (`rk_hdmirx`, V4L2) → GStreamer tee in the worker:
   `mpph264enc` keeps one frame in the encoder at a time and waits ~20 ms per 1080p frame for
   its packet: 7-9 fps for a 4K -> 1080p copy, against ~100 fps this way (the VPU alone: ~190
   fps at 1080p). The elements stay as the fallback when the library cannot be loaded.
+* **FFV1 from a RAW** (`recorder/ffv1lanes.py`): three FFmpeg 9 *lanes* encode at once - two on
+  the CPU, one on the GPU (Vulkan) - each fed by its own thread that reads the lane's frames
+  from the RAW with O_DIRECT into one reused buffer; frames go to whichever lane has room. All
+  lanes write the same FFV1 settings (their Matroska headers are compared), so the job parses
+  their packets, puts them back in frame order and streams them into a fourth FFmpeg that only
+  muxes (`-c:v copy`, the RAW's audio, the timecode). A dead or hung lane's frames go to the
+  others or to a fresh CPU lane. 4K 4:2:2 from the SSD: ~16 fps (one GStreamer encoder: 9.5).
+  Without FFmpeg 9 (`setup_gpu.sh`) the GStreamer encoder makes the copy.
 
 The app gets the web addresses and the password over Bluetooth (`web.info`), probes
 `/api/ping` on each address and uses the first that answers; if none does it says why.

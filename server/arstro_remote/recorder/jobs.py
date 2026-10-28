@@ -7,6 +7,7 @@ the .arh is still being recorded and catches up after the recording ends.
 
 The worker prints one JSON object per line on stdout for progress.
 """
+import collections
 import json
 import os
 import signal
@@ -235,6 +236,10 @@ def _transcode(args):
         return 2
     v, a = reader.video, reader.audio if not args.no_audio else None
     fps = reader.fps
+    if args.codec == "ffv1" and not args.follow and args.lanes != "gst":
+        code = transcode_ffv1_lanes(args, reader, emit)
+        if code is not None:
+            return code
     out = args.output or output_path(args.input, args.codec, args.scale)
     part = out + ".part"
     mux = _mux(args.codec)
@@ -400,6 +405,161 @@ def _transcode(args):
     return result["code"]
 
 
+def _raw_audio_to(reader, fd, follow, stop):
+    """The RAW's audio from its first video frame on, as raw samples into a pipe (closed after)."""
+    base_pts = None
+    try:
+        with os.fdopen(fd, "wb") as w:
+            for _t, pts, _seq, data in reader.chunks((arh.AUDS,), follow, stop=stop):
+                if base_pts is None:
+                    first = next(reader.chunks((arh.VFRM,), False), None)
+                    base_pts = first[1] if first else 0
+                if pts < base_pts:
+                    continue
+                w.write(data)
+    except (BrokenPipeError, OSError):
+        pass
+
+
+def transcode_ffv1_lanes(args, reader, emit):
+    """FFV1 of a RAW take on the CPU and the GPU at once (ffv1lanes.py): two CPU lanes and the
+    GPU. Returns None when that can't run here (no FFmpeg 9 from setup_gpu.sh - the system's
+    cannot convert NV16 - or frames it can't take): the GStreamer encoder makes the copy then.
+    With --cpus (a retry after a failure: less peak current) one CPU lane only."""
+    from . import ffv1lanes, gpu
+    g = gpu.ffmpeg()
+    v, a = reader.video, (reader.audio if not args.no_audio else None)
+    if not g or v["format"] not in gpu.FFMPEG_PIXFMT or not _default_layout(v):
+        return None
+    exe, env = g
+    kinds = ((["cpu"] if args.cpus else ["cpu", "cpu", "gpu"]) if args.lanes == "auto"
+             else [k for k in args.lanes.split(",") if k in ffv1lanes.DEPTH])
+    if not kinds:
+        return None
+    try:
+        threads = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        threads = os.cpu_count() or 4
+    out = args.output or output_path(args.input, "ffv1")
+    part = out + ".part"
+    tc = source_timecode(args.input, reader)
+    audio_r = audio_w = None
+    jcmd = [exe, "-hide_banner", "-nostdin", "-v", "error", "-y", "-f", "matroska", "-i", "pipe:0"]
+    if a:
+        audio_r, audio_w = os.pipe()
+        jcmd += ["-f", "s16le", "-ar", str(a["rate"]), "-ac", str(a["channels"]), "-i", f"pipe:{audio_r}",
+                 "-map", "0:v", "-map", "1:a", "-c:a", "pcm_s16le"]
+    jcmd += ["-c:v", "copy", *(["-timecode", tc["tc"]] if tc else []), "-f", "matroska", part]
+    lanes, joiner = [], None
+
+    def spawn(kind):
+        return ffv1lanes.Lane(kind, ffv1lanes.lane_cmd(kind, exe, v, gpu.PLANAR[v["format"]],
+                                                       gpu.FFMPEG_PIXFMT[v["format"]], threads), env)
+    try:
+        for k in kinds:
+            lanes.append(spawn(k))
+        joiner = subprocess.Popen(jcmd, env=env, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.PIPE, pass_fds=(audio_r,) if audio_r else ())
+    except OSError as e:
+        for lane in lanes:
+            lane.proc.kill()
+        emit(state="failed", error=f"can't start FFmpeg: {e}")
+        return 2
+    if audio_r:
+        os.close(audio_r)
+    stop = threading.Event()
+    result = {"error": None}
+    jerr = collections.deque(maxlen=6)
+
+    def kill_all():
+        for p in [x.proc for x in lanes] + [joiner]:
+            try:
+                p.kill()
+            except OSError:
+                pass
+
+    def on_term(*_):
+        result["error"] = "cancelled"
+        stop.set()
+        kill_all()
+    signal.signal(signal.SIGTERM, on_term)
+    signal.signal(signal.SIGINT, on_term)
+
+    def drain():
+        for line in joiner.stderr:
+            jerr.append(line.decode(errors="replace").rstrip())
+            print("[mux] " + jerr[-1], file=sys.stderr, flush=True)
+    threading.Thread(target=drain, daemon=True).start()
+    if audio_w is not None:
+        threading.Thread(target=_raw_audio_to, args=(reader, audio_w, False, stop), daemon=True).start()
+
+    frames = (span for _pts, _seq, span, _rep in arh.cfr_frames(reader, False, stop=stop, read=False))
+    t0 = time.monotonic()
+    join = ffv1lanes.Join(lanes, frames, args.input, stop, spawn)
+    join.start()
+
+    def made():
+        out = {}
+        for x in list(lanes):
+            out[x.kind] = out.get(x.kind, 0) + x.made
+        return out
+    total, written, last = reader.estimate_frames(), 0, 0.0
+    emit(state="running", frames=0, total=total, fps=0, output=out)
+    try:
+        while not join.ref_ready.wait(0.5):
+            if join.error or stop.is_set():
+                raise RuntimeError(join.error or "cancelled")
+        ref = join.ref
+        joiner.stdin.write(ffv1lanes.stream_header(ref))
+        tick = v["fps_d"] * 1e9 / v["fps_n"] / ref.scale
+        for n, packet in join.packets():
+            joiner.stdin.write(ffv1lanes.cluster(round(n * tick), packet))
+            written = n + 1
+            if time.monotonic() - last >= 0.5:
+                last = time.monotonic()
+                dt = last - t0
+                emit(state="running", frames=written, total=max(total, written),
+                     fps=round(written / dt, 2) if dt > 0 else 0, lanes=made())
+        if stop.is_set():
+            raise RuntimeError(result["error"] or "cancelled")
+        joiner.stdin.close()
+        code = joiner.wait()
+        if code != 0:
+            raise RuntimeError("muxing failed: " + ("; ".join(jerr) or f"FFmpeg exit code {code}"))
+    except BrokenPipeError:
+        result["error"] = result["error"] or "muxing failed: " + ("; ".join(jerr) or "FFmpeg stopped")
+    except (RuntimeError, OSError) as e:
+        result["error"] = result["error"] or str(e)
+    finally:
+        stop.set()
+        for lane in lanes:
+            lane.inbox.put(None)
+        for p in [x.proc for x in lanes] + [joiner]:
+            try:
+                p.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                p.kill()
+    if result["error"] != "cancelled":
+        for lane in lanes:
+            if lane.dead:
+                emit(note=f"the {lane.kind.upper()} encoder stopped ({lane.dead}); another made its frames")
+    if not result["error"]:
+        os.replace(part, out)
+        emit(note="FFV1 on " + " + ".join(f"{k.upper()} ({n} frames)" for k, n in made().items()))
+        emit(state="done", frames=written, output=out, seconds=round(time.monotonic() - t0, 1),
+             damaged=_damage(reader))
+        return 0
+    try:
+        os.remove(part)
+    except OSError:
+        pass
+    if result["error"] == "cancelled":
+        emit(state="cancelled", error="cancelled")
+        return 3
+    emit(state="failed", error=result["error"])
+    return 2
+
+
 def transcode_ffv1_gpu(args):
     """FFV1 on the GPU (Vulkan, see gpu.py): FFmpeg 9's ffv1_vulkan, fed through pipes.
     Same output and progress protocol as the other paths; uses ~0.2 CPU cores."""
@@ -473,19 +633,7 @@ def transcode_ffv1_gpu(args):
                 pass
 
     def feed_audio():
-        base_pts = None
-        try:
-            with os.fdopen(audio_w, "wb") as w:
-                for _t, pts, _seq, data in reader.chunks((arh.AUDS,), args.follow, stop=stop):
-                    if base_pts is None:
-                        # align with the first video frame
-                        first = next(reader.chunks((arh.VFRM,), False), None)
-                        base_pts = first[1] if first else 0
-                    if pts < base_pts:
-                        continue
-                    w.write(data)
-        except (BrokenPipeError, OSError):
-            pass
+        _raw_audio_to(reader, audio_w, args.follow, stop)
 
     def on_term(*_):
         stop.set()
@@ -698,6 +846,9 @@ def add_transcode_args(sp):
     sp.add_argument("--cpus", type=int, default=0,
                     help="run on the first N CPUs only (0 = all): less peak current on a weak supply; "
                          "on big.LITTLE boards the little cores come first")
+    sp.add_argument("--lanes", default="auto",
+                    help="FFV1 from a RAW: encoders working together, e.g. cpu,gpu (auto: cpu,cpu,gpu when "
+                         "GPU encoding is set up, one cpu with --cpus) or gst (the GStreamer encoder)")
 
 
 # ---------------------------------------------------------------- job manager (UI side)
