@@ -185,6 +185,6 @@ The app gets the web addresses and the password over Bluetooth (`web.info`), pro
 | `server/arstro_remote/web/` | HTTP/WebSocket server and the web UI (`static/`, no build step) |
 | `server/tests/` | requirement-tagged tests (`harness.py`; `test_modules.py` starts its own throwaway instance), browser tests in `tests/web/` |
 | `app/` | Flutter Android app (`lib/src/ui/recorder/` = Recorder tab, native code in `android/.../kotlin`) |
-| `scripts/` | `setup_all.sh`, `setup_pi.sh`, `build_apk.sh`, `dev_tunnel.sh`, `req_coverage.py` |
+| `scripts/` | `setup_all.sh`, `setup_pi.sh`, `build_apk.sh`, `setup_android_dev.sh` (Flutter + Android SDK, also on the ARM64 board), `dev_tunnel.sh`, `req_coverage.py` |
 | `docs/` | requirements, parity, protocol, architecture, traceability |
 | `legacy/hdmi-recorder/` | the original standalone recorder, kept for reference |

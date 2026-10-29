@@ -68,6 +68,12 @@ scripts/setup_pi.sh orangepi@<pi-address>     # install / update the Pi side (al
 ./build_apk.sh [--install SERIAL]             # build release/arstro-remote-vX.Y.Z.apk
 ```
 
+The app can also be developed on the Pi itself: `scripts/setup_android_dev.sh` (once) installs
+Flutter, the Android SDK and JDK 17, then `./build_apk.sh` works there too. Google ships three of
+the build tools for x86-64 PCs only; on ARM64 they run under qemu (no system change beyond a few
+packages). Copy `app/android/key.properties` and its keystore from the PC that has them first, so the
+APK updates the installed app (a new key would need an uninstall).
+
 The server starts with the Pi's desktop session (auto-login) and restarts itself if it stops.
 On first use of the recorder, run `server/scripts/setup_hdmirx.sh` on the Pi if it has no HDMI RX
 device yet (needs sudo and a reboot).

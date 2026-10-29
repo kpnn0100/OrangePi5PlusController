@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Smoke test of the setup and build scripts (runs anywhere, touches nothing).
-# covers: SET-01, SET-02, SET-03, SET-06
+# covers: SET-01, SET-02, SET-03, SET-06, SET-07
 #
 #   scripts/check_scripts.sh
 set -uo pipefail
@@ -10,6 +10,7 @@ ok()  { printf 'PASS  %s\n' "$*"; }
 bad() { printf 'FAIL  %s\n' "$*"; fail=1; }
 
 for s in setup_all.sh build_apk.sh install.sh scripts/setup_all.sh scripts/setup_pi.sh scripts/build_apk.sh \
+         scripts/setup_android_dev.sh \
          scripts/dev_tunnel.sh server/install.sh server/uninstall.sh server/scripts/arstro-remote-launcher \
          server/scripts/install_deps.sh server/scripts/setup_io_perms.sh \
          server/scripts/setup_hdmirx.sh server/scripts/setup_gpu.sh; do
@@ -17,7 +18,7 @@ for s in setup_all.sh build_apk.sh install.sh scripts/setup_all.sh scripts/setup
     [ -x "$ROOT/$s" ] || bad "$s is not executable"
     bash -n "$ROOT/$s" && ok "$s syntax" || bad "$s syntax"
 done
-for s in setup_all.sh scripts/setup_pi.sh scripts/build_apk.sh; do
+for s in setup_all.sh scripts/setup_pi.sh scripts/build_apk.sh scripts/setup_android_dev.sh; do
     out=$("$ROOT/$s" --help 2>&1) && [ -n "$out" ] && ok "$s --help" || bad "$s --help"
 done
 # setup_all without any work to do only checks the tools and prints the summary
@@ -52,4 +53,9 @@ out=$("$ROOT/server/install.sh" --slot 1 2>&1) && bad "install.sh accepted a bad
 "$ROOT/scripts/setup_pi.sh" --slot 1 nobody@invalid.invalid >/dev/null 2>&1; [ $? = 2 ] &&
     grep -q -- '--slot $SLOT' "$ROOT/scripts/setup_pi.sh" && ok "setup_pi.sh --slot" || bad "setup_pi.sh --slot"
 grep -q 'keytool -genkeypair' "$ROOT/scripts/build_apk.sh" && ok "build_apk.sh creates a signing key" || bad "build_apk.sh signing key"
+# SET-07: on ARM64 the x86-64-only build tools get qemu wrappers, refreshed before every build
+grep -q 'linux-arm64/gen_snapshot' "$ROOT/scripts/setup_android_dev.sh" &&
+    grep -q 'aapt2FromMavenOverride' "$ROOT/scripts/setup_android_dev.sh" &&
+    grep -q 'setup_android_dev.sh" --shims-only' "$ROOT/scripts/build_apk.sh" &&
+    ok "setup_android_dev.sh ARM64 wrappers" || bad "setup_android_dev.sh ARM64 wrappers"
 exit $fail

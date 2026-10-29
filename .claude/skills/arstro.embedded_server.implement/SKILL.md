@@ -37,7 +37,9 @@ you are running in.
    * Web: `server/arstro_remote/web/static/js/views/*.js` (plain ES modules, no build step); a
      page belongs to a group in `js/main.js` `GROUPS` (group = module).
    * CLI: `server/arstro_remote/cli.py` (subcommand + `--json` output; `add_module_parsers`).
-   * GUI: `app/lib/src/...` - the app is built on the dev PC (Flutter is not on the board). If
+   * GUI: `app/lib/src/...` - Flutter; builds on the dev PC or on the board once
+     `scripts/setup_android_dev.sh` ran there (`flutter analyze`, `flutter test`,
+     `scripts/build_apk.sh`; slower on ARM64, never while a take records). If
      you cannot build it, add the feature to the *Pending in the app* note / Exceptions in
      `docs/parity.md` and tell the user; don't claim it is in the app.
    Each controller follows the live state (subscribe to the topic), not a private copy.
@@ -81,7 +83,7 @@ updated · deployed into the idle slot and verified · committed and pushed.
 | `server/arstro_remote/screen/` | remote screen service + worker |
 | `server/arstro_remote/web/` | HTTP/WS server, auth; `static/js/main.js` groups, `core.js`, `views/*.js` |
 | `server/arstro_remote/cli.py` | CLI controller (local socket of the slot, or `--url`) |
-| `app/lib/src/...` | Flutter app (built on the dev PC) |
+| `app/lib/src/...` | Flutter app (dev PC, or the board after `scripts/setup_android_dev.sh`) |
 
 ## Patterns
 

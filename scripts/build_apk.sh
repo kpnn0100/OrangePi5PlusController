@@ -6,7 +6,8 @@
 #   scripts/build_apk.sh --install [SERIAL]   also adb-install it (SERIAL or $ANDROID_SERIAL)
 #   scripts/build_apk.sh --debug-sign         never create a release key (use the debug key)
 #
-# Needs Flutter >= 3.38 (Dart 3.10), an Android SDK with platform 36 and JDK 17.
+# Needs Flutter >= 3.38 (Dart 3.10), an Android SDK with platform 36 and JDK 17
+# (scripts/setup_android_dev.sh installs them, also on an ARM64 board).
 # Release signing uses app/android/key.properties + the keystore it names (both gitignored).
 # If they are missing a new key is created there (keep a backup: an APK signed with
 # another key cannot update an installed one - uninstall the old app first).
@@ -31,9 +32,13 @@ die() { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
 [ -f "$APP/pubspec.yaml" ] || die "app not found at $APP"
 
 step "Toolchain"
-command -v flutter >/dev/null || die "flutter not found - install Flutter 3.38+ (https://docs.flutter.dev/get-started/install)"
+command -v flutter >/dev/null || die "flutter not found - run scripts/setup_android_dev.sh (or install Flutter 3.38+)"
 fv=$(flutter --version 2>/dev/null | sed -n 's/^Flutter \([0-9.]*\).*/\1/p' | head -1)
 echo "Flutter $fv"
+if [ "$(uname -m)" = aarch64 ]; then
+    # Google's gen_snapshot, aapt2 and the NDK's strip are x86-64 only: refresh their qemu wrappers (SET-07)
+    "$ROOT/scripts/setup_android_dev.sh" --shims-only || die "ARM64 build tools not set up"
+fi
 IFS=. read -r ma mi _ <<<"$fv"
 if [ "${ma:-0}" -lt 3 ] || { [ "$ma" -eq 3 ] && [ "${mi:-0}" -lt 38 ]; }; then
     warn "Flutter $fv is older than 3.38 (the project is built with 3.38.5) - expect errors"
@@ -90,7 +95,13 @@ fi
 step "flutter build apk --release"
 rm -f build/app/outputs/flutter-apk/app-release.apk
 flutter build apk --release 2>&1 | grep -E "Built|rror|FAILED" || true
+if [ "$(uname -m)" = aarch64 ]; then
+    (cd android && ./gradlew --stop >/dev/null 2>&1) || true    # a board: give Gradle's 3 GB back now
+fi
 [ -f build/app/outputs/flutter-apk/app-release.apk ] || die "build failed (run: cd app && flutter build apk --release -v)"
+if [ "$(wc -c < build/app/outputs/flutter-apk/app-release.apk)" -gt 150000000 ]; then
+    warn "the APK is over 150 MB: its native libraries were not stripped (see scripts/setup_android_dev.sh)"
+fi
 ver=$(sed -n 's/^version: *\([0-9.]*\).*/\1/p' pubspec.yaml)
 mkdir -p "$ROOT/release"
 out="$ROOT/release/arstro-remote-v$ver.apk"

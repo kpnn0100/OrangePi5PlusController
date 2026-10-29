@@ -19,6 +19,13 @@ android {
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
+    // ARM64 Linux hosts (the board, SET-07): CMake and the NDK's compilers run on x86-64 only. Flutter
+    // adds an empty CMake project just to make the Android Gradle Plugin download the NDK (for its
+    // strip); there scripts/setup_android_dev.sh installs that NDK and runs its strip under qemu.
+    if (System.getProperty("os.name") == "Linux" && System.getProperty("os.arch") == "aarch64") {
+        externalNativeBuild.cmake.path = null
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
