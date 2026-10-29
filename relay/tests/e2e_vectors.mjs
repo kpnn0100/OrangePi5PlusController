@@ -956,6 +956,25 @@ test("shim_context_and_url_rewrite", ["RLY-22"], async () => {
 });
 
 // ------------------------------------------------------------------ static files sanity (RLY-22)
+test("transfers_panel_numbers", ["RLY-28"], async () => {
+  eq(S.fmtBytes(0), "0 B", "zero");
+  eq(S.fmtBytes(1023), "1023 B", "bytes");
+  eq(S.fmtBytes(1536), "1.5 KB", "KB with a decimal below 10");
+  eq(S.fmtBytes(5 * 1048576), "5.0 MB", "MB");
+  eq(S.fmtBytes(123 * 1048576), "123 MB", "no decimal from 10 on");
+  eq(S.fmtBytes(3 * 1073741824), "3.0 GB", "GB");
+  eq(S.fmtRate(1258291), "1.2 MB/s", "rate");
+  eq(S.fmtEta(0.2), "1 s", "rounded up");
+  eq(S.fmtEta(42), "42 s", "seconds");
+  eq(S.fmtEta(185), "3 min 05 s", "minutes");
+  eq(S.fmtEta(3720), "1 h 02 min", "hours");
+  eq(S.fmtEta(Infinity), "", "unknown");
+  eq(S.fmtEta(-1), "", "negative");
+  eq(S.nextSpeed(0, 1000, 0.5), 2000, "first sample is the rate itself");
+  eq(S.nextSpeed(2000, 2000, 0.5), 2000 * 0.7 + 4000 * 0.3, "later samples are smoothed");
+  eq(S.nextSpeed(1500, 10, 0), 1500, "no time passed: unchanged");
+});
+
 test("viewer_pages_have_no_inline_scripts", ["RLY-22", "RLY-24"], async () => {
   for (const f of fs.readdirSync(STATIC).filter((x) => x.endsWith(".html"))) {
     const html = fs.readFileSync(path.join(STATIC, f), "utf8");

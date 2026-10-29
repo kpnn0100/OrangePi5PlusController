@@ -99,6 +99,13 @@ and must keep refusing old peers with a clear error.
 
 ## Gotchas
 
+- `shim.js` runs everything in ONE function scope: a new feature's `function finish()` silently
+  replaced the WebSocket code's `finish()` (sockets closed with 1006). Put new parts in their own
+  closure (`const Transfers = (() => { ... })()`), as the Transfers panel is.
+- Headless Chrome denies downloads unless allowed **per browser context**
+  (`Browser.setDownloadBehavior` with `browserContextId`): a "canceled at 0 bytes" download in a
+  test is that, not the code.
+
 - The production device manager is behind an nginx that does NOT pass WebSockets (HTTP/1.1,
   default buffering, 60 s read timeout, ~1 MB bodies): everything must work over the HTTP
   transport. Test changes through `relay/tests/nginx_proxy.py`, not only directly.

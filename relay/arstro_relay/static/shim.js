@@ -13,8 +13,12 @@
  *    a browser download never reaches the service worker - the browser would save the device
  *    manager's boot page - and Chrome drops a download whose bytes a worker streams. So the shim
  *    fetches the file itself (through the worker and the channel), hands the bytes to the
- *    browser's blob store as they arrive (big blobs live on disk), shows the progress, then saves
- *    the blob as a normal download under the device's file name.
+ *    browser's blob store as they arrive (big blobs live on disk), then saves the blob as a normal
+ *    download under the device's file name.
+ *  - the Transfers panel (RLY-28): every download above and every upload the service worker
+ *    carries (it reports them: the page's own upload progress is meaningless, the browser hands
+ *    the body to the worker at once) gets a row - progress, speed, time left, cancel; several at
+ *    once form a list. Finished rows go after a minute or with Clear.
  *
  * The pure helpers are on globalThis.ArstroShim (tested in Node by relay/tests/e2e_vectors.mjs).
  */
@@ -73,7 +77,36 @@
     return { id: ctx.id, port: ctx.port, path: u.pathname + u.search };
   }
 
-  root.ArstroShim = { shimContext, rewriteUrl, wsTarget, parseDevicePath };
+  // ---- numbers of the Transfers panel
+  function fmtBytes(n) {
+    n = Math.max(0, Number(n) || 0);
+    if (n < 1024) return Math.round(n) + " B";
+    const units = ["KB", "MB", "GB", "TB"];
+    let i = -1;
+    do { n /= 1024; i++; } while (n >= 1024 && i < units.length - 1);
+    return (n < 10 ? n.toFixed(1) : String(Math.round(n))) + " " + units[i];
+  }
+
+  function fmtRate(bytesPerSecond) { return fmtBytes(bytesPerSecond) + "/s"; }
+
+  /** Seconds -> "42 s", "3 min 05 s", "1 h 02 min"; "" when unknown. */
+  function fmtEta(sec) {
+    if (!isFinite(sec) || sec < 0) return "";
+    sec = Math.ceil(sec);
+    const pad = (x) => String(x).padStart(2, "0");
+    if (sec < 60) return sec + " s";
+    if (sec < 3600) return Math.floor(sec / 60) + " min " + pad(sec % 60) + " s";
+    return Math.floor(sec / 3600) + " h " + pad(Math.floor(sec / 60) % 60) + " min";
+  }
+
+  /** The smoothed speed after `bytes` arrived in `seconds`: the new rate blended into the old. */
+  function nextSpeed(prev, bytes, seconds) {
+    if (!(seconds > 0)) return prev || 0;
+    const now = bytes / seconds;
+    return prev ? prev * 0.7 + now * 0.3 : now;
+  }
+
+  root.ArstroShim = { shimContext, rewriteUrl, wsTarget, parseDevicePath, fmtBytes, fmtRate, fmtEta, nextSpeed };
 
   if (typeof window === "undefined" || typeof document === "undefined" || window.__arstroShim) return;
 
@@ -403,37 +436,197 @@
     return plain ? (plain[1] !== undefined ? plain[1] : plain[2]).trim() || null : null;
   }
 
-  function mb(n) { return (n / 1048576).toFixed(n < 10485760 ? 1 : 0) + " MB"; }
+  // ---------------------------------------------------------------- the Transfers panel
+  // its own scope: the shim has functions of the same names (finish, ...) for its WebSockets
+  const Transfers = (() => {
+    const rows = new Map();                  // transfer id -> row
+    let host = null, list = null, title = null, collapsed = false;
+    const SAMPLE = 500;                      // ms between speed samples
+    const KEEP_DONE = 60000;                 // a finished row stays this long (failed ones until Clear)
+    const BTN = "all:unset;box-sizing:border-box;cursor:pointer;padding:2px 8px;border-radius:6px;" +
+                "color:#e5e7eb;background:#374151;font:12px/1.4 system-ui,sans-serif";
 
-  function notice(text, error) {
-    const n = document.createElement("div");
-    n.setAttribute("role", error ? "alert" : "status");
-    n.style.cssText = "position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:2147483647;" +
-      "max-width:min(90vw,560px);padding:10px 14px;border-radius:8px;color:#fff;" +
-      "font:14px/1.4 system-ui,sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.3);background:" + (error ? "#b42318" : "#1f2937");
-    n.textContent = text;
-    (document.body || document.documentElement).appendChild(n);
-    return {
-      set(t) { n.textContent = t; },
-      end(t, err, ms) {
-        n.textContent = t;
-        if (err) n.style.background = "#b42318";
-        setTimeout(() => n.remove(), ms || 4000);
-      },
-    };
+    function node(tag, style, text) {
+      const e = document.createElement(tag);
+      if (style) e.style.cssText = style;    // CSSOM: allowed even where a page's CSP forbids inline styles
+      if (text !== undefined) e.textContent = text;
+      return e;
+    }
+
+    function panel() {
+      if (host && host.isConnected) return;
+      host = node("div", "all:initial;position:fixed;right:12px;z-index:2147483646");
+      host.setAttribute("data-arstro-transfers", "");
+      // phones: at the top - apps keep their tab bar at the bottom
+      const narrow = window.matchMedia ? window.matchMedia("(max-width: 599px)") : null;
+      const place = () => {
+        const top = narrow && narrow.matches;
+        host.style.top = top ? "8px" : "auto";
+        host.style.bottom = top ? "auto" : "12px";
+        host.style.right = top ? "8px" : "12px";
+      };
+      place();
+      if (narrow && narrow.addEventListener) narrow.addEventListener("change", place);
+      const shadow = host.attachShadow({ mode: "open" });   // the page's CSS cannot reach inside
+      const box = node("div", "box-sizing:border-box;width:min(360px,calc(100vw - 24px));max-height:min(60vh,420px);" +
+        "display:flex;flex-direction:column;overflow:hidden;border-radius:10px;background:#111827;color:#f9fafb;" +
+        "box-shadow:0 8px 28px rgba(0,0,0,.35);font:13px/1.35 system-ui,-apple-system,sans-serif");
+      box.setAttribute("role", "region");
+      box.setAttribute("aria-label", "Transfers");
+      const head = node("div", "display:flex;align-items:center;gap:8px;padding:8px 10px;background:#1f2937;cursor:pointer;user-select:none");
+      title = node("div", "flex:1;font-weight:600");
+      const clear = node("button", BTN, "Clear");
+      clear.title = "Remove the finished transfers";
+      clear.onclick = (e) => { e.stopPropagation(); for (const [id, r] of [...rows]) if (r.final) drop(id); };
+      const fold = node("button", BTN, "–");
+      fold.title = "Fold / unfold";
+      const flip = () => { collapsed = !collapsed; list.style.display = collapsed ? "none" : "block"; fold.textContent = collapsed ? "+" : "–"; };
+      fold.onclick = (e) => { e.stopPropagation(); flip(); };
+      head.onclick = flip;
+      list = node("div", "overflow:auto;display:" + (collapsed ? "none" : "block"));
+      head.append(title, clear, fold);
+      box.append(head, list);
+      shadow.append(box);
+      (document.body || document.documentElement).appendChild(host);
+    }
+
+    function heading() {
+      if (!rows.size) { if (host) host.remove(); host = null; return; }
+      const running = [...rows.values()].filter((r) => !r.final).length;
+      title.textContent = "Transfers · " + (running ? running + " running" : "all finished");
+    }
+
+    /** A new row: kind "download" | "upload"; cancel() stops it (or null). */
+    function track(id, kind, name, total, cancel) {
+      panel();
+      const now = Date.now();
+      const r = { id, kind, name, total: total || 0, done: 0, speed: 0, t0: now, at: now, atDone: 0, final: false, cancel };
+      r.el = node("div", "padding:7px 10px;border-top:1px solid #374151");
+      r.el.setAttribute("data-transfer", kind);
+      r.el.setAttribute("data-state", "running");
+      const top = node("div", "display:flex;align-items:center;gap:6px");
+      const arrow = node("span", "flex:none;width:14px;text-align:center;font-weight:700;color:" +
+                         (kind === "upload" ? "#93c5fd" : "#86efac"), kind === "upload" ? "↑" : "↓");
+      arrow.title = kind;
+      const label = r.label = node("span", "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap", name);
+      label.title = name;
+      r.stop = node("button", BTN, "✕");
+      r.stop.title = "Cancel";
+      r.stop.onclick = () => { if (!r.final && r.cancel) r.cancel(); };
+      if (!cancel) r.stop.style.display = "none";
+      top.append(arrow, label, r.stop);
+      const bar = node("div", "height:4px;margin:6px 0 4px;border-radius:2px;background:#374151;overflow:hidden");
+      r.fill = node("div", "height:100%;width:0;background:#60a5fa;transition:width .25s");
+      bar.append(r.fill);
+      r.info = node("div", "font-size:12px;color:#9ca3af;font-variant-numeric:tabular-nums");
+      r.el.append(top, bar, r.info);
+      list.prepend(r.el);
+      rows.set(id, r);
+      paint(r);
+      heading();
+      return r;
+    }
+
+    function progress(id, done, total) {
+      const r = rows.get(id);
+      if (!r || r.final) return;
+      if (total) r.total = total;
+      r.done = done;
+      const now = Date.now();
+      if (now - r.at >= SAMPLE) {
+        r.speed = nextSpeed(r.speed, done - r.atDone, (now - r.at) / 1000);
+        r.at = now;
+        r.atDone = done;
+      }
+      paint(r);
+    }
+
+    function paint(r) {
+      if (r.final) return;
+      if (r.total) r.fill.style.width = Math.min(100, r.done * 100 / r.total).toFixed(1) + "%";
+      else { r.fill.style.width = "100%"; r.fill.style.opacity = ".35"; }
+      const parts = [fmtBytes(r.done) + (r.total ? " of " + fmtBytes(r.total) : "")];
+      parts.push(r.speed ? fmtRate(r.speed) : "starting…");
+      if (r.total && r.speed) parts.push(fmtEta((r.total - r.done) / r.speed) + " left");
+      r.info.textContent = parts.join(" · ");
+    }
+
+    /** state: "done" | "failed" | "canceled". */
+    function finish(id, state, error) {
+      const r = rows.get(id);
+      if (!r || r.final) return;
+      r.final = true;
+      r.el.setAttribute("data-state", state);
+      r.stop.style.display = "none";
+      const secs = Math.max(0.001, (Date.now() - r.t0) / 1000);
+      r.fill.style.opacity = "1";
+      if (state === "done") {
+        r.fill.style.width = "100%";
+        r.fill.style.background = "#22c55e";
+        r.info.textContent = (r.kind === "upload" ? "Uploaded " : "Saved ") + fmtBytes(r.done) + " in " + fmtEta(secs) +
+                             " · " + fmtRate(r.done / secs);
+        setTimeout(() => drop(id), KEEP_DONE);
+      } else {
+        r.fill.style.background = state === "failed" ? "#ef4444" : "#6b7280";
+        r.info.textContent = state === "failed" ? "Failed: " + (error || "unknown error") : "Canceled";
+        r.info.style.color = state === "failed" ? "#fca5a5" : "#9ca3af";
+      }
+      heading();
+    }
+
+    function drop(id) {
+      const r = rows.get(id);
+      if (!r) return;
+      rows.delete(id);
+      r.el.remove();
+      heading();
+    }
+
+    function rename(id, name) {
+      const r = rows.get(id);
+      if (!r || r.name === name) return;
+      r.name = name;
+      r.label.textContent = name;
+      r.label.title = name;
+    }
+
+    return { track, progress, finish, rename, has: (id) => rows.has(id) };
+
+  })();
+
+  // uploads: the service worker reports what it sends (sw.js, "arstro-transfer")
+  if (navigator.serviceWorker) {
+    navigator.serviceWorker.addEventListener("message", (e) => {
+      const m = e.data || {};
+      if (m.t !== "arstro-transfer" || typeof m.id !== "string") return;
+      if (!Transfers.has(m.id)) {
+        Transfers.track(m.id, m.kind === "download" ? "download" : "upload", String(m.name || "upload"), m.total, () => {
+          const c = navigator.serviceWorker.controller;
+          if (c) c.postMessage({ t: "transfer-cancel", id: m.id });
+        });
+      }
+      Transfers.progress(m.id, Number(m.done) || 0, Number(m.total) || 0);
+      if (m.state && m.state !== "running") Transfers.finish(m.id, m.state, m.error);
+    });
+    if (navigator.serviceWorker.startMessages) navigator.serviceWorker.startMessages();
   }
 
+  let downloadSeq = 0;
   async function startDownload(d) {
     let fallback = d.url.pathname.split("/").pop() || "download";
     try { fallback = decodeURIComponent(fallback); } catch (e) { /* keep it */ }
-    const box = notice("Downloading " + (d.name || fallback) + " ...");
+    const abort = new AbortController();
+    const id = "down-" + (++downloadSeq) + "-" + Date.now().toString(36);
+    Transfers.track(id, "download", d.name || fallback, 0, () => abort.abort());
     try {
-      const res = await fetch(d.url.href, { credentials: "same-origin", cache: "no-store" });
+      const res = await fetch(d.url.href, { credentials: "same-origin", cache: "no-store", signal: abort.signal });
       if (!res.ok) throw new Error("the device answered " + res.status + (res.statusText ? " " + res.statusText : ""));
       const name = dispositionName(res.headers.get("content-disposition")) || d.name || fallback;
+      Transfers.rename(id, name);
       const total = Number(res.headers.get("content-length")) || 0;
       const reader = res.body.getReader();
-      let blob = new Blob([]), parts = [], pending = 0, got = 0, shown = 0;
+      let blob = new Blob([]), parts = [], pending = 0, got = 0;
+      Transfers.progress(id, 0, total);
       for (;;) {
         const { value, done } = await reader.read();
         if (done) break;
@@ -441,12 +634,9 @@
         pending += value.length;
         got += value.length;
         if (pending >= FOLD) { blob = new Blob([blob].concat(parts)); parts = []; pending = 0; }
-        if (got - shown >= 262144 || (total && got === total)) {
-          shown = got;
-          box.set("Downloading " + name + " - " + (total ? Math.floor(got * 100 / total) + " % of " + mb(total) : mb(got)));
-        }
+        Transfers.progress(id, got, total);
       }
-      if (total && got !== total) throw new Error("only " + got + " of " + total + " bytes arrived");
+      if (total && got !== total) throw new Error("only " + fmtBytes(got) + " of " + fmtBytes(total) + " arrived");
       blob = new Blob([blob].concat(parts), { type: res.headers.get("content-type") || "application/octet-stream" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -454,9 +644,10 @@
       a.download = name;
       nativeClick.call(a);                       // a blob: link - the browser's own download
       setTimeout(() => URL.revokeObjectURL(url), 120000);
-      box.end("Saved " + name + " (" + mb(got) + ")");
+      Transfers.finish(id, "done");
     } catch (e) {
-      box.end("Download failed: " + ((e && e.message) || e), true, 9000);
+      if (abort.signal.aborted) Transfers.finish(id, "canceled");
+      else Transfers.finish(id, "failed", (e && e.message) || String(e));
     }
   }
 

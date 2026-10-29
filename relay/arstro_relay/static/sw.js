@@ -53,6 +53,9 @@ self.addEventListener("message", (event) => {
   const reply = event.ports && event.ports[0];
   if (m.t === "why") {
     if (reply) reply.postMessage({ error: lastError.get(m.id + ":" + m.port) || null });
+  } else if (m.t === "transfer-cancel") {   // the page's Transfers panel: stop an upload
+    const tr = uploads.get(m.id);
+    if (tr) { tr.canceled = true; if (tr.s) tr.s.cancel(); }
   } else if (m.t === "forget") {         // the key was forgotten or replaced
     dropChannel(m.id);
     if (reply) reply.postMessage({ ok: true });
@@ -325,22 +328,30 @@ async function handle(event, r) {
   let body = null;
   try { body = hasBody ? await prepareBody(req) : null; } catch (e) { return textResponse(400, "could not read the request body"); }
   const idempotent = req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS";
+  const tr = newUpload(event, r, body);
   for (let attempt = 0; ; attempt++) {
     let ch;
     try {
       ch = await getChannel(r.id, rec);
     } catch (e) {
       lastError.set(where, V.errorText(e));
+      report(tr, "failed", V.errorText(e));
       if (nav) return fetch(req);
       return textResponse(e instanceof E.WrongKey ? 403 : 502, V.errorText(e));
     }
     try {
-      const res = await request(ch, req, r, body);
+      const res = await request(ch, req, r, body, tr);
       lastError.delete(where);
+      if (tr) {
+        tr.sent = tr.total;
+        report(tr, res.ok ? "done" : "failed", res.ok ? null : "the device answered " + res.status +
+                                                         (res.statusText ? " " + res.statusText : ""));
+      }
       return res;
     } catch (e) {
       if (!e.device && idempotent && attempt === 0) { dropChannel(r.id, ch); continue; }   // the channel died: once more
       lastError.set(where, V.errorText(e));
+      report(tr, tr && tr.canceled ? "canceled" : "failed", tr && tr.canceled ? null : V.errorText(e));
       if (nav) return fetch(req);
       return textResponse(502, V.errorText(e));
     }
@@ -357,7 +368,47 @@ async function prepareBody(req) {
   return { blob, length: blob.size };
 }
 
-async function pump(s, body) {
+// ------------------------------------------------------------------ uploads for the Transfers panel
+// The browser hands a request body to the worker at once, so the page's own upload progress jumps to
+// 100 %; the real progress is how fast the worker gets it through the channel. Bodies of at least
+// UPLOAD_MIN are reported to the page that sent them (shim.js shows them in its Transfers panel).
+const UPLOAD_MIN = 256 * 1024;
+const REPORT_EVERY = 250;                 // ms between progress messages
+const uploads = new Map();                // id -> tracker
+let uploadSeq = 0;
+
+function uploadName(path) {
+  try {
+    const u = new URL(path, "http://device");
+    const n = u.searchParams.get("name") || u.searchParams.get("filename");
+    if (n) return n;
+    const seg = u.pathname.split("/").filter(Boolean).pop();
+    return seg ? decodeURIComponent(seg) : "upload";
+  } catch (e) { return "upload"; }
+}
+
+function newUpload(event, r, body) {
+  if (!body || body.length < UPLOAD_MIN || !event.clientId) return null;
+  const tr = { id: "up-" + (++uploadSeq) + "-" + Date.now().toString(36), clientId: event.clientId,
+               name: uploadName(r.path), total: body.length, sent: 0, at: 0, s: null, canceled: false };
+  uploads.set(tr.id, tr);
+  report(tr, "running");
+  return tr;
+}
+
+function report(tr, state, error) {
+  if (!tr) return;
+  const now = Date.now();
+  if (state === "running" && tr.at && now - tr.at < REPORT_EVERY && tr.sent < tr.total) return;
+  tr.at = now;
+  if (state !== "running") uploads.delete(tr.id);
+  self.clients.get(tr.clientId).then((c) => {
+    if (c) c.postMessage({ t: "arstro-transfer", id: tr.id, kind: "upload", name: tr.name, total: tr.total,
+                           done: tr.sent, state, error: error || null });
+  }).catch(() => {});
+}
+
+async function pump(s, body, tr) {
   let reader = null;
   try {
     if (body.length) {
@@ -365,7 +416,9 @@ async function pump(s, body) {
       for (;;) {
         const { value, done } = await reader.read();
         if (done) break;
-        await s.write(value instanceof Uint8Array ? value : new Uint8Array(value));
+        const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
+        await s.write(chunk);
+        if (tr) { tr.sent += chunk.length; report(tr, "running"); }
       }
       reader = null;
     }
@@ -375,7 +428,7 @@ async function pump(s, body) {
   }
 }
 
-async function request(ch, req, r, body) {
+async function request(ch, req, r, body, tr) {
   const headers = V.requestHeaders(req.headers);
   const jar = await V.getJar(r.id, r.port).catch(() => []);
   const cookie = V.cookieHeader(jar, r.path, Date.now());
@@ -384,7 +437,8 @@ async function request(ch, req, r, body) {
   // browsers send Origin on such requests; the device turns it into http://127.0.0.1:<port>
   if (body && !headers.some(([k]) => k === "origin")) headers.push(["origin", ORIGIN]);
   const s = ch.openStream({ t: "http", method: req.method, port: r.port, path: r.path, headers, body: !!body });
-  if (body) pump(s, body);
+  if (tr) tr.s = s;
+  if (body) pump(s, body, tr);
   const head = await s.nextJson();
   if (head.t === "error") {
     const e = new Error(String(head.error || "the device refused the request"));

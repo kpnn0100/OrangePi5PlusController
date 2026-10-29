@@ -518,6 +518,70 @@ test("browser_downloads_save_the_real_file", ["RLY-22", "RLY-04"], async () => {
   }
 });
 
+test("transfers_panel_lists_downloads_and_uploads", ["RLY-28"], async () => {
+  check(appPage, "needs open_runs_arstro_remote_through_the_viewer");
+  const dir = fs.mkdtempSync(path.join(process.env.TMPDIR || "/tmp", "viewer-tp-"));
+  const bcdp = await browser.target().createCDPSession();
+  await bcdp.send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: dir, browserContextId: ctx.id });
+  const rowsNow = () => appPage.evaluate(() => {
+    const h = document.querySelector("[data-arstro-transfers]");
+    if (!h || !h.shadowRoot) return null;
+    return { head: h.shadowRoot.querySelector("[role=region]").firstChild.firstChild.textContent,   // the title
+             rows: [...h.shadowRoot.querySelectorAll("[data-transfer]")].map((e) => ({
+               kind: e.getAttribute("data-transfer"), state: e.getAttribute("data-state"), text: e.textContent })) };
+  });
+  try {
+    const made = await appPage.evaluate(async () => {
+      const op = (name, args) => fetch("/api/op/" + name, { method: "POST", headers: { "Content-Type": "application/json" },
+                                                            body: JSON.stringify(args || {}) }).then((x) => x.json());
+      const root = (await op("files.roots")).data.roots[0].path.replace(/\/$/, "");
+      const blob = (n) => { const d = new Uint8Array(n); for (let i = 0; i < n; i += 65536) crypto.getRandomValues(d.subarray(i, Math.min(i + 65536, n))); return new Blob([d]); };
+      const put = (name, b) => new Promise((resolve) => {                       // as Arstro's Files view: XHR PUT
+        const x = new XMLHttpRequest();
+        x.open("PUT", `/api/files/upload?dir=${encodeURIComponent(root)}&name=${encodeURIComponent(name)}&overwrite=1`);
+        x.onload = () => resolve(x.status);
+        x.onerror = () => resolve(0);
+        x.send(b);
+      });
+      const a = "viewer-tp-a-" + Date.now() + ".bin", b = "viewer-tp-b-" + Date.now() + ".bin";
+      const first = await put(a, blob(3 * 1048576));                          // an upload row
+      const link = document.createElement("a");                                // then a download and an upload at once
+      link.href = "/api/files/download?path=" + encodeURIComponent(root + "/" + a);
+      link.download = a;
+      link.click();
+      const second = await put(b, blob(2 * 1048576));
+      return { root, a, b, first, second };
+    });
+    check(made.first === 200 && made.second === 200, "uploads: " + made.first + " " + made.second);
+    let seen = null;
+    const mine = (x) => x && { head: x.head, rows: x.rows.filter((r) => r.text.includes(made.a) || r.text.includes(made.b)) };
+    await until(async () => {
+      seen = mine(await rowsNow());                 // earlier tests' big requests are listed too
+      return seen && seen.rows.length >= 3 && seen.rows.every((r) => r.state !== "running");
+    }, 60000);
+    check(seen && seen.rows.length >= 3, "the panel should list 3 transfers: " + JSON.stringify(seen));
+    const kinds = seen.rows.map((r) => r.kind).sort();
+    check(kinds.filter((k) => k === "upload").length >= 2 && kinds.includes("download"), "kinds: " + kinds);
+    for (const r of seen.rows) {
+      check(r.state === "done", "every transfer should finish: " + JSON.stringify(r));
+      check(/\/s/.test(r.text) && /(Saved|Uploaded) [\d.]+ [KMG]?B in /.test(r.text), "done row text: " + r.text);
+    }
+    check(/^Transfers \u00b7 (all finished|\d+ running)$/.test(seen.head), "heading: " + seen.head);
+    // Clear removes the finished rows and the panel with them
+    await appPage.evaluate(() => {
+      const h = document.querySelector("[data-arstro-transfers]");
+      [...h.shadowRoot.querySelectorAll("button")].find((b) => b.textContent === "Clear").click();
+    });
+    check(await appPage.evaluate(() => !document.querySelector("[data-arstro-transfers]")), "Clear should empty and hide the panel");
+    await appPage.evaluate((m) => Promise.all([m.a, m.b].map((n) => fetch("/api/op/files.delete", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: m.root + "/" + n }) }))), made);
+  } finally {
+    await bcdp.send("Browser.setDownloadBehavior", { behavior: "default", browserContextId: ctx.id }).catch(() => {});
+    await bcdp.detach().catch(() => {});
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("links_and_iframes_are_rewritten_into_the_device", ["RLY-22"], async () => {
   check(appPage, "needs open_runs_arstro_remote_through_the_viewer");
   const prefix = new URL(DEVICE_PAGE).pathname.replace(/\/$/, "");

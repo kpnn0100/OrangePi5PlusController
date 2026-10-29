@@ -236,8 +236,14 @@ needed by other viewers, but every browser behaviour that matters for apps is li
   the worker and the channel), hands the bytes to the browser's blob store every 16 MiB (large
   blobs live on disk), shows the progress on the page, then saves the blob as a normal download
   under the `Content-Disposition` name (else the `download` attribute, else the URL's last
-  part). A failed download is shown on the page. Very large files are better fetched with the
-  client's `forward`.
+  part). Very large files are better fetched with the client's `forward`.
+* **Transfers panel** (RLY-28, `shim.js`, in a shadow root `[data-arstro-transfers]`): one row
+  per download (above) and per upload - progress, speed (smoothed over 0.5 s samples), time
+  left, cancel. The browser hands a request body to the worker at once, so the worker reports
+  uploads of at least 256 KiB itself: worker → the page that sent it, `postMessage({t:
+  "arstro-transfer", id, kind: "upload", name, total, done, state: "running" | "done" | "failed"
+  | "canceled", error})` at most every 250 ms; page → worker `{t: "transfer-cancel", id}` stops
+  it (the stream is cancelled, the request fails). Finished rows go after a minute or with Clear.
 * **Transport:** `ArstroE2E.transport` starts from sessionStorage `arstro-relay-transport`; a
   device manager that needed pipes is remembered in sessionStorage `arstro-relay-pipes <B>`
   (only after a pipe opened); in `auto` a WebSocket that has not opened after 10 s counts as

@@ -7,4 +7,4 @@ key or a decrypted byte. Protocol: docs/relay/PROTOCOL.md. Standard library only
     python3 -m arstro_relay admin list|forget ID|token [--rotate]
 """
 
-__version__ = "1.1.1"
+__version__ = "1.1.3"
