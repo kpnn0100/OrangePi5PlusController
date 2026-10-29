@@ -22,8 +22,8 @@ services:
       RELAY_JOIN_TOKEN: ${RELAY_JOIN_TOKEN:-} # empty: generated once into the data volume
     volumes:
       - devices-data:/data
-    expose:
-      - "8090"                                # only Caddy reaches it
+    ports:                                    # Caddy reaches it over the compose network; this is for
+      - "${RELAY_LISTEN:-127.0.0.1:8090}:8090"  # a proxy of your own (PROXY=own in the kit's .env)
 
   caddy:
     image: caddy:2

@@ -92,6 +92,12 @@ location /arstro/internal/devices {
 }
 ```
 
+**A proxy of your own instead of Caddy** (nginx already on 443): start only the device
+manager, `RELAY_LISTEN=127.0.0.1:8090 docker compose -f relay/docker-compose.yml up -d devices`
+(`0.0.0.0:8090` when the proxy is in Docker or on another server), and proxy
+`https://<domain>` to it with WebSockets on and long timeouts - the nginx block is in
+[kit/README.md](kit/README.md). In the kit this is `PROXY=own` in `.env`.
+
 ## 2b. A kit for someone who only has Docker (no repository)
 
 ```

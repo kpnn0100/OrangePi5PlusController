@@ -39,15 +39,39 @@ Other commands: `./run.sh status` (containers + registered machines), `./run.sh 
 `./run.sh stop`. Everything it keeps (the join token, the list of machines, the certificate)
 is in Docker volumes and survives restarts and updates. It restarts by itself after a reboot.
 
-**Already running a web server on 80/443?** Skip Caddy: load the image
-(`docker load -i images/arstro-devices-@VERSION@-<amd64|arm64>.tar.gz`), run
+## Behind your own nginx (ports 80/443 stay yours)
+
+In `.env` set `PROXY=own`, `DOMAIN=` the name your nginx serves, and `RELAY_LISTEN`
+(`127.0.0.1:8090` if nginx runs directly on this server, `0.0.0.0:8090` if it runs in Docker or
+on another server). `./run.sh` then starts only the device manager - no Caddy. In nginx:
+
+```nginx
+# http { } block, once
+map $http_upgrade $connection_upgrade { default upgrade; '' close; }
+
+server {
+    listen 443 ssl;
+    server_name arstro.example.com;            # your DOMAIN; your certificate lines as usual
+    location / {
+        proxy_pass http://127.0.0.1:8090;      # RELAY_LISTEN as nginx reaches it, no path after it
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;              # WebSockets: required
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 1h;                 # connections stay open for long
+        proxy_send_timeout 1h;
+        proxy_buffering off;
+    }
+}
 ```
-docker run -d --name arstro-devices --restart unless-stopped -p 127.0.0.1:8090:8090 \
-  -e RELAY_TRUST_PROXY=1 -v arstro-devices:/data arstro-devices:@VERSION@
-```
-and proxy `https://<your domain>/arstro/internal/devices` (WebSockets included) to
-`http://127.0.0.1:8090/arstro/internal/devices`. Join token:
-`docker exec arstro-devices python -m arstro_relay admin token`.
+
+`proxy_pass` from nginx in Docker on this server: the Docker host's address, i.e. the `docker0`
+address (`ip -4 addr show docker0`) with port 8090;
+from another server: this server's private address. Everything - pages, terminals, screens,
+file uploads and downloads of any size - travels inside the WebSockets, so nginx's
+`client_max_body_size` does not matter. The device list is at `https://<DOMAIN>/arstro/internal/devices/`.
 
 ## Updating
 

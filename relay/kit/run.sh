@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Arstro device manager @VERSION@ - run it from this folder (only Docker with the compose plugin needed).
 #
-#   ./run.sh [start]     load the image for this CPU, start the device manager + Caddy (HTTPS)
+#   ./run.sh [start]     load the image for this CPU, start the device manager + Caddy (HTTPS),
+#                        or only the device manager for your own proxy (PROXY=own in .env)
 #   ./run.sh token       the join token the machines need (send it to the owner)
 #   ./run.sh status      containers and the device list
 #   ./run.sh logs        follow the logs
@@ -9,7 +10,7 @@
 #
 # DOMAIN (this server's name, already pointing at it) comes from the environment or .env.
 set -euo pipefail
-case "${1:-}" in -h|--help|help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;; esac
+case "${1:-}" in -h|--help|help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;; esac
 cd "$(dirname "${BASH_SOURCE[0]}")"
 die() { printf '\033[31merror: %s\033[0m\n' "$*" >&2; exit 1; }
 say() { printf '\033[1m==> %s\033[0m\n' "$*"; }
@@ -37,13 +38,28 @@ load_image() {
 case "${1:-start}" in
     start)
         [ -n "${DOMAIN:-}" ] || die "set DOMAIN, e.g. DOMAIN=devices.example.com ./run.sh (or write it into .env)"
-        load_image
-        say "Starting the device manager for https://$DOMAIN"
-        docker compose up -d
-        echo
-        echo "Device list : https://$DOMAIN${RELAY_BASE:-/arstro/internal/devices}/"
+        base="${RELAY_BASE:-/arstro/internal/devices}"
+        case "${PROXY:-caddy}" in
+            own)
+                load_image
+                say "Starting the device manager behind your own proxy (no Caddy: ports 80/443 untouched)"
+                docker compose rm -sf caddy >/dev/null 2>&1 || true
+                docker compose up -d devices
+                echo
+                echo "Listens on  : http://${RELAY_LISTEN:-127.0.0.1:8090}$base/  (plain http, for your proxy only)"
+                echo "Your proxy  : https://$DOMAIN -> that address, WebSockets on (README.md, own proxy)"
+                ;;
+            caddy)
+                load_image
+                say "Starting the device manager for https://$DOMAIN"
+                docker compose up -d
+                echo
+                echo "The first start asks Let's Encrypt for a certificate: ports 80 and 443 must be open."
+                ;;
+            *) die "PROXY must be caddy or own (got ${PROXY})" ;;
+        esac
+        echo "Device list : https://$DOMAIN$base/"
         echo "Join token  : ./run.sh token   (machines need it to appear in the list)"
-        echo "The first start asks Let's Encrypt for a certificate: ports 80 and 443 must be open."
         ;;
     token)
         docker compose exec -T devices python -m arstro_relay admin token
