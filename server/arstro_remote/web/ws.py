@@ -118,10 +118,14 @@ class WSConnection:
     def send_text(self, text):
         self._send(OP_TEXT, text.encode("utf-8"))
 
-    def close(self, code=1000):
+    def settimeout(self, t):
+        """Timeout (s, None = none) of the socket reads behind recv_message (socket.timeout)."""
+        self.sock.settimeout(t)
+
+    def close(self, code=1000, reason=""):
         if not self.closed:
             try:
-                self._send(OP_CLOSE, struct.pack(">H", code))
+                self._send(OP_CLOSE, struct.pack(">H", code) + str(reason or "").encode()[:123])
             except OSError:
                 pass
             self.closed = True

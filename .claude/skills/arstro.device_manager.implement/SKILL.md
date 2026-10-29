@@ -59,6 +59,8 @@ and must keep refusing old peers with a clear error.
 | `server/arstro_remote/relay/service.py` | `RelayService`: identity (`relay_identity.json`), settings (`relay.json`, defaults from config.json `relay`), ops, topic `relay`, logging |
 | `server/arstro_remote/relay/client.py` | standalone viewer client + `forward`; also served by the relay at `B/client/arstro_relay_client.py` (with `e2e.py`, `web/ws.py`) |
 | `server/arstro_remote/web/ws.py` | the stdlib WebSocket (server + client incl. `wss://`), shared |
+| `server/arstro_remote/relay/pipe.py`, `relay/arstro_relay/pipe.py`, the `PipeSocket` in the browser | the HTTP transport (PROTOCOL.md section 6): same interface as the WebSocket on each side, so handlers and the channel do not know which one they use; clients try WebSocket first and fall back |
+| `relay/tests/nginx_proxy.py` | an nginx 1.14 in Docker without `Upgrade` headers - the real deployment's proxy - for tests |
 | `server/arstro_remote/web/static/js/views/relay.js` | the machine's *Internet access* page |
 | `relay/arstro_relay/` | the device manager: `server.py` (HTTP + routes, stdlib asyncio), `websocket.py`, `store.py` (devices.json, tokens), `admin.py` (`python3 -m arstro_relay admin list / forget / token`) |
 | `relay/arstro_relay/static/` | browser viewer: `index.html` + `app.js` (list, key, port), `boot.html`/`boot.js`, `sw.js`, `shim.js`, `viewer.js` (routing, cookie jar, key store - shared by worker, pages and Node tests), `e2e.js`. HTML uses `{{BASE}}` (the relay fills it in) |
@@ -96,6 +98,12 @@ and must keep refusing old peers with a clear error.
   manager serves; say so whenever the viewer changes.
 
 ## Gotchas
+
+- The production device manager is behind an nginx that does NOT pass WebSockets (HTTP/1.1,
+  default buffering, 60 s read timeout, ~1 MB bodies): everything must work over the HTTP
+  transport. Test changes through `relay/tests/nginx_proxy.py`, not only directly.
+- Browsers have 6 HTTP/1.1 connections per host and each pipe needs up to 2: one channel per
+  device per browser (the shim's WebSockets ride the service worker's channel).
 
 - Service workers and WebCrypto need a secure context: https, or `http://localhost`. A LAN
   address over plain http does not work for the browser viewer (the client does).

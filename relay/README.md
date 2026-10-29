@@ -76,21 +76,37 @@ The devices, the join token and the certificates are kept in the named volumes.
 
 Run the container as in section 1 (publish `-p 127.0.0.1:8090:8090` so only the proxy
 reaches it), set `-e RELAY_TRUST_PROXY=1`, and proxy `/arstro/internal/devices*` to it with
-WebSocket upgrades allowed and `X-Forwarded-For` / `X-Forwarded-Proto` set. nginx:
+`Host`, `X-Forwarded-For` / `X-Forwarded-Proto` set (and WebSocket upgrades allowed if you can -
+optional, see below). nginx:
 
 ```nginx
 location /arstro/internal/devices {
     proxy_pass http://127.0.0.1:8090;
     proxy_http_version 1.1;
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection "upgrade";
+    proxy_set_header Upgrade $http_upgrade;        # optional: WebSockets (faster); without them
+    proxy_set_header Connection "upgrade";         #   everything goes over HTTP pipes
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-For $remote_addr;
     proxy_set_header X-Forwarded-Proto $scheme;
-    proxy_read_timeout 1h;
+    proxy_read_timeout 1h;                         # optional: long-lived WebSockets (pipes need only 60 s)
     client_max_body_size 1m;
 }
 ```
+
+### Behind a proxy without WebSockets
+
+Some proxies cannot pass WebSockets (an nginx you cannot change, without the `Upgrade` /
+`Connection` lines: the relay then answers its WebSocket routes with `426 Upgrade Required`).
+Nothing needs to be configured for that: machines, the agent client and the browser try the
+WebSocket first and, when it does not open, switch by themselves to **pipes** - the same
+messages carried by plain HTTP requests (a waiting `GET .../down`, small `POST .../up`
+batches; docs/relay/PROTOCOL.md section 6). A plain `proxy_pass` is enough: nginx's defaults
+work (HTTP/1.0 to the relay, response buffering on, `proxy_read_timeout 60s` - a down request
+ends within 25 s - and `client_max_body_size 1m` - an up request is at most 256 KiB). Still
+forward `Host` (or `X-Forwarded-Host` with `RELAY_TRUST_PROXY=1`), or browsers get 403 "requests
+from other web sites".
+The log shows the transport (`device online: ... transport http`). WebSockets stay faster (no
+request per batch): add the two `Upgrade` lines when the proxy allows them.
 
 **A proxy of your own instead of Caddy** (nginx already on 443): start only the device
 manager, `RELAY_LISTEN=127.0.0.1:8090 docker compose -f relay/docker-compose.yml up -d devices`
@@ -124,21 +140,24 @@ All settings are environment variables (`docker run -e NAME=value`, or the compo
 | `RELAY_DATA` | `/data` | data directory (the volume): devices, join token, cookie key |
 | `RELAY_JOIN_TOKEN` | *(generated)* | the token every machine needs to join. Unset: generated once into `<data>/join_token` and printed in the log at every start |
 | `RELAY_PASSWORD` | *(none)* | password for the device list (cookie login, or `Authorization: Bearer <password>` for scripts). Unset: the list is open - anyone who finds the page sees the machines' names (never a way in: each machine still needs its access key) |
-| `RELAY_TRUST_PROXY` | `0` | `1` behind your own reverse proxy: the client address is the first `X-Forwarded-For` entry and `X-Forwarded-Proto: https` marks the login cookie `Secure`. Never set it when clients reach the relay directly - they could fake their address |
+| `RELAY_TRUST_PROXY` | `0` | `1` behind your own reverse proxy: the client address is the last `X-Forwarded-For` entry (the one your proxy added - earlier ones are the client's own and ignored) and `X-Forwarded-Proto: https` marks the login cookie `Secure`. Never set it when clients reach the relay directly - they could fake their address |
 | `RELAY_NAME` | `Devices` | title of the list page |
-| `RELAY_CLIENT_DIR` | the image's client files | where `B/client/` files come from (`client.py`, `e2e.py`, `ws.py`); outside Docker: `server/arstro_remote/relay` of this repository |
+| `RELAY_CLIENT_DIR` | the image's client files | where `B/client/` files come from (`client.py`, `e2e.py`, `ws.py`, `pipe.py`); outside Docker: `server/arstro_remote/relay` of this repository |
 
 Tuning (the defaults are right for normal use; the tests change them):
 
 | Variable | Default | What |
 |---|---|---|
-| `RELAY_RATE_LIMIT` | `30/10` | new WebSocket connections, logins and wrong Bearer passwords allowed per client address: `count/seconds`; more get HTTP 429 |
+| `RELAY_RATE_LIMIT` | `30/10` | new WebSocket connections (and pipes for them), logins and wrong Bearer passwords allowed per client address: `count/seconds`; more get HTTP 429 |
 | `RELAY_HEARTBEAT` | `20` | seconds between a machine's pings (sent to it in `welcome`); 3 silent heartbeats drop it |
 | `RELAY_PENDING` | `10` | seconds a viewer waits for the machine's data connection |
+| `RELAY_PIPE_POLL` | `25` | seconds a pipe's down request waits for a message before it answers 204 (keep it well under the proxy's read timeout) |
+| `RELAY_PIPE_IDLE` | `60` | seconds without any request after which a pipe is dropped like a lost connection |
 | `RELAY_STATIC` | the package's `static/` | where the pages come from |
 
-Fixed limits (docs/relay/PROTOCOL.md section 6): 1000 registered machines, 32 viewer channels
-per machine, 1 MiB per WebSocket message (a larger one closes the socket with code 1009).
+Fixed limits (docs/relay/PROTOCOL.md section 7): 1000 registered machines, 32 viewer channels
+per machine (WebSockets and pipes together), 1 MiB per WebSocket message (a larger one closes the
+socket with code 1009), 256 KiB per pipe up request, 256 open pipes per client address.
 
 ## 4. Join token and admin commands
 
@@ -206,10 +225,16 @@ RELAY_DATA=$HOME/.arstro-devices python3 -m arstro_relay admin list
 | "this device id belongs to another device" | two machines use the same id, or the machine was reinstalled: `admin forget <id>` |
 | The list loads but a machine's page does not | not a secure context: use https (or localhost) |
 | Caddy cannot get a certificate | DNS does not point at the server yet, or 80/443 are closed (security list **and** VM firewall) |
-| HTTP 429 | more than 30 new connections in 10 s from one address; wait a few seconds |
+| HTTP 429 | more than 30 new connections in 10 s (or 256 open pipes) from one address; wait a few seconds |
+| `426 Upgrade Required` in the proxy's log | the proxy does not pass WebSockets: clients switch to pipes by themselves (section "Behind a proxy without WebSockets"); add the `Upgrade` lines for speed |
 
 ## 8. Tests
 
 ```sh
-python3 relay/tests/test_relay_server.py        # the server: routes, registry, forwarding, limits, admin
+python3 relay/tests/test_relay_server.py        # the server: routes, registry, forwarding, limits, admin, pipes
 ```
+
+The pipe test through a proxy starts an `nginx:1.14` container (`relay/tests/nginx_proxy.py`,
+host network, removed afterwards) configured without WebSocket support; without Docker it is
+skipped. `python3 relay/tests/nginx_proxy.py <port>` runs one by hand in front of a relay on
+`127.0.0.1:<port>`.

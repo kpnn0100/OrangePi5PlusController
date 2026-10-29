@@ -7,9 +7,12 @@
  *   2. a same-origin URL outside B/ whose requesting page (the fetch's client, or the referrer
  *      for navigations) is under B/d/<id>/<port>/  -> that device and port, path = path + query
  *   3. else the network
- * One channel per device while the worker lives (reopened when it fails). Request bodies go
- * out in CHUNK pieces (with their Content-Length), responses come back as streams with
- * backpressure (ack on pull).
+ * One channel per device while the worker lives (reopened when it fails): every request AND
+ * every WebSocket of the device's pages goes through it (the shim hands its WebSockets over with
+ * a MessagePort each - see "WebSockets" below), so a browser keeps one connection (or one pipe,
+ * PROTOCOL.md section 6) per device. Request bodies go out in CHUNK pieces (with their
+ * Content-Length), responses come back as streams with backpressure (ack on pull).
+ * Transport: ArstroE2E.transport, "auto" unless the worker was registered as sw.js?transport=ws|http.
  * Set-Cookie goes into the cookie jar (IndexedDB), the jar's cookies go out as Cookie; HTML gets
  * <script src="B/shim.js"></script> right after <head>; Location is rewritten into B/d/....
  * No key for the device: a navigation gets the boot page (network), other requests 401.
@@ -24,6 +27,8 @@ const B = V.baseOf(self.location.pathname, "sw.js");
 const ORIGIN = self.location.origin;
 const SHIM = B + "/shim.js";
 const RETRY_AFTER_FAILURE = 2000;   // a channel that failed to open is not retried sooner
+const FORCED = new URL(self.location.href).searchParams.get("transport");
+if (FORCED === "ws" || FORCED === "http" || FORCED === "auto") E.transport = FORCED;
 
 const channels = new Map();          // device id -> {key_id, promise, ch, error, failedAt}
 const lastError = new Map();         // "<id>:<port>" -> why the last navigation failed (for the boot page)
@@ -51,6 +56,19 @@ self.addEventListener("message", (event) => {
   } else if (m.t === "forget") {         // the key was forgotten or replaced
     dropChannel(m.id);
     if (reply) reply.postMessage({ ok: true });
+  } else if (m.t === "ws") {             // a page's WebSocket (shim.js): its port is the reply port
+    if (!reply) return;
+    event.waitUntil(openSocket(m, reply, event.source && event.source.id));
+  } else if (m.t === "alive") {          // a page with open WebSockets (also keeps this worker running)
+    const known = [];
+    for (const id of Array.isArray(m.socks) ? m.socks : []) {
+      const k = sockets.get(id);
+      if (k) { k.seen = Date.now(); known.push(id); }
+    }
+    if (reply) reply.postMessage({ known });
+    event.waitUntil(sweep());
+  } else if (m.t === "status") {         // diagnostics (and the viewer test)
+    if (reply) reply.postMessage(status());
   }
 });
 
@@ -101,6 +119,193 @@ function dropChannel(id, only) {
   channels.delete(id);
   if (c.ch) c.ch.close("replaced");
 }
+
+function status() {
+  return {
+    transport: E.transport,
+    channels: [...channels.entries()].map(([id, c]) => ({
+      id, transport: c.ch ? c.ch.transport : null, open: !!(c.ch && !c.ch.closed), streams: c.ch ? c.ch.streams.size : 0 })),
+    sockets: [...sockets.values()].map((k) => ({ device: k.device, port: k.devPort, open: !!k.open })),
+  };
+}
+
+// ------------------------------------------------------------------ WebSockets
+// The shim's WebSocket posts {t: "ws", sock, id, port, path, protocols} with a MessagePort; this
+// worker opens a `ws` stream on the device's channel and relays over the port:
+//   worker -> page  {t: "open", protocol} | {t: "msg", text, data: ArrayBuffer, n} | {t: "sent", n}
+//                   | {t: "closesent"} | {t: "close", code, reason} (the device's) | {t: "fail", error}
+//   page -> worker  {t: "send", text, data: ArrayBuffer, n} | {t: "ack", n} | {t: "close", code, reason} | {t: "drop"}
+// Flow control: the stream acks the device as this worker pulls (ack on pull); it pulls the next
+// message only while less than WINDOW bytes it posted wait for the page's ack. Pages send
+// {t: "alive", socks} to the worker (that also keeps it running); a socket whose page is gone or
+// silent for SOCKET_STALE is closed.
+const sockets = new Map();           // sock id -> socket state
+const SOCKET_STALE = 45000;
+const CLOSE_GRACE = 5000;            // after our close: how long the device's answer may take
+let lastSweep = 0;
+
+async function openSocket(m, port, clientId) {
+  const id = String(m.sock || "");
+  const devPort = Number(m.port);
+  const path = typeof m.path === "string" ? m.path : "";
+  if (!/^[A-Za-z0-9_-]{8,64}$/.test(id) || sockets.has(id) || !V.ID_RE.test(String(m.id)) ||
+      !(Number.isInteger(devPort) && devPort >= 1 && devPort <= 65535) || !path.startsWith("/")) {
+    try { port.postMessage({ t: "fail", error: "bad WebSocket request" }); } catch (e) { /* gone */ }
+    return;
+  }
+  const k = { id, port, clientId, device: String(m.id), devPort, path, s: null, open: false, done: false,
+              unacked: 0, wake: null, seen: Date.now(), sendQ: Promise.resolve(), closeSent: false, timer: null };
+  sockets.set(id, k);
+  port.onmessage = (e) => fromPage(k, e.data || {});
+  try {
+    let rec = null;
+    try { rec = await V.getKey(k.device); } catch (e) { rec = null; }
+    if (!rec) throw new Error("no access key for device " + k.device + " in this browser");
+    const jar = await V.getJar(k.device, devPort).catch(() => []);
+    const cookie = V.cookieHeader(jar, path, Date.now());
+    const headers = [["origin", ORIGIN], ["user-agent", self.navigator.userAgent]];
+    if (cookie) headers.push(["cookie", cookie]);
+    const protocols = Array.isArray(m.protocols) ? m.protocols.map(String) : [];
+    let head = null;
+    for (let attempt = 0; !head; attempt++) {
+      if (k.done) return;
+      const ch = await getChannel(k.device, rec);
+      try {
+        k.s = ch.openStream({ t: "ws", port: devPort, path, headers, protocols });
+        head = await k.s.nextJson();
+      } catch (e) {
+        if (attempt > 0) throw e;
+        dropChannel(k.device, ch);                 // the channel died: once more on a new one
+      }
+    }
+    if (head.t !== "open") throw new Error(String(head.error || "the device refused the WebSocket"));
+    if (k.done) { k.s.cancel(); return; }        // the page gave up meanwhile
+    k.open = true;
+    post(k, { t: "open", protocol: String(head.protocol || "") });
+    readLoop(k);
+  } catch (e) {
+    failSocket(k, V.errorText(e));
+  }
+}
+
+function post(k, msg, transfer) {
+  try { k.port.postMessage(msg, transfer || []); } catch (e) { /* the page is gone */ }
+}
+
+function fromPage(k, m) {
+  k.seen = Date.now();
+  if (m.t === "send") {
+    let bytes;
+    try { bytes = new Uint8Array(m.data); } catch (e) { return; }
+    const n = Number(m.n) || bytes.length;
+    k.sendQ = k.sendQ.then(async () => {
+      if (!k.open || k.done || k.closeSent) return;
+      await k.s.writeMessage(bytes, !!m.text);
+      post(k, { t: "sent", n });
+    }).catch((e) => failSocket(k, "sending failed: " + V.errorText(e)));
+  } else if (m.t === "ack") {
+    k.unacked = Math.max(0, k.unacked - (Number(m.n) || 0));
+    wake(k);
+  } else if (m.t === "close") {
+    const code = Number.isInteger(m.code) ? m.code : 1000;
+    const reason = String(m.reason || "");
+    k.sendQ = k.sendQ.then(async () => {
+      if (!k.open || k.done || k.closeSent) return;
+      k.closeSent = true;
+      await k.s.sendJson({ t: "close", code, reason });
+      post(k, { t: "closesent" });
+      k.timer = setTimeout(() => { if (k.s && !k.s.done) k.s.cancel(); }, CLOSE_GRACE);
+    }).catch(() => failSocket(k, "the connection to the device closed"));
+  } else if (m.t === "drop") {
+    dropSocket(k);
+  }
+}
+
+function wake(k) {
+  const w = k.wake;
+  k.wake = null;
+  if (w) w();
+}
+
+/** The device's messages to the page, whole (fragments joined); runs until the stream ends. */
+async function readLoop(k) {
+  const s = k.s;
+  let parts = [], size = 0, text = false;
+  try {
+    for (;;) {
+      while (!size && !k.done && k.unacked >= E.WINDOW) await new Promise((r) => { k.wake = r; });
+      const ev = await s.next();
+      if (ev.data) {
+        parts.push(ev.data);
+        size += ev.data.length;
+        if (ev.flags & E.F_TEXT) text = true;
+        if (!(ev.flags & E.F_FIN)) continue;
+        const buf = parts.length === 1 ? parts[0] : E.concat(parts, size);
+        const n = size, isText = text;
+        parts = [];
+        size = 0;
+        text = false;
+        if (k.done) continue;                       // the page is gone: drain until the device's close
+        const data = buf.byteOffset === 0 && buf.byteLength === buf.buffer.byteLength ? buf.buffer : buf.slice().buffer;
+        k.unacked += n;
+        post(k, { t: "msg", text: isText, data, n }, [data]);
+        continue;
+      }
+      const m = ev.json;
+      if (m.t === "close") {
+        if (!k.done) post(k, { t: "close", code: m.code, reason: String(m.reason || "") });
+        endSocket(k);
+        return;
+      }
+      if (m.t === "error") { failSocket(k, String(m.error || "error")); return; }
+      if (m.t === "end" || ev.after) { failSocket(k, "the device ended the connection"); return; }
+    }
+  } catch (e) {
+    failSocket(k, V.errorText(e));
+  }
+}
+
+/** Done with it (the device's close arrived, or the stream failed). */
+function endSocket(k) {
+  k.done = true;
+  clearTimeout(k.timer);
+  if (sockets.get(k.id) === k) sockets.delete(k.id);
+  k.port.onmessage = null;
+  wake(k);
+}
+
+/** Not clean: the page gets error + close 1006. */
+function failSocket(k, why) {
+  if (!k.done) post(k, { t: "fail", error: why });
+  endSocket(k);
+  if (k.s && !k.s.done) k.s.cancel();
+}
+
+/** The page closed it, left, or stopped answering: close the device's side too. */
+function dropSocket(k) {
+  if (k.done) return;
+  endSocket(k);
+  const s = k.s;
+  if (!s || s.done) return;                       // still connecting: openSocket cancels it
+  if (!k.open) return;
+  if (!k.closeSent) {
+    k.closeSent = true;
+    k.sendQ = k.sendQ.then(() => s.sendJson({ t: "close", code: 1001, reason: "" })).catch(() => {});
+  }
+  setTimeout(() => { if (!s.done) s.cancel(); }, CLOSE_GRACE);
+}
+
+/** Close the sockets of pages that are gone or silent. */
+async function sweep() {
+  const now = Date.now();
+  if (now - lastSweep < 10000) return;
+  lastSweep = now;
+  for (const k of [...sockets.values()]) {
+    if (now - k.seen > SOCKET_STALE) { dropSocket(k); continue; }
+    if (k.clientId && !(await self.clients.get(k.clientId).catch(() => null))) dropSocket(k);
+  }
+}
+setInterval(() => { sweep().catch(() => {}); }, 15000);
 
 // ------------------------------------------------------------------ requests
 async function handle(event, r) {

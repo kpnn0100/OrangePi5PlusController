@@ -468,9 +468,475 @@
     }
   }
 
+  // ---------------------------------------------------------------- HTTP transport (pipes)
+  // PROTOCOL.md section 6: the same messages as a WebSocket, over plain HTTP requests, for proxies
+  // that do not pass WebSockets. Down: a waiting GET (long poll) returns records
+  // kind u8 | seq u32 BE | length u32 BE | payload; up: one POST at a time with records
+  // kind u8 | length u32 BE | payload, the index of its first record in ?seq=.
+  const PIPE_MAX_UP = 256 * 1024;  // largest up body
+  const PIPE_POLL = 25;            // s a down request waits before 204
+  const PIPE_IDLE = 60;            // s without a request: the relay drops the pipe
+  const PIPE_BUFFER = 2 << 20;     // queued bytes per direction before the sender waits
+  const P_TEXT = 1;
+  const P_BINARY = 2;
+  const P_CLOSE = 8;
+  const WS_OPEN_TIMEOUT = 10000;   // "auto": a WebSocket that has not opened by then -> a pipe
+  const CLOSE_WAIT = 3000;         // our close: how long to wait for the relay's answering close
+  const RETRY = new Set([408, 425, 429, 500, 502, 503, 504]);   // worth asking again (proxies, restarts)
+
+  /** [{kind, payload}] -> an up body. */
+  function pipeEncodeUp(records) {
+    let total = 0;
+    for (const r of records) total += 5 + u8(r.payload).length;
+    const out = new Uint8Array(total);
+    const dv = new DataView(out.buffer);
+    let o = 0;
+    for (const r of records) {
+      const p = u8(r.payload);
+      dv.setUint8(o, r.kind);
+      dv.setUint32(o + 1, p.length);
+      out.set(p, o + 5);
+      o += 5 + p.length;
+    }
+    return out;
+  }
+
+  function pipeDecode(bytes, withSeq) {
+    const b = u8(bytes);
+    const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+    const head = withSeq ? 9 : 5;
+    const out = [];
+    let o = 0;
+    while (o < b.length) {
+      if (b.length - o < head) throw new ProtocolError("a pipe record header is cut off");
+      const kind = dv.getUint8(o);
+      if (kind !== P_TEXT && kind !== P_BINARY && kind !== P_CLOSE) throw new ProtocolError("unknown pipe record kind " + kind);
+      const seq = withSeq ? dv.getUint32(o + 1) : undefined;
+      const n = dv.getUint32(o + head - 4);
+      if (b.length - o - head < n) throw new ProtocolError("a pipe record is cut off");
+      const payload = b.subarray(o + head, o + head + n);
+      out.push(withSeq ? { kind, seq, payload } : { kind, payload });
+      o += head + n;
+    }
+    return out;
+  }
+
+  /** A down body -> [{kind, seq, payload}]. */
+  function pipeDecodeDown(bytes) { return pipeDecode(bytes, true); }
+  /** An up body -> [{kind, payload}] (fake relays in tests). */
+  function pipeDecodeUp(bytes) { return pipeDecode(bytes, false); }
+
+  /** [{kind, seq, payload}] -> a down body (fake relays in tests). */
+  function pipeEncodeDown(records) {
+    let total = 0;
+    for (const r of records) total += 9 + u8(r.payload).length;
+    const out = new Uint8Array(total);
+    const dv = new DataView(out.buffer);
+    let o = 0;
+    for (const r of records) {
+      const p = u8(r.payload);
+      dv.setUint8(o, r.kind);
+      dv.setUint32(o + 1, r.seq >>> 0);
+      dv.setUint32(o + 5, p.length);
+      out.set(p, o + 9);
+      o += 9 + p.length;
+    }
+    return out;
+  }
+
+  /** A close record's payload: code u16 BE + UTF-8 reason (at most 123 bytes, never a cut character). */
+  function pipeClosePayload(code, reason) {
+    let r = enc.encode(String(reason || ""));
+    if (r.length > 123) r = enc.encode(dec.decode(r.subarray(0, 123)).replace(/�$/, ""));
+    const out = new Uint8Array(2 + r.length);
+    new DataView(out.buffer).setUint16(0, code & 0xffff);
+    out.set(r, 2);
+    return out;
+  }
+
+  /** A close record's payload -> {code, reason}. Empty: 1005 (no code). */
+  function pipeParseClose(payload) {
+    const p = u8(payload);
+    if (p.length < 2) return { code: p.length ? 1002 : 1005, reason: "" };
+    return { code: (p[0] << 8) | p[1], reason: dec.decode(p.subarray(2)) };
+  }
+
+  /** A WebSocket URL of the device manager -> {base: "http(s)://host/B", path: "/api/..."} for its pipe. */
+  function pipeTarget(url) {
+    const u = new URL(String(url), root.location && root.location.href);
+    const m = /^(.*)(\/api\/(?:connect\/[^/]+|agent|agent\/data))$/.exec(u.pathname);
+    if (!m) throw new Error("not a device manager connection URL: " + u.pathname);
+    const proto = u.protocol === "wss:" || u.protocol === "https:" ? "https:" : "http:";
+    return { base: proto + "//" + u.host + m[1], path: decodeURIComponent(m[2]) };
+  }
+
+  function domError(msg, name) {
+    return typeof root.DOMException === "function" ? new root.DOMException(msg, name) : new Error(msg);
+  }
+
+  /** The WebSocket API (what Channel uses, and the usual events) over a pipe. Options (tests):
+   *  {fetch, idle (ms), backoff (ms), closeWait (ms)}. */
+  class PipeSocket {
+    constructor(url, opts) {
+      const o = opts || {};
+      this.url = String(url);
+      this.readyState = 0;
+      this.binaryType = "blob";
+      this.bufferedAmount = 0;
+      this.protocol = "";
+      this.extensions = "";
+      this.onopen = this.onmessage = this.onclose = this.onerror = null;
+      this._listeners = {};
+      this._fetch = o.fetch || ((u, init) => root.fetch(u, init));
+      this._idle = o.idle || PIPE_IDLE * 1000;
+      this._backoff = o.backoff || 250;
+      this._closeWait = o.closeWait || CLOSE_WAIT;
+      const t = pipeTarget(this.url);
+      this._base = t.base;
+      this._path = t.path;
+      this._id = null;
+      this._maxUp = PIPE_MAX_UP;
+      this._ack = 0;              // down messages received (= the next expected seq)
+      this._up = [];              // up records not confirmed yet; the first is record number _upBase
+      this._upBase = 0;
+      this._done = [];            // the last confirmed batch (resent after a 409 that asks for it)
+      this._upBusy = false;
+      this._gone = false;         // the relay has no pipe any more: no more requests
+      this._closing = null;       // {code, reason} of our close
+      this._abandoned = false;    // close() while connecting
+      this._down = null;          // AbortController of the waiting down request
+      this._timer = null;
+      this._lastOk = Date.now();
+      this._openPipe();
+    }
+
+    static get CONNECTING() { return 0; }
+    static get OPEN() { return 1; }
+    static get CLOSING() { return 2; }
+    static get CLOSED() { return 3; }
+
+    addEventListener(type, fn) {
+      if (typeof fn !== "function") return;
+      const l = this._listeners[type] || (this._listeners[type] = []);
+      if (!l.includes(fn)) l.push(fn);
+    }
+
+    removeEventListener(type, fn) {
+      const l = this._listeners[type];
+      if (l) this._listeners[type] = l.filter((f) => f !== fn);
+    }
+
+    _emit(type, extra) {
+      const ev = Object.assign({ type, target: this, currentTarget: this }, extra || {});
+      const on = this["on" + type];
+      if (typeof on === "function") { try { on.call(this, ev); } catch (e) { setTimeout(() => { throw e; }); } }
+      for (const f of (this._listeners[type] || []).slice()) {
+        try { f.call(this, ev); } catch (e) { setTimeout(() => { throw e; }); }
+      }
+    }
+
+    _url(rest) {
+      return this._base + "/api/pipe/" + encodeURIComponent(this._id) + "/" + rest;
+    }
+
+    _ok() { this._lastOk = Date.now(); }
+
+    /** After a failed request: true (and waited) when it is worth trying again. */
+    async _again(fails) {
+      if (Date.now() - this._lastOk >= this._idle) return false;
+      await new Promise((r) => setTimeout(r, Math.min(this._backoff * Math.pow(2, fails), 5000)));
+      return !this._gone;
+    }
+
+    async _openPipe() {
+      let r, body = null;
+      try {
+        r = await this._fetch(this._base + "/api/pipe/open", {
+          method: "POST", credentials: "same-origin", cache: "no-store",
+          headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: this._path }) });
+        try { body = await r.json(); } catch (e) { body = null; }
+      } catch (e) {
+        this._end(1006, "the device manager is not reachable", false);
+        return;
+      }
+      if (r.status !== 200 || !body || typeof body.pipe !== "string") {
+        this._end(1006, String((body && body.error) || ("HTTP " + r.status)), false);
+        return;
+      }
+      this._id = body.pipe;
+      if (Number(body.max_up) >= 1024) this._maxUp = Number(body.max_up);
+      this._ok();
+      if (this._abandoned) {                     // closed while connecting: let the relay know
+        this._queueClose(1000, "");
+        this._end(1006, "closed before the connection was established", false);
+        return;
+      }
+      this.readyState = 1;
+      this._emit("open");
+      this._downLoop();
+      this._pump();
+    }
+
+    async _downLoop() {
+      let fails = 0;
+      while (!this._gone && this.readyState < 3) {
+        const ac = typeof AbortController === "function" ? new AbortController() : null;
+        this._down = ac;
+        let r, buf = null;
+        try {
+          r = await this._fetch(this._url("down?ack=" + this._ack), {
+            method: "GET", credentials: "same-origin", cache: "no-store", signal: ac ? ac.signal : undefined });
+          if (r.status === 200) buf = new Uint8Array(await r.arrayBuffer());
+        } catch (e) {
+          if (this._gone || this.readyState === 3) return;
+          if (await this._again(fails++)) continue;
+          this._end(1006, "the device manager stopped answering", false);
+          return;
+        } finally {
+          if (this._down === ac) this._down = null;
+        }
+        if (this._gone || this.readyState === 3) return;
+        if (r.status === 204) { this._ok(); fails = 0; continue; }
+        if (r.status === 410) { this._lost(); return; }
+        if (r.status !== 200) {
+          if (RETRY.has(r.status) && await this._again(fails++)) continue;
+          this._end(1006, "the device manager answered HTTP " + r.status, false);
+          return;
+        }
+        this._ok();
+        fails = 0;
+        let records;
+        try { records = pipeDecodeDown(buf); } catch (e) { this._fail(1002, e.message); return; }
+        for (const rec of records) {
+          if (rec.seq < this._ack) continue;                      // had it already (a repeated answer)
+          if (rec.seq !== this._ack) { this._fail(1002, "messages from the device manager are missing"); return; }
+          this._ack++;
+          if (rec.kind === P_CLOSE) {
+            const c = pipeParseClose(rec.payload);
+            this._gone = true;
+            this._finalAck();
+            this._end(c.code, c.reason, true);
+            return;
+          }
+          if (this.readyState === 3) return;
+          let data;
+          if (rec.kind === P_TEXT) {
+            try { data = strictDec.decode(rec.payload); } catch (e) { this._fail(1007, "a text message that is not UTF-8"); return; }
+          } else if (this.binaryType === "blob" && typeof root.Blob === "function") {
+            data = new root.Blob([rec.payload]);
+          } else {
+            data = rec.payload.slice().buffer;
+          }
+          this._emit("message", { data, origin: "" });
+        }
+      }
+    }
+
+    /** The close record arrived: acknowledge it, so the relay forgets the pipe now (it answers 410). */
+    _finalAck() {
+      if (!this._id) return;
+      const ac = typeof AbortController === "function" ? new AbortController() : null;
+      const t = setTimeout(() => { if (ac) ac.abort(); }, 5000);
+      Promise.resolve()
+        .then(() => this._fetch(this._url("down?ack=" + this._ack),
+                                { method: "GET", credentials: "same-origin", cache: "no-store", signal: ac ? ac.signal : undefined }))
+        .then((r) => r && r.body && r.body.cancel ? r.body.cancel() : null)
+        .catch(() => {})
+        .then(() => clearTimeout(t));
+    }
+
+    /** 410: the relay has dropped the pipe. After our close was confirmed that is the normal end. */
+    _lost() {
+      this._gone = true;
+      if (this._closing && this._closeConfirmed) this._end(this._closing.code, this._closing.reason, true);
+      else this._end(1006, "the device manager dropped the connection", false);
+    }
+
+    send(data) {
+      if (this.readyState === 0) throw domError("Failed to execute 'send' on 'WebSocket': Still in CONNECTING state.", "InvalidStateError");
+      let kind, bytes;
+      if (typeof data === "string") { kind = P_TEXT; bytes = enc.encode(data); }
+      else { kind = P_BINARY; bytes = u8(data).slice(); }      // a copy: the caller may reuse its buffer
+      if (this.readyState !== 1) return;                         // closing / closed: dropped, as WebSockets do
+      if (bytes.length + 5 > this._maxUp) { this._fail(1009, "a message is too large for the HTTP transport"); return; }
+      this._up.push({ kind, payload: bytes });
+      this.bufferedAmount += bytes.length;
+      this._pump();
+    }
+
+    close(code, reason) {
+      if (this.readyState >= 2) return;
+      if (this.readyState === 0) {                               // as a WebSocket: fail the connection
+        this.readyState = 2;
+        this._abandoned = true;
+        return;
+      }
+      this.readyState = 2;
+      this._closing = { code: code === undefined ? 1005 : code, reason: reason || "" };
+      this._queueClose(code === undefined ? 1000 : code, reason || "");
+    }
+
+    _queueClose(code, reason) {
+      if (this._closeQueued) return;
+      this._closeQueued = true;
+      this._up.push({ kind: P_CLOSE, payload: pipeClosePayload(code, reason) });
+      this._pump();
+    }
+
+    /** Up: one request at a time, as many queued records as fit, retried with the same seq. */
+    async _pump() {
+      if (this._upBusy || !this._id || this._gone) return;
+      this._upBusy = true;
+      let fails = 0, conflicts = 0;
+      try {
+        while (this._up.length && !this._gone) {
+          let n = 0, size = 0;
+          while (n < this._up.length && (n === 0 || size + 5 + this._up[n].payload.length <= this._maxUp)) {
+            size += 5 + this._up[n].payload.length;
+            n++;
+          }
+          const seq = this._upBase;
+          let r, body = null;
+          try {
+            r = await this._fetch(this._url("up?seq=" + seq), {
+              method: "POST", credentials: "same-origin", cache: "no-store",
+              headers: { "Content-Type": "application/octet-stream" }, body: pipeEncodeUp(this._up.slice(0, n)) });
+            try { body = await r.json(); } catch (e) { body = null; }
+          } catch (e) {
+            if (this._gone) return;
+            if (await this._again(fails++)) continue;
+            this._end(1006, "the device manager stopped answering", false);
+            return;
+          }
+          if (this._gone) return;
+          if (r.status === 410) { this._lost(); return; }
+          if (r.status === 200 || r.status === 409) {
+            const next = body && Number.isInteger(body.next) ? body.next : -1;
+            if (r.status === 409 && ++conflicts > 3) {           // a relay that keeps disagreeing
+              this._end(1006, "the device manager keeps refusing our messages", false);
+              return;
+            }
+            if (next < this._upBase) {
+              // 409: the relay has fewer records than it confirmed - resend from `next` if we
+              // still have them (the last confirmed batch is kept for that), else give up
+              const back = this._upBase - next;
+              if (r.status !== 409 || back > this._done.length) {
+                this._end(1006, "the device manager lost messages", false);
+                return;
+              }
+              const again = this._done.splice(this._done.length - back, back);
+              for (const rec of again) if (rec.kind !== P_CLOSE) this.bufferedAmount += rec.payload.length;
+              this._up = again.concat(this._up);
+              this._upBase = next;
+              this._ok();
+              continue;
+            }
+            if (next > this._upBase + n) {
+              this._end(1006, "the device manager confirmed messages it was not sent", false);
+              return;
+            }
+            this._ok();
+            fails = 0;
+            if (r.status === 200) conflicts = 0;
+            const confirmed = this._up.splice(0, next - this._upBase);
+            for (const rec of confirmed) {
+              if (rec.kind === P_CLOSE) this._closeConfirmed = true;
+              else this.bufferedAmount -= rec.payload.length;
+            }
+            if (confirmed.length) this._done = confirmed;
+            this._upBase = next;
+            if (this._closeConfirmed) this._afterClose();
+            continue;
+          }
+          if (RETRY.has(r.status) && await this._again(fails++)) continue;
+          this._end(1006, "the device manager answered HTTP " + r.status, false);
+          return;
+        }
+      } finally {
+        this._upBusy = false;
+      }
+    }
+
+    /** Our close reached the relay: its answering close comes down (the down loop ends us then);
+     *  if it does not come soon, we are done anyway. */
+    _afterClose() {
+      if (this.readyState === 3 || this._afterCloseTimer) return;
+      const c = this._closing || { code: 1006, reason: "" };
+      this._afterCloseTimer = setTimeout(() => { this._gone = true; this._end(c.code, c.reason, !!this._closing); }, this._closeWait);
+    }
+
+    /** A local failure while the pipe is open: tell the relay (close record with code), then close. */
+    _fail(code, why) {
+      if (this.readyState === 3) return;
+      if (this._id && !this._gone) this._queueClose(code, why);
+      this._end(1006, why, false);
+    }
+
+    /** CLOSED: the close event (with error first when not clean). Requests still running stop. */
+    _end(code, reason, clean) {
+      if (this.readyState === 3) return;
+      this.readyState = 3;
+      clearTimeout(this._afterCloseTimer);
+      if (this._down) { try { this._down.abort(); } catch (e) { /* done */ } this._down = null; }
+      if (!this._closeQueued || this._closeConfirmed) this._gone = true;     // else: the pump still delivers our close
+      if (!clean) this._emit("error");
+      this._emit("close", { code, reason: String(reason || ""), wasClean: !!clean });
+    }
+  }
+
+  // ---------------------------------------------------------------- choosing the transport
+  // "auto": a WebSocket first; when it fails before it opens, a pipe for the same route - and
+  // from then on pipes for this device manager (this worker / page, and this tab's session).
+  const learnedPipes = new Set();
+  const PIPES_KEY = "arstro-relay-pipes ";
+  const TRANSPORT_KEY = "arstro-relay-transport";
+
+  function session() {
+    try { return root.sessionStorage || null; } catch (e) { return null; }
+  }
+
+  function pipesLearned(url) {
+    let base;
+    try { base = pipeTarget(url).base; } catch (e) { return false; }
+    if (learnedPipes.has(base)) return true;
+    try { const s = session(); if (s && s.getItem(PIPES_KEY + base)) { learnedPipes.add(base); return true; } } catch (e) { /* no storage */ }
+    return false;
+  }
+
+  function learnPipes(url) {
+    let base;
+    try { base = pipeTarget(url).base; } catch (e) { return; }
+    learnedPipes.add(base);
+    try { const s = session(); if (s) s.setItem(PIPES_KEY + base, "1"); } catch (e) { /* no storage */ }
+  }
+
+  function forgetPipes() {
+    learnedPipes.clear();
+    try {
+      const s = session();
+      if (s) for (let i = s.length - 1; i >= 0; i--) { const k = s.key(i); if (k && k.startsWith(PIPES_KEY)) s.removeItem(k); }
+    } catch (e) { /* no storage */ }
+  }
+
+  function transportMode(opts) {
+    const t = (opts && opts.transport) || (root.ArstroE2E && root.ArstroE2E.transport) || "auto";
+    return t === "ws" || t === "http" ? t : "auto";
+  }
+
+  /** The transport forced for this tab (tests: sessionStorage arstro-relay-transport = ws | http). */
+  function initialTransport() {
+    try {
+      const s = session();
+      const v = s && s.getItem(TRANSPORT_KEY);
+      return v === "ws" || v === "http" ? v : "auto";
+    } catch (e) { return "auto"; }
+  }
+
   // ---------------------------------------------------------------- the channel
   /** An end-to-end channel to one device. Channel.open({url, key, WebSocket}) resolves once the
-   *  device's `ready` arrived; channel.info is that message. key: CryptoKey (HKDF) or raw bytes. */
+   *  device's `ready` arrived; channel.info is that message. key: CryptoKey (HKDF) or raw bytes.
+   *  Transport: opts.transport or ArstroE2E.transport ("auto" | "ws" | "http"); channel.transport
+   *  says which one it uses. Tests: opts.fetch / opts.pipe (PipeSocket options), opts.PipeSocket. */
   class Channel {
     constructor(opts) {
       this.opts = opts || {};
@@ -501,19 +967,69 @@
       return new Promise((resolve, reject) => {
         this._resolve = resolve;
         this._reject = reject;
-        const WS = this.opts.WebSocket || root.__arstroNativeWebSocket || root.WebSocket;
-        let ws;
-        try { ws = new WS(this.url); } catch (e) { reject(e); return; }
-        this.ws = ws;
-        ws.binaryType = "arraybuffer";
-        ws.onmessage = (e) => this._message(e.data);
-        // through the same chain as the messages: a refusal sent just before the close wins
-        ws.onclose = (e) => { this._in = this._in.then(() => this._socketClosed(e)); };
-        ws.onerror = () => {};
-        const t = setTimeout(() => this._fatal(new Refused("the device did not answer in time")),
-                             this.opts.timeout || HANDSHAKE_TIMEOUT);
-        this._timers.push(t);
+        try { this._connect(transportMode(this.opts)); } catch (e) { reject(e); return; }
+        this._handshakeTimer();
       });
+    }
+
+    _handshakeTimer() {
+      clearTimeout(this._hsTimer);
+      this._hsTimer = setTimeout(() => this._fatal(new Refused("the device did not answer in time")),
+                                 this.opts.timeout || HANDSHAKE_TIMEOUT);
+      this._timers.push(this._hsTimer);
+    }
+
+    /** mode "ws" | "http" | "auto" (a WebSocket that fails before it opens falls back to a pipe). */
+    _connect(mode) {
+      const http = mode === "http" || (mode === "auto" && pipesLearned(this.url));
+      let ws;
+      if (http) {
+        const PS = this.opts.PipeSocket || PipeSocket;
+        ws = new PS(this.url, Object.assign({}, this.opts.pipe, this.opts.fetch ? { fetch: this.opts.fetch } : {}));
+      } else {
+        const WS = this.opts.WebSocket || root.__arstroNativeWebSocket || root.WebSocket;
+        try {
+          ws = new WS(this.url);
+        } catch (e) {
+          if (mode !== "auto") throw e;
+          this._fellBack = true;
+          this._connect("http");
+          return;
+        }
+      }
+      this.ws = ws;
+      this.transport = http ? "http" : "ws";
+      ws.binaryType = "arraybuffer";
+      const fallback = mode === "auto" && !http;
+      let opened = false;
+      let timer = null;
+      const isOpen = () => {
+        if (opened) return;
+        opened = true;
+        clearTimeout(timer);
+        if (http && this._fellBack) learnPipes(this.url);     // the WebSocket failed, the pipe works
+      };
+      const toPipe = () => {
+        if (opened || this.closed || this.ws !== ws) return;
+        clearTimeout(timer);
+        ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
+        try { ws.close(); } catch (e) { /* failed already */ }
+        this._fellBack = true;
+        this._connect("http");
+        if (this._hsTimer) this._handshakeTimer();          // the pipe gets the whole handshake time
+      };
+      ws.onopen = isOpen;
+      ws.onmessage = (e) => { isOpen(); this._message(e.data); };
+      ws.onclose = (e) => {
+        if (fallback && !opened) { toPipe(); return; }
+        // through the same chain as the messages: a refusal sent just before the close wins
+        this._in = this._in.then(() => this._socketClosed(e));
+      };
+      ws.onerror = () => {};
+      if (fallback) {
+        timer = setTimeout(toPipe, this.opts.wsOpenTimeout || WS_OPEN_TIMEOUT);
+        this._timers.push(timer);
+      }
     }
 
     _message(data) {
@@ -670,11 +1186,16 @@
   root.ArstroE2E = {
     VERSION, LABEL, KEY_PREFIX, KEY_LEN, NONCE_LEN, CHUNK, WINDOW, MAX_MESSAGE,
     K_JSON, K_DATA, F_FIN, F_TEXT, HEADER,
+    PIPE_MAX_UP, PIPE_POLL, PIPE_IDLE, PIPE_BUFFER, P_TEXT, P_BINARY, P_CLOSE,
     ProtocolError, WrongKey, Refused,
     u8, concat, b64e, b64d, equalBytes, decodeJson, nonce,
     parseKey, isKey, keyId, importKey, keyFromText,
     deriveBits, derive, proof, Secure,
     viewerHello, viewerCheck, deviceAnswer, deviceCheck,
+    pipeEncodeUp, pipeDecodeUp, pipeEncodeDown, pipeDecodeDown, pipeClosePayload, pipeParseClose, pipeTarget,
+    PipeSocket, pipesLearned, learnPipes, forgetPipes,
+    /** "auto" (a WebSocket, a pipe when it cannot open) | "ws" | "http" - for every channel opened from now on. */
+    transport: initialTransport(),
     Stream, Channel,
   };
 })(typeof self !== "undefined" ? self : globalThis);

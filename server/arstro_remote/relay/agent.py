@@ -7,9 +7,10 @@
                                                             127.0.0.1:<port> (then [::1]:<port>)
 
 `Agent` keeps the control connection (reconnects with back-off 1 -> 60 s, +-20 % jitter) and
-dials a data connection for every `open`. `Channel` is one viewer: the end-to-end handshake as
-the DEVICE (e2e.py), then encrypted frames carrying streams (PROTOCOL.md 4.3 / 4.4): http,
-ws, tcp, ports.
+dials a data connection for every `open`. Both are WebSockets, or pipes (pipe.py: the same
+messages over plain HTTP) when the device manager's proxy does not pass WebSockets. `Channel`
+is one viewer: the end-to-end handshake as the DEVICE (e2e.py), then encrypted frames carrying
+streams (PROTOCOL.md 4.3 / 4.4): http, ws, tcp, ports.
 
 Threads, not asyncio, like the rest of the daemon. Per channel: a reader (never blocks: it only
 queues), a writer (the only thread that seals and sends, under the channel's send lock - so the
@@ -36,7 +37,7 @@ import threading
 import time
 import urllib.parse
 
-from . import e2e
+from . import e2e, pipe
 from ..web import ws as wsmod
 
 log = logging.getLogger("arstro.relay")
@@ -770,19 +771,21 @@ class Channel:
         self.close(reason)
 
     def _link(self, cfg):
-        conn = wsmod.connect(ws_base(cfg["url"]) + "/api/agent/data", timeout=CONTROL_TIMEOUT)
+        conn = pipe.connect(ws_base(cfg["url"]) + "/api/agent/data", timeout=CONTROL_TIMEOUT)
         with self._lock:
             if self.closed:
                 conn.close()
                 raise Closed()
             self.conn = conn
-        conn.sock.settimeout(CONTROL_TIMEOUT)
+        conn.settimeout(CONTROL_TIMEOUT)
         _send_json(conn, {"t": "data", "v": e2e.VERSION, "id": cfg["id"], "secret": cfg["secret"], "sid": self.sid})
         msg = _recv_json(conn)
         if msg.get("t") == "error":
             raise TunnelError("the device manager refused the data connection: %s" % msg.get("error"))
         if msg.get("t") != "linked":
             raise TunnelError("expected linked, got %s" % msg.get("t"))
+        if not isinstance(conn, wsmod.WSConnection):
+            return                             # a pipe notices a dead path itself (PIPE_IDLE)
         try:                                   # a silently dead path frees the channel in ~2 min
             conn.sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
             for opt, value in (("TCP_KEEPIDLE", 60), ("TCP_KEEPINTVL", 20), ("TCP_KEEPCNT", 3)):
@@ -795,7 +798,7 @@ class Channel:
         left = deadline - time.monotonic()
         if left <= 0:
             raise e2e.ProtocolError("the viewer did not finish the handshake in %d s" % HANDSHAKE_SEC)
-        self.conn.sock.settimeout(left)
+        self.conn.settimeout(left)
         try:
             op, data = self.conn.recv_message()
         except socket.timeout:
@@ -841,7 +844,7 @@ class Channel:
                 pass
             self.agent.wrong_key(self.addr, "wrong proof")
             raise
-        self.conn.sock.settimeout(None)
+        self.conn.settimeout(None)
 
     def _read_loop(self):
         while True:
@@ -949,6 +952,7 @@ class Agent:
         self.error = None
         self.since = time.time()
         self.relay_version = None
+        self.transport = None                  # "ws" | "http" while the control connection is up
         self.channels = {}
         self.wrong_total = 0
         self._wrong = collections.deque()
@@ -990,6 +994,8 @@ class Agent:
     # ---------------------------------------------------------------------- state
     def _set_state(self, state, error=None):
         with self._lock:
+            if state != "online":
+                self.transport = None
             if state == self.state and error == self.error:
                 return
             self.state, self.error, self.since = state, error, time.time()
@@ -1120,14 +1126,14 @@ class Agent:
 
     def _session(self, cfg, gen, online):
         url = ws_base(cfg["url"])
-        conn = wsmod.connect(url + "/api/agent", timeout=CONTROL_TIMEOUT)
+        conn = pipe.connect(url + "/api/agent", timeout=CONTROL_TIMEOUT)
         with self._lock:
             if gen != self._gen or self._stop.is_set():
                 conn.close()
                 return
             self._conn = conn
         try:
-            conn.sock.settimeout(CONTROL_TIMEOUT)
+            conn.settimeout(CONTROL_TIMEOUT)
             _send_json(conn, {"t": "hello", "v": e2e.VERSION, "id": cfg["id"], "name": cfg["name"],
                               "secret": cfg["secret"], "token": cfg["token"], "version": cfg.get("version"),
                               "hostname": cfg.get("hostname"), "platform": cfg.get("platform"),
@@ -1143,11 +1149,12 @@ class Agent:
                 heartbeat = float(HEARTBEAT)
             self.relay_version = str(msg.get("relay")) if msg.get("relay") is not None else None
             online[0] = True
-            log.info("tunnel up: %s as %s (%s), device manager %s", cfg["url"], cfg["id"], cfg["name"],
-                     self.relay_version or "?")
+            self.transport = pipe.kind(conn)
+            log.info("tunnel up: %s as %s (%s), device manager %s%s", cfg["url"], cfg["id"], cfg["name"],
+                     self.relay_version or "?", " over HTTP" if self.transport == "http" else "")
             self._set_state("online", None)
             threading.Thread(target=self._pinger, args=(conn, heartbeat), name="relay-ping", daemon=True).start()
-            conn.sock.settimeout(3 * heartbeat)
+            conn.settimeout(3 * heartbeat)
             while True:
                 try:
                     msg = _recv_json(conn)
@@ -1170,6 +1177,7 @@ class Agent:
             with self._lock:
                 if self._conn is conn:
                     self._conn = None
+            self.transport = None
             conn.close()
             if online[0]:
                 log.info("tunnel down: %s", cfg["url"])

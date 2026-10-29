@@ -36,7 +36,7 @@ def protocol_md_names_every_message():
         check(re.search(r"`%s`\s*\|\s*%s" % (name, re.escape(value)), doc),
               "PROTOCOL.md constants table: %s should be %s" % (name, value))
     check(e2e.CHUNK == 64 * 1024 and e2e.WINDOW == 512 * 1024 and e2e.MAX_MESSAGE == 1 << 20,
-          "e2e.py constants changed: update PROTOCOL.md section 6 and this test")
+          "e2e.py constants changed: update PROTOCOL.md section 7 and this test")
 
 
 @test("RLY-03")

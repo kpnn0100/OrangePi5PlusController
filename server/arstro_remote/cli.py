@@ -1306,8 +1306,9 @@ def cmd_apps(ctl, a):
 
 
 def _relay_human(r):
-    state = r["state"] + (" - %s" % r["error"] if r.get("error") else "")
-    print("Internet access : %s (%s)" % ("on" if r["enabled"] else "off", state))
+    state = r["state"] + (" (HTTP)" if r.get("transport") == "http" else "")   # the proxy does not pass WebSockets
+    state += " - %s" % r["error"] if r.get("error") else ""
+    print("Internet access : %s, %s" % ("on" if r["enabled"] else "off", state))
     print("Device manager  : %s%s" % (r.get("url") or "-", "" if r.get("token_set") else "  (no join token set)"))
     print("This device     : %s  \"%s\"" % (r["id"], r["name"]))
     print("Access key id   : %s   (the key: relay key)" % r["key_id"])

@@ -41,7 +41,7 @@ that same URL (`https:` → `wss:`, `http:` → `ws:` for the sockets).
 | `GET B/api/agent` | join token | WebSocket: a device's control connection (section 2) |
 | `GET B/api/agent/data` | device secret | WebSocket: a device's data connection (section 2) |
 | `GET B/api/health` | - | `{"ok": true}` (container health check) |
-| `GET B/client/<file>` | - | the standalone Python client for agents: `arstro_relay_client.py`, `e2e.py`, `ws.py` |
+| `GET B/client/<file>` | - | the standalone Python client for agents: `arstro_relay_client.py`, `e2e.py`, `ws.py`, `pipe.py` |
 
 **Viewer auth:** only when `RELAY_PASSWORD` is set - the `arstro_devices` cookie (an HMAC of
 the password with a key in the data volume) or `Authorization: Bearer <password>`. Without
@@ -63,8 +63,8 @@ seconds.
 **Headers on every relay response:** `X-Content-Type-Options: nosniff`, `Referrer-Policy:
 no-referrer`; pages: `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src
 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; frame-ancestors 'none';
-base-uri 'none'; object-src 'none'`. Client address: the socket peer, or the first
-`X-Forwarded-For` entry when `RELAY_TRUST_PROXY=1` (set it only behind your own reverse proxy).
+base-uri 'none'; object-src 'none'`. Client address: the socket peer, or the last
+`X-Forwarded-For` entry (the one the proxy added) when `RELAY_TRUST_PROXY=1` (set it only behind your own reverse proxy).
 
 ## 2. Device ↔ device manager
 
@@ -216,20 +216,106 @@ needed by other viewers, but every browser behaviour that matters for apps is li
   `<script src="B/shim.js"></script>` right after `<head>`. No key for the device: a
   navigation goes to the network (the boot page asks for the key), other requests get 401.
 * **Shim** (`B/shim.js`, runs first in every proxied page): replaces `window.WebSocket` for
-  same-origin URLs with a class that opens its own channel and a `ws` stream (same API:
-  `readyState`, `binaryType`, `bufferedAmount`, `protocol`, `send`, `close`, `on*` and
-  `addEventListener`), and rewrites same-origin absolute links, iframes, forms and
-  `window.open` (and `history.pushState`, and in Chrome `location.href = "/x"`) outside `B/`
-  into `B/d/<id>/<port>/...`. It loads `B/static/e2e.js` and `B/static/viewer.js` itself on the
-  first WebSocket. Closing a shimmed WebSocket fires `close` right after the `close` frame is
-  sent. Device pages cannot register their own service worker (it would take `B/d/` away).
+  same-origin URLs with a class of the same API (`readyState`, `binaryType`, `bufferedAmount`,
+  `protocol`, `send`, `close`, `on*` and `addEventListener`) whose sockets are `ws` streams of
+  the **service worker's one channel per device**: each socket posts `{t: "ws", sock, id, port,
+  path, protocols}` with a `MessagePort` to the controlling worker, which opens the stream and
+  relays over the port (worker → page: `open`, `msg`, `sent`, `closesent`, `close`, `fail`; page
+  → worker: `send`, `ack` every 64 KiB, `close`, `drop`; the worker pulls the next message only
+  while < 512 KiB posted are unacknowledged). Every 10 s (and on traffic) the page posts
+  `{t: "alive", socks}`, which keeps the worker running; sockets the worker does not know fail
+  with 1006 so the app reconnects; sockets of pages gone or silent for 45 s are closed. It also
+  rewrites same-origin absolute links, iframes, forms and `window.open` (and
+  `history.pushState`, and in Chrome `location.href = "/x"`) outside `B/` into
+  `B/d/<id>/<port>/...`. Closing a shimmed WebSocket fires `close` right after the `close`
+  frame is sent. Device pages cannot register their own service worker (it would take `B/d/`
+  away).
+* **Downloads:** a browser download (`<a download>` clicked, or such an anchor clicked from
+  script without being in the page) never reaches the service worker - the browser would save
+  the device manager's boot page. The shim takes the click over: it `fetch`es the URL (through
+  the worker and the channel), hands the bytes to the browser's blob store every 16 MiB (large
+  blobs live on disk), shows the progress on the page, then saves the blob as a normal download
+  under the `Content-Disposition` name (else the `download` attribute, else the URL's last
+  part). A failed download is shown on the page. Very large files are better fetched with the
+  client's `forward`.
+* **Transport:** `ArstroE2E.transport` starts from sessionStorage `arstro-relay-transport`; a
+  device manager that needed pipes is remembered in sessionStorage `arstro-relay-pipes <B>`
+  (only after a pipe opened); in `auto` a WebSocket that has not opened after 10 s counts as
+  failed. Tests register the worker as `sw.js?transport=ws|http`; it also answers
+  `{t: "status"}` (its channels) for diagnostics.
 * **Forget** deletes the device's stored key and its cookie jar.
 * **Limits of the browser viewer:** every device page shares the device manager's origin, so a
   page of one device could use the keys this browser holds for other devices (it cannot read
   them: they are non-extractable). Apps that need their own service worker or real cookies
   readable by JavaScript do not work through the browser viewer - use the client (port forward).
 
-## 6. Constants
+## 6. HTTP transport (when WebSockets cannot pass)
+
+Some reverse proxies do not pass WebSockets (an nginx without the `Upgrade` lines answers the
+relay's WebSocket routes with the relay's own `426 Upgrade Required`). Every WebSocket of
+sections 2 and 3 - `B/api/agent`, `B/api/agent/data`, `B/api/connect/<id>` - can instead be a
+**pipe**: the same messages (text and binary, in order, with a close code), carried by plain
+HTTP requests. Nothing above the transport changes: the relay runs the same handlers, the
+end-to-end channel of section 4 is the same, the relay still sees only ciphertext.
+
+**Choosing:** a client tries the WebSocket first; if it fails before it opens (any handshake
+answer but 101, or the connection breaks), it opens a pipe for the same route instead and keeps
+using pipes for that device manager while it runs. `ARSTRO_RELAY_TRANSPORT=ws|http|auto`
+(Python) and `ArstroE2E.transport = "ws"|"http"|"auto"` (browser) force one (tests).
+
+**Open** - `POST B/api/pipe/open`, JSON body `{"path": "/api/agent" | "/api/agent/data" |
+"/api/connect/<id>"}`, with the same auth, Origin and rate-limit checks the WebSocket route
+makes before its upgrade (same 401 / 403 / 404 / 429 answers). → `200 {"pipe": "<id>", "max_up":
+262144, "poll": 25}`. The id (128 random bits, base64url) is the pipe's only credential: never
+logged in full. The relay then runs that route's handler with the pipe; its first messages
+(e.g. `relay` / `welcome` / `linked`) wait in the pipe for the first down request.
+
+**Down** - `GET B/api/pipe/<id>/down?ack=<n>` - `n` = how many down messages the client has
+received so far. The relay forgets messages with a lower sequence number, then answers at once
+with every queued message from `n` on (at most 1 MiB, at least one whole message), or waits up
+to `PIPE_POLL` (25 s) for one, else `204`. Body: records
+`kind u8 | seq u32 BE | length u32 BE | payload`, kind 1 = text (UTF-8), 2 = binary, 8 = close
+(payload: code u16 BE + UTF-8 reason). Headers `Content-Type: application/octet-stream`,
+`Cache-Control: no-store`, `X-Accel-Buffering: no`, `Content-Length`. `410 {"error"}` when the
+pipe no longer exists (closed and its close delivered, or dropped). A newer down request ends
+an older one still waiting (`204`). The client re-polls right after every answer, so a down
+request is (nearly) always waiting - that is how the relay knows the client is alive.
+
+**Up** - `POST B/api/pipe/<id>/up?seq=<n>`, `Content-Type: application/octet-stream`, body =
+records `kind u8 | length u32 BE | payload` (kinds 1, 2, 8), at most `PIPE_MAX_UP` (256 KiB;
+a single message must fit). `n` = the index of the first record among all up messages of the
+pipe (0-based). The relay applies records it has not applied yet, in order (a retried request
+is harmless) → `200 {"next": <count applied>}`; a gap (`n` > count - only if the relay lost records it
+had confirmed; a client keeps its last confirmed batch for this) → `409 {"next": count}`
+(resend from there); `410` when the pipe is gone; `413` / `400` for a body too large / broken.
+The client sends one up request at a time, batching what is queued. The relay holds the answer
+while more than `PIPE_BUFFER` (2 MiB) of up messages wait to be forwarded (backpressure).
+
+**Close** - a close record (kind 8) up, or down from the relay; after it the pipe accepts
+nothing more. A pipe with no request (down or up) for `PIPE_IDLE` (60 s) is dropped like a
+broken connection (code 1006). The relay stops reading the other side while more than
+`PIPE_BUFFER` of down messages wait unacknowledged.
+
+**Details clients follow:** a single up message must fit one up request (≤ `PIPE_MAX_UP` minus
+the 5-byte record head - the channel's frames are ≤ `CHUNK` + 64, so pipes are not a general
+1 MiB-message WebSocket upward); `poll` in the open answer may be a decimal number. Closing works
+like a WebSocket close: the side that closes sends a close record, the other answers with one;
+the client acknowledges the relay's close record with its next down request (`ack` past it),
+after which down and up answer `410`. Up requests after the relay's close answer `200` and are
+dropped until the close is acknowledged. A pipe whose close was handed out is removed once
+acknowledged, 10 s later, or after `PIPE_IDLE`. A pipe whose client vanished without closing
+(a closed tab, a stopped worker) holds its channel slot until `PIPE_IDLE`.
+
+**Proxies:** plain `proxy_pass` is enough - no `Upgrade` headers, default buffering and
+`proxy_read_timeout 60s` work (answers end within 25 s), and up requests stay under nginx's
+default `client_max_body_size 1m`. Browsers use at most one pipe per device (the shim's
+WebSockets go through the service worker's channel), which keeps HTTP/1.1's six connections
+per host enough. WebSockets stay faster (no request per batch); use them when the proxy allows.
+The proxy must pass the browser's `Host` (nginx: `proxy_set_header Host $host;`), or set
+`X-Forwarded-Host` with `RELAY_TRUST_PROXY=1`: otherwise the Origin check refuses logins and
+viewers with 403.
+
+## 7. Constants
 
 | Name | Value | Where |
 |---|---|---|
@@ -241,3 +327,7 @@ needed by other viewers, but every browser behaviour that matters for apps is li
 | channels per device | 32 at the relay, 16 at the device | |
 | streams per channel | 128 | device |
 | pending viewer | 10 s | relay waits for the data connection |
+| `PIPE_MAX_UP` | 256 KiB | largest up request of the HTTP transport |
+| `PIPE_POLL` | 25 s | longest wait of a down request |
+| `PIPE_IDLE` | 60 s | a pipe without requests is dropped |
+| `PIPE_BUFFER` | 2 MiB | queued bytes per direction before the sender waits |

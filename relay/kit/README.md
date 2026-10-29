@@ -46,7 +46,7 @@ In `.env` set `PROXY=own`, `DOMAIN=` the name your nginx serves, and `RELAY_LIST
 on another server). `./run.sh` then starts only the device manager - no Caddy. In nginx:
 
 ```nginx
-# http { } block, once
+# http { } block, once (only for the optional WebSocket lines below)
 map $http_upgrade $connection_upgrade { default upgrade; '' close; }
 
 server {
@@ -55,23 +55,28 @@ server {
     location / {
         proxy_pass http://127.0.0.1:8090;      # RELAY_LISTEN as nginx reaches it, no path after it
         proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;              # WebSockets: required
-        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Upgrade $http_upgrade;              # optional, faster: WebSockets
+        proxy_set_header Connection $connection_upgrade;     # (optional, with the line above)
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 1h;                 # connections stay open for long
+        proxy_read_timeout 1h;                 # optional: WebSockets stay open for long
         proxy_send_timeout 1h;
-        proxy_buffering off;
+        proxy_buffering off;                   # optional
     }
 }
 ```
 
 `proxy_pass` from nginx in Docker on this server: the Docker host's address, i.e. the `docker0`
 address (`ip -4 addr show docker0`) with port 8090;
-from another server: this server's private address. Everything - pages, terminals, screens,
-file uploads and downloads of any size - travels inside the WebSockets, so nginx's
-`client_max_body_size` does not matter. The device list is at `https://<DOMAIN>/arstro/internal/devices/`.
+from another server: this server's private address. The `Upgrade` / `Connection` lines are
+optional: without them (or with an nginx you cannot change) machines and browsers switch by
+themselves to HTTP requests ("pipes") that carry the same encrypted messages - a plain
+`proxy_pass` with nginx's defaults is enough (`proxy_read_timeout 60s`, response buffering,
+`client_max_body_size 1m`: no request is larger than 256 KiB). WebSockets are faster, so keep the
+lines when you can. Keep `Host` (browsers get 403 without it). Everything - pages, terminals,
+screens, file uploads and downloads of any size - travels inside these connections, so nginx's
+`client_max_body_size` does not limit file sizes. The device list is at `https://<DOMAIN>/arstro/internal/devices/`.
 
 ## Updating
 

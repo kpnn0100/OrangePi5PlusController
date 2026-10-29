@@ -259,6 +259,7 @@ the machine's access key. Design and security: `docs/relay/RELAY.md`; protocol:
 | RLY-23 | **Viewer password.** An optional password (`RELAY_PASSWORD`) protects the list and the connections. |
 | RLY-24 | **Hardening.** Message size, channels per device and new connections per address are limited; strict security headers; forwarded content is never read or logged. |
 | RLY-25 | **Admin.** A CLI inside the container lists devices, forgets one and shows or replaces the join token; a running server picks changes up within 5 s. |
+| RLY-27 | **Through any web proxy.** When WebSockets cannot pass (e.g. an nginx without `Upgrade` headers), devices, the client and the browser viewer fall back by themselves to an HTTP transport (long polling: a waiting GET down, small POST batches up, sequence numbers for order and retries) that carries exactly the same messages; plain `proxy_pass` is enough. |
 | RLY-26 | **For agents.** A documented API (`docs/relay/AGENT_API.md`) and a standalone Python client, downloadable from the device manager, list devices, check a key, list ports, make HTTP requests and forward a device port to a local one. |
 
 ## UX – Look and feel

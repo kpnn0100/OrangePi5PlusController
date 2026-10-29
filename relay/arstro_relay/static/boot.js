@@ -11,6 +11,8 @@
   const dev = V.parseDevicePath(location.pathname, B);
   const $ = (id) => document.getElementById(id);
   const RELOADS = "arstro-boot-reloads";
+  // a transport forced for this tab (ArstroE2E.transport from sessionStorage, tests) is the worker's too
+  const SW_URL = B + "/sw.js" + (E.transport && E.transport !== "auto" ? "?transport=" + encodeURIComponent(E.transport) : "");
 
   function status(text) {
     $("status").hidden = !text;
@@ -101,7 +103,7 @@
     }
     status("Starting the viewer…");
     try {
-      await navigator.serviceWorker.register(B + "/sw.js", { scope: B + "/" });
+      await navigator.serviceWorker.register(SW_URL, { scope: B + "/" });
       await navigator.serviceWorker.ready;
     } catch (e) {
       error("The viewer could not start its service worker: " + e.message);

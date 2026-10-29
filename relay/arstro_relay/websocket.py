@@ -16,7 +16,7 @@ from http import HTTPStatus
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 OP_CONT, OP_TEXT, OP_BINARY, OP_CLOSE, OP_PING, OP_PONG = 0x0, 0x1, 0x2, 0x8, 0x9, 0xA
 MAX_HEAD = 64 * 1024          # request line + headers
-MAX_BODY = 16 * 1024          # request bodies (only the login has one)
+MAX_BODY = 16 * 1024          # request bodies (login, pipe open; pipe up requests get their own limit)
 LINGER = 2                    # seconds to wait for the peer's close frame
 _tasks = set()                # background close handshakes (kept referenced until done)
 
@@ -39,6 +39,7 @@ class Request:
         self.body = b""
         self.addr = None      # client address (set by the server)
         self.https = False
+        self.pipe = None      # B/api/pipe/open: the route's handler gets a pipe instead of a WebSocket
 
     def header(self, name, default=""):
         return self.headers.get(name, default)
@@ -49,8 +50,9 @@ class Request:
         return self.version == "HTTP/1.1" and "close" not in conn
 
 
-async def read_request(reader, timeout):
-    """The next request on a connection, or None when the client closed it or went idle."""
+async def read_request(reader, timeout, body_limit=None):
+    """The next request on a connection, or None when the client closed it or went idle.
+    body_limit(req) -> the largest body for that request (default MAX_BODY)."""
     try:
         head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout)
     except (asyncio.IncompleteReadError, asyncio.TimeoutError, ConnectionError):
@@ -77,7 +79,7 @@ async def read_request(reader, timeout):
         n = int(headers.get("content-length", "0"))
     except ValueError:
         raise BadRequest(400, "bad Content-Length")
-    if n < 0 or n > MAX_BODY:
+    if n < 0 or n > (body_limit(req) if body_limit else MAX_BODY):
         raise BadRequest(413, "the request body is too large")
     if n:
         try:
@@ -91,13 +93,13 @@ async def respond(writer, status, headers=(), body=b"", head=False, close=False)
     """Write one HTTP response (the common security headers are always added)."""
     lines = ["HTTP/1.1 %d %s" % (status, HTTPStatus(status).phrase)]
     hs = COMMON_HEADERS + list(headers)
-    if status != 304:
+    if status not in (204, 304):
         hs.append(("Content-Length", str(len(body))))
     if close:
         hs.append(("Connection", "close"))
     lines += ["%s: %s" % kv for kv in hs]
     writer.write(("\r\n".join(lines) + "\r\n\r\n").encode("latin-1"))
-    if body and not head and status != 304:
+    if body and not head and status not in (204, 304):
         writer.write(body)
     await writer.drain()
 
@@ -164,6 +166,8 @@ def sendable(code):
 
 class WebSocket:
     """One server-side WebSocket. One task reads (recv), any task may send."""
+
+    transport = "ws"
 
     def __init__(self, reader, writer, max_message):
         self.r, self.w = reader, writer

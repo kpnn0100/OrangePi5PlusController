@@ -20,8 +20,9 @@ RUN useradd --system --uid 10001 --user-group --home-dir /app --shell /usr/sbin/
 
 WORKDIR /app
 COPY relay/arstro_relay /app/arstro_relay
-# Served at B/client/: arstro_relay_client.py (= client.py), e2e.py, ws.py
+# Served at B/client/: arstro_relay_client.py (= client.py), e2e.py, ws.py, pipe.py
 COPY server/arstro_remote/relay/client.py server/arstro_remote/relay/e2e.py server/arstro_remote/web/ws.py \
+     server/arstro_remote/relay/pipe.py \
      /app/arstro_relay/client/
 RUN chmod -R a+rX,go-w /app
 

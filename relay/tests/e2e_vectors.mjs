@@ -11,6 +11,9 @@
 //    checked first), refusals, ordering, flow control (WINDOW), ws fragments, ping (RLY-03)
 //  - the service worker's routing (PROTOCOL.md section 5), Location rewriting, the cookie jar,
 //    the HTML shim injection, header mapping, and the shim's URL rewriting (RLY-22)
+//  - the HTTP transport (PROTOCOL.md section 6): the pipe record codec, PipeSocket against a fake
+//    relay's fetch (order, 204, retries, 409, 410, close both ways) and the Channel falling back
+//    to a pipe when its WebSocket cannot open (RLY-27)
 
 import fs from "node:fs";
 import path from "node:path";
@@ -295,6 +298,7 @@ function makeWorld(opts = {}) {
     }
   }
   world.WebSocket = FakeWS;
+  world.device = device;
   return world;
 }
 
@@ -419,6 +423,384 @@ test("channel_ping_pong_and_bad_frame_ends_it", ["RLY-03"], async () => {
   w.sockets[0].deliver(new Uint8Array(40));          // not a frame of this channel
   await throwsLike(() => p, /did not decrypt/, "pending stream fails");
   check(ch.closed && closedWith && /did not decrypt/.test(closedWith.message), "channel closed on a bad frame");
+});
+
+// ------------------------------------------------------------------ HTTP transport (RLY-27)
+// A fake relay behind fetch(): POST B/api/pipe/open, GET .../down?ack=n, POST .../up?seq=n, as
+// PROTOCOL.md section 6 (and relay/arstro_relay/pipe.py). R.fault(method, url, init) may return
+// "network" (the request never arrives), "lost" (it is handled, the answer is lost) or a Response.
+function makePipeRelay(opts = {}) {
+  const R = { pipes: new Map(), log: [], upSizes: [], maxUp: opts.maxUp || E.PIPE_MAX_UP, poll: opts.poll || 40,
+              fault: null, onOpen: opts.onOpen || null, onUp: opts.onUp || null, refuse: null };
+  const json = (status, obj) => new Response(JSON.stringify(obj), { status, headers: { "content-type": "application/json" } });
+  let n = 0;
+  function push(pipe, kind, payload) {
+    if (pipe.closeSeq !== null) return;
+    if (kind === E.P_CLOSE) pipe.closeSeq = pipe.seq;
+    pipe.down.push({ kind, seq: pipe.seq++, payload: E.u8(payload) });
+    if (pipe.poller && pipe.poller.wake) pipe.poller.wake();
+  }
+  async function handle(method, u, init) {
+    if (u.pathname.endsWith("/api/pipe/open")) {
+      if (R.refuse) return json(R.refuse[0], { error: R.refuse[1] });
+      const pipe = { id: "pipe" + (++n) + "-x", path: JSON.parse(init.body).path, down: [], seq: 0, closeSeq: null,
+                     upCount: 0, ups: [], closedBy: null, gone: false, poller: null };
+      pipe.push = (kind, payload) => push(pipe, kind, payload);
+      R.pipes.set(pipe.id, pipe);
+      if (R.onOpen) R.onOpen(pipe);
+      return json(200, { pipe: pipe.id, max_up: R.maxUp, poll: 25 });
+    }
+    const m = /\/api\/pipe\/([^/]+)\/(down|up)$/.exec(u.pathname);
+    const pipe = m && R.pipes.get(decodeURIComponent(m[1]));
+    if (!pipe || pipe.gone) return json(410, { error: "this pipe is closed" });
+    if (m[2] === "down") {
+      const ack = Number(u.searchParams.get("ack"));
+      if (ack > pipe.seq) return json(400, { error: "bad ack" });
+      while (pipe.down.length && pipe.down[0].seq < ack) pipe.down.shift();
+      if (pipe.closeSeq !== null && ack > pipe.closeSeq) { pipe.gone = true; return json(410, { error: "this pipe is closed" }); }
+      if (pipe.poller) pipe.poller.supersede();
+      const me = {};
+      pipe.poller = me;
+      if (!pipe.down.length) {
+        await new Promise((resolve) => {
+          const t = setTimeout(resolve, R.poll);
+          me.wake = () => { clearTimeout(t); setTimeout(resolve, 0); };       // messages queued right now go along
+          me.supersede = () => { me.superseded = true; clearTimeout(t); resolve(); };
+          if (init.signal) init.signal.addEventListener("abort", () => { me.aborted = true; clearTimeout(t); resolve(); });
+        });
+      }
+      if (pipe.poller === me) pipe.poller = null;
+      if (me.aborted) throw new DOMException("The operation was aborted.", "AbortError");
+      if (pipe.gone) return json(410, { error: "this pipe is closed" });
+      if (me.superseded || !pipe.down.length) return new Response(null, { status: 204 });
+      R.downAnswers = (R.downAnswers || 0) + 1;
+      return new Response(E.pipeEncodeDown(pipe.down), { status: 200, headers: { "content-type": "application/octet-stream" } });
+    }
+    const body = E.u8(init.body);
+    R.upSizes.push(body.length);
+    if (body.length > R.maxUp) return json(413, { error: "too large" });
+    const seq = Number(u.searchParams.get("seq"));
+    if (seq > pipe.upCount) return json(409, { next: pipe.upCount });
+    E.pipeDecodeUp(body).forEach((rec, i) => {
+      if (seq + i < pipe.upCount) return;                  // applied before (a retried request)
+      pipe.upCount++;
+      if (pipe.closedBy) return;
+      pipe.ups.push(rec);
+      if (rec.kind === E.P_CLOSE) {
+        pipe.closedBy = E.pipeParseClose(rec.payload);
+        push(pipe, E.P_CLOSE, E.pipeClosePayload(pipe.closedBy.code === 1005 ? 1000 : pipe.closedBy.code, ""));   // the answering close
+      } else if (R.onUp) R.onUp(pipe, rec);
+    });
+    return json(200, { next: pipe.upCount });
+  }
+  R.fetch = async (url, init = {}) => {
+    const u = new URL(url);
+    const method = init.method || "GET";
+    R.log.push(method + " " + u.pathname.replace(/^.*\/api\/pipe\//, "") + u.search);
+    const f = R.fault ? R.fault(method, u, init) : null;
+    if (f === "network") { await sleep(1); throw new TypeError("fetch failed"); }
+    if (f && f !== "lost") return f;
+    const r = await handle(method, u, init);
+    if (f === "lost") throw new TypeError("fetch failed (the answer was lost)");
+    return r;
+  };
+  return R;
+}
+
+/** An echo pipe: every up message comes back down. */
+function echoRelay(opts = {}) {
+  return makePipeRelay(Object.assign({ onUp: (pipe, rec) => pipe.push(rec.kind, rec.payload) }, opts));
+}
+
+/** -> {ws, events, opened, closed (Promise of the close event)} */
+function pipeSocket(R, extra = {}) {
+  const ws = new E.PipeSocket("ws://relay.test/b/api/connect/dev-1", Object.assign({ fetch: R.fetch, backoff: 5 }, extra));
+  const events = [];
+  const out = { ws, events, messages: [] };
+  out.opened = new Promise((resolve) => { ws.onopen = () => { events.push("open"); resolve(); }; });
+  out.closed = new Promise((resolve) => { ws.addEventListener("close", (e) => { events.push("close"); resolve(e); }); });
+  ws.onerror = () => events.push("error");
+  ws.onmessage = (e) => out.messages.push(e.data);
+  return out;
+}
+
+test("pipe_constants_and_record_codec", ["RLY-27"], async () => {
+  const py = fs.readFileSync(path.join(ROOT, "server", "arstro_remote", "relay", "e2e.py"), "utf8");
+  for (const [name, value] of [["PIPE_MAX_UP", 262144], ["PIPE_POLL", 25], ["PIPE_IDLE", 60], ["PIPE_BUFFER", 2097152]]) {
+    eq(E[name], value, name);
+    const m = new RegExp("^" + name + "\\s*=\\s*([^#\\n]+)", "m").exec(py);
+    check(m, name + " missing in e2e.py");
+    // e.g. "256 * 1024", "2 << 20": evaluate the small arithmetic without eval
+    const expr = m[1].trim();
+    const v = /^(\d+)\s*\*\s*(\d+)$/.test(expr) ? expr.split("*").reduce((a, b) => a * Number(b), 1)
+      : /^(\d+)\s*<<\s*(\d+)$/.test(expr) ? Number(expr.split("<<")[0]) * 2 ** Number(expr.split("<<")[1]) : Number(expr);
+    eq(v, value, name + " in e2e.py");
+  }
+  // up: kind u8 | length u32 BE | payload
+  const up = E.pipeEncodeUp([{ kind: 1, payload: enc.encode("hé") }, { kind: 2, payload: new Uint8Array([0, 255]) },
+                             { kind: 8, payload: E.pipeClosePayload(1000, "bye") }]);
+  eq(hex(up), "01" + "00000003" + "68c3a9" + "02" + "00000002" + "00ff" + "08" + "00000005" + "03e8" + "627965", "up bytes");
+  eq(E.pipeDecodeUp(up).map((r) => [r.kind, hex(r.payload)]), [[1, "68c3a9"], [2, "00ff"], [8, "03e8627965"]], "up decoded");
+  // down: kind u8 | seq u32 BE | length u32 BE | payload
+  const down = E.pipeEncodeDown([{ kind: 2, seq: 7, payload: new Uint8Array([9]) }, { kind: 1, seq: 0x01020304, payload: new Uint8Array(0) }]);
+  eq(hex(down), "02" + "00000007" + "00000001" + "09" + "01" + "01020304" + "00000000", "down bytes");
+  eq(E.pipeDecodeDown(down).map((r) => [r.kind, r.seq, r.payload.length]), [[2, 7, 1], [1, 0x01020304, 0]], "down decoded");
+  eq(E.pipeDecodeDown(new Uint8Array(0)), [], "empty body");
+  await throwsLike(() => E.pipeDecodeDown(down.subarray(0, 12)), /cut off/, "cut record");
+  await throwsLike(() => E.pipeDecodeDown(down.subarray(0, 5)), /header is cut off/, "cut header");
+  await throwsLike(() => E.pipeDecodeUp(Uint8Array.from([3, 0, 0, 0, 0])), /unknown pipe record kind 3/, "bad kind");
+  // close payloads: code u16 BE + UTF-8 reason (<= 123 bytes, never a cut character)
+  eq(E.pipeParseClose(E.pipeClosePayload(4001, "done")), { code: 4001, reason: "done" }, "close round trip");
+  eq(E.pipeParseClose(new Uint8Array(0)), { code: 1005, reason: "" }, "empty close = no code");
+  const long = E.pipeClosePayload(1000, "é".repeat(100));
+  check(long.length - 2 <= 123 && E.pipeParseClose(long).reason === "é".repeat(61), "close reason cut at a character");
+  // the pipe of a WebSocket route
+  eq(E.pipeTarget("wss://relay.example.com/arstro/internal/devices/api/connect/bench-1"),
+     { base: "https://relay.example.com/arstro/internal/devices", path: "/api/connect/bench-1" }, "viewer route");
+  eq(E.pipeTarget("ws://localhost:8090/x/api/agent/data"), { base: "http://localhost:8090/x", path: "/api/agent/data" }, "data route");
+  eq(E.pipeTarget("ws://h/api/connect/api"), { base: "http://h", path: "/api/connect/api" }, "empty base");
+  await throwsLike(() => E.pipeTarget("ws://h/b/api/devices"), /not a device manager connection URL/, "other route");
+});
+
+test("pipe_socket_order_204_and_close_both_ways", ["RLY-27"], async () => {
+  const R = echoRelay({ poll: 20 });
+  const p = pipeSocket(R);
+  check(p.ws.readyState === 0, "CONNECTING first");
+  await throwsLike(() => p.ws.send("x"), /CONNECTING/, "send while connecting");
+  await p.opened;
+  check(p.ws.readyState === 1, "OPEN");
+  p.ws.binaryType = "arraybuffer";
+  await sleep(60);                                          // nothing to say: down answers 204, re-polled at once
+  const polls = R.log.filter((l) => l.includes("/down?ack=0")).length;
+  check(polls >= 2, "the down request is re-polled after 204: " + polls);
+  const sent = [];
+  for (let i = 0; i < 300; i++) {
+    if (i % 3) { const b = new Uint8Array(1 + (i * 37) % 3000).fill(i & 255); sent.push(hex(b)); p.ws.send(b); }
+    else { const t = "m" + i + "é".repeat(i % 50); sent.push(t); p.ws.send(t); }
+  }
+  check(p.ws.bufferedAmount > 0, "bufferedAmount counts what is not confirmed yet");
+  for (let i = 0; i < 200 && p.messages.length < sent.length; i++) await sleep(10);
+  eq(p.messages.map((m) => (typeof m === "string" ? m : hex(new Uint8Array(m)))).join(","), sent.join(","), "messages in order, text and binary");
+  check(p.messages.some((m) => m instanceof ArrayBuffer), "binaryType arraybuffer");
+  eq(p.ws.bufferedAmount, 0, "bufferedAmount after the relay confirmed everything");
+  check(R.upSizes.length < 300, "up messages are batched: " + R.upSizes.length + " requests for 300 messages");
+  // the relay closes: close record down -> close event, then the final ack frees the pipe (410)
+  const pipe = [...R.pipes.values()][0];
+  pipe.push(E.P_CLOSE, E.pipeClosePayload(4001, "done"));
+  const ev = await p.closed;
+  eq([ev.code, ev.reason, ev.wasClean, p.ws.readyState], [4001, "done", true, 3], "close from the relay");
+  eq(p.events, ["open", "close"], "no error event on a clean close");
+  await sleep(20);
+  check(pipe.gone && R.log.some((l) => l.endsWith("/down?ack=" + pipe.seq)), "the close was acknowledged: " + R.log.slice(-2));
+
+  // our close: close record up, the relay's answering close comes down
+  const R2 = echoRelay({ poll: 20 });
+  const q = pipeSocket(R2);
+  await q.opened;
+  q.ws.send("last");
+  q.ws.close(3001, "bye");
+  check(q.ws.readyState === 2, "CLOSING");
+  q.ws.send("dropped");                                     // after close(): dropped, as WebSockets do
+  const ev2 = await q.closed;
+  const p2 = [...R2.pipes.values()][0];
+  eq(p2.ups.map((r) => r.kind), [E.P_TEXT, E.P_CLOSE], "up: the message, then the close");
+  eq(p2.closedBy, { code: 3001, reason: "bye" }, "close code and reason reached the relay");
+  eq([ev2.code, ev2.wasClean], [3001, true], "close event");
+  eq(q.messages, ["last"], "messages before the close still arrive");
+  await sleep(20);
+  check(p2.gone, "the pipe is released after the close");
+  // the default binaryType is blob, as for a WebSocket
+  const R3 = echoRelay();
+  const b = pipeSocket(R3);
+  await b.opened;
+  b.ws.send(new Uint8Array([1, 2, 3]));
+  for (let i = 0; i < 100 && !b.messages.length; i++) await sleep(5);
+  check(b.messages[0] instanceof Blob && b.messages[0].size === 3, "Blob by default");
+  b.ws.close();
+  await b.closed;
+});
+
+test("pipe_socket_retries_resends_after_409_and_batches_up_to_max_up", ["RLY-27"], async () => {
+  // up: one request at a time, batches <= max_up, a lost answer is retried with the same seq
+  const R = echoRelay({ maxUp: 4000 });
+  let ups = 0;
+  R.fault = (method, u) => {
+    if (method !== "POST" || !u.pathname.endsWith("/up")) return null;
+    ups++;
+    if (ups === 2) return "network";                        // never arrives
+    if (ups === 4) return "lost";                           // applied, the answer is lost: retried, applied once
+    if (ups === 6) return new Response('{"error":"bad gateway"}', { status: 502 });
+    return null;
+  };
+  const p = pipeSocket(R);
+  await p.opened;
+  p.ws.binaryType = "arraybuffer";
+  const sent = [];
+  for (let i = 0; i < 120; i++) { const b = new Uint8Array(100 + i * 20).fill(i); sent.push(b.length + ":" + i); p.ws.send(b); }
+  for (let i = 0; i < 300 && p.messages.length < sent.length; i++) await sleep(10);
+  eq(p.messages.map((m) => m.byteLength + ":" + new Uint8Array(m)[0]), sent, "every message once, in order");
+  check(R.upSizes.every((n) => n <= 4000), "an up body over max_up: " + Math.max(...R.upSizes));
+  check(R.upSizes.some((n) => n > 2500), "batches fill up to max_up");
+  const pipe = [...R.pipes.values()][0];
+  eq(pipe.upCount, 120, "applied once each");
+  const seqs = R.log.filter((l) => l.startsWith("POST") && l.includes("/up?")).map((l) => Number(l.split("seq=")[1]));
+  check(seqs.some((v, i) => i && v === seqs[i - 1]), "a failed up request is retried with the same seq: " + seqs.join(","));
+  await throwsLike(async () => { p.ws.send(new Uint8Array(4000)); await p.closed; throw new Error(String((await p.closed).code)); },
+                   /1006/, "a message larger than max_up ends the pipe");
+
+  // 409: the relay has fewer records than it confirmed -> resend from `next`
+  const R2 = makePipeRelay({ poll: 20 });
+  const q = pipeSocket(R2);
+  await q.opened;
+  q.ws.send("a");
+  q.ws.send("b");
+  for (let i = 0; i < 100 && (q.ws.bufferedAmount || R2.pipes.values().next().value.upCount < 2); i++) await sleep(5);
+  const p2 = [...R2.pipes.values()][0];
+  eq(p2.upCount, 2, "a and b confirmed");
+  p2.upCount = 1;                                           // the relay "lost" b
+  p2.ups.pop();
+  q.ws.send("c");
+  for (let i = 0; i < 100 && p2.ups.length < 3; i++) await sleep(5);
+  eq(p2.ups.map((r) => dec.decode(r.payload)), ["a", "b", "c"], "resent from next after 409");
+  check(R2.log.some((l) => l.includes("/up?seq=1")), "resent with seq=next");
+  eq(q.ws.readyState, 1, "still open");
+  // a 409 asking for more than the last confirmed batch cannot be served: the pipe ends
+  p2.upCount = 0;
+  p2.ups = [];
+  q.ws.send("d");
+  const ev = await q.closed;
+  eq([ev.code, ev.wasClean], [1006, false], "lost messages end the pipe");
+  check(q.events.includes("error"), "error before close");
+});
+
+test("pipe_socket_down_retries_410_idle_and_refused_open", ["RLY-27"], async () => {
+  // down: network errors and 502 are retried (same ack: nothing lost or doubled)
+  const R = echoRelay({ poll: 20 });
+  let downs = 0;
+  R.fault = (method, u) => {
+    if (!u.pathname.endsWith("/down")) return null;
+    downs++;
+    if (downs >= 2 && downs <= 4) return "network";
+    if (downs === 6) return "lost";
+    if (downs === 7) return new Response("", { status: 504 });
+    return null;
+  };
+  const p = pipeSocket(R);
+  await p.opened;
+  for (let i = 0; i < 10; i++) p.ws.send("n" + i);
+  for (let i = 0; i < 300 && downs < 9; i++) await sleep(5);          // 204s, failures and retries meanwhile
+  check(downs >= 9, "down requests retried: " + downs);
+  for (let i = 10; i < 30; i++) p.ws.send("n" + i);
+  for (let i = 0; i < 300 && p.messages.length < 30; i++) await sleep(5);
+  eq(p.messages, Array.from({ length: 30 }, (_, i) => "n" + i), "in order after down retries");
+  // 410 while open: the relay dropped the pipe -> error + close 1006
+  [...R.pipes.values()][0].gone = true;
+  const ev = await p.closed;
+  eq([ev.code, ev.wasClean, p.events.slice(-2)], [1006, false, ["error", "close"]], "410");
+
+  // no answer for longer than PIPE_IDLE (here 80 ms): the pipe is given up
+  const R2 = echoRelay({ poll: 20 });
+  const q = pipeSocket(R2, { idle: 80 });
+  await q.opened;
+  R2.fault = () => "network";
+  const t0 = Date.now();
+  const ev2 = await q.closed;
+  check(ev2.code === 1006 && Date.now() - t0 < 2000, "idle: " + ev2.code + " after " + (Date.now() - t0) + " ms");
+
+  // open refused (signed out, rate limit, ...): error + close 1006 with the relay's reason
+  const R3 = echoRelay();
+  R3.refuse = [401, "log in first"];
+  const r = pipeSocket(R3);
+  const ev3 = await r.closed;
+  eq([ev3.code, ev3.reason, r.events], [1006, "log in first", ["error", "close"]], "refused open");
+  // close() while connecting: no open event, the relay is told (close record)
+  const R4 = echoRelay();
+  const c = pipeSocket(R4);
+  c.ws.close();
+  const ev4 = await c.closed;
+  await sleep(20);
+  eq([ev4.code, c.events.includes("open")], [1006, false], "closed while connecting");
+  eq([...R4.pipes.values()][0].closedBy && [...R4.pipes.values()][0].closedBy.code, 1000, "the relay got the close");
+});
+
+function deviceRelay(world, opts = {}) {
+  return makePipeRelay(Object.assign({
+    onOpen: (pipe) => {
+      const sock = {
+        readyState: 1,
+        deliver(data) { if (this.readyState === 1) pipe.push(typeof data === "string" ? E.P_TEXT : E.P_BINARY, typeof data === "string" ? enc.encode(data) : data); },
+        hangup(code = 1000, reason = "") { this.readyState = 3; pipe.push(E.P_CLOSE, E.pipeClosePayload(code, reason)); },
+      };
+      pipe.sock = sock;
+      world.device(sock);
+    },
+    onUp: (pipe, rec) => pipe.sock.peer(rec.kind === E.P_TEXT ? dec.decode(rec.payload) : rec.payload.slice()),
+  }, opts));
+}
+
+test("channel_falls_back_to_a_pipe_and_remembers_it", ["RLY-27", "RLY-03", "RLY-04"], async () => {
+  E.forgetPipes();
+  const w = makeWorld();
+  const R = deviceRelay(w, { maxUp: 200000, poll: 30 });
+  let tries = 0;
+  class DeadWS {                                            // what an nginx without Upgrade lines gives: no open, close 1006
+    constructor() { tries++; this.readyState = 0; setTimeout(() => { this.readyState = 3; if (this.onerror) this.onerror({}); if (this.onclose) this.onclose({ code: 1006, reason: "" }); }, 2); }
+    send() { throw new Error("not open"); }
+    close() {}
+  }
+  const url = "ws://relay.test/b/api/connect/dev-1";
+  const ch = await E.Channel.open({ url, key: E.parseKey(VEC.key), WebSocket: DeadWS, fetch: R.fetch, pipe: { backoff: 5 } });
+  eq([tries, ch.transport, ch.info.name], [1, "http", "Bench"], "WebSocket tried once, then the pipe");
+  eq([...R.pipes.values()][0].path, "/api/connect/dev-1", "the pipe is for the same route");
+  check(E.pipesLearned(url), "the device manager is remembered as needing pipes");
+  eq((await ch.ports()).map((x) => x.port), [8080, 22], "ports over the pipe");
+  // a body both ways through the window, in order, over batched up requests
+  const up = new Uint8Array(700_000);
+  for (let i = 0; i < up.length; i++) up[i] = (i * 13) & 255;
+  const s = ch.openStream({ t: "http", method: "POST", port: 8080, path: "/up", headers: [["x-size", "900000"]], body: true });
+  const writing = s.write(up).then(() => s.end());
+  eq((await s.nextJson()).status, 200, "response head");
+  let got = 0, ok = true;
+  for (;;) {
+    const ev = await s.next();
+    if (ev.data) { for (let i = 0; i < ev.data.length; i++) if (ev.data[i] !== ((got + i) * 7 & 255)) ok = false; got += ev.data.length; continue; }
+    if (ev.json.t === "end") break;
+  }
+  await writing;
+  check(got === 900000 && ok, "response body over the pipe: " + got);
+  check(w.requestBody.length === up.length && w.requestBody[up.length - 1] === up[up.length - 1], "request body over the pipe");
+  check(w.maxUnacked <= E.WINDOW, "window");
+  check(R.upSizes.every((n) => n <= 200000), "up bodies within max_up");
+  ch.close();
+  await sleep(50);
+  const p0 = [...R.pipes.values()][0];
+  check(p0.closedBy && p0.gone, "closing the channel closes and releases the pipe");
+  // the next channel skips the WebSocket
+  const ch2 = await E.Channel.open({ url, key: E.parseKey(VEC.key), WebSocket: DeadWS, fetch: R.fetch, pipe: { backoff: 5 } });
+  eq([tries, ch2.transport], [1, "http"], "no second WebSocket attempt");
+  ch2.close();
+  E.forgetPipes();
+  check(!E.pipesLearned(url), "forgotten");
+  // a working WebSocket: no pipe at all; "http" forced: no WebSocket at all
+  const opens = () => R.log.filter((l) => l === "POST open").length;
+  const before = opens();
+  check(before === 2, "pipes opened so far: " + before);
+  const ch3 = await channel(makeWorld(), undefined, { fetch: R.fetch });
+  eq([ch3.transport, opens()], ["ws", before], "auto with a working WebSocket");
+  ch3.close();
+  const ch4 = await E.Channel.open({ url, key: E.parseKey(VEC.key), WebSocket: DeadWS, fetch: R.fetch, transport: "http" });
+  eq([tries, ch4.transport], [1, "http"], "forced http");
+  ch4.close();
+  check(!E.pipesLearned(url), "a forced transport is not remembered");
+  // refusals still come through: the relay's answer, or the pipe's open refused
+  const W5 = makeWorld({ relay: false });
+  await throwsLike(() => E.Channel.open({ url, key: E.parseKey(VEC.key), fetch: deviceRelay(W5).fetch, transport: "http" }),
+                   /the device is offline/, "relay refusal over a pipe");
+  const R6 = deviceRelay(makeWorld());
+  R6.refuse = [401, "log in first"];
+  await throwsLike(() => E.Channel.open({ url, key: E.parseKey(VEC.key), WebSocket: DeadWS, fetch: R6.fetch }),
+                   /could not connect to the device manager.*log in first/, "pipe open refused");
+  check(!E.pipesLearned(url), "a refused pipe is not remembered");
 });
 
 // ------------------------------------------------------------------ routing (RLY-22)

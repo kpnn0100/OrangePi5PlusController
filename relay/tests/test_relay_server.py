@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
-"""The device manager (relay server): routes, registry, forwarding, limits, admin (RLY-21..26).
+"""The device manager (relay server): routes, registry, forwarding, limits, admin, pipes (RLY-21..27).
 
     python3 relay/tests/test_relay_server.py [-k NAME]
 
 Starts the real server (python3 -m arstro_relay) as a subprocess on a free port with a
-temporary data directory and plays fake devices and viewers with arstro_remote.web.ws.
-Pages come from a temporary static directory, so the tests do not depend on the viewer's files.
+temporary data directory and plays fake devices and viewers with arstro_remote.web.ws (WebSockets)
+and PipeConn below (the HTTP transport). Pages come from a temporary static directory, so the tests
+do not depend on the viewer's files. The nginx test (RLY-27) needs Docker; it is skipped without.
 """
 
 import hashlib
 import json
 import os
+import queue
 import re
 import shutil
 import signal
@@ -19,6 +21,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -32,9 +35,11 @@ sys.path.insert(0, os.path.join(REPO, "relay"))
 from harness import check, run, test, wait_until  # noqa: E402
 
 from arstro_relay import __version__  # noqa: E402
+from arstro_relay import pipe as relay_pipe  # noqa: E402
 from arstro_relay import server as relay_server  # noqa: E402
 from arstro_remote.relay import e2e  # noqa: E402
 from arstro_remote.web import ws as wsmod  # noqa: E402
+from nginx_proxy import NginxProxy, NginxUnavailable  # noqa: E402
 
 BASE = "/arstro/internal/devices"
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
@@ -65,14 +70,14 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 OPENER = urllib.request.build_opener(NoRedirect)
 
 
-def http(url, method="GET", body=None, headers=None):
+def http(url, method="GET", body=None, headers=None, timeout=5):
     """-> (status, headers, body bytes); never follows redirects."""
     data = json.dumps(body).encode() if isinstance(body, dict) else body
     req = urllib.request.Request(url, data=data, method=method, headers=dict(headers or {}))
     if isinstance(body, dict):
         req.add_header("Content-Type", "application/json")
     try:
-        with OPENER.open(req, timeout=5) as r:
+        with OPENER.open(req, timeout=timeout) as r:
             return r.status, r.headers, r.read()
     except urllib.error.HTTPError as e:
         return e.code, e.headers, e.read()
@@ -199,7 +204,7 @@ class FakeDevice:
     def __init__(self, relay, dev_id, secret=None, name="Lab Pi", token=None, welcome=True, **extra):
         self.relay, self.id, self.name = relay, dev_id, name
         self.secret = secret or hashlib.sha256(dev_id.encode()).hexdigest()
-        self.c = wsconnect(relay.ws_url("/api/agent"))
+        self.c = self._connect("/api/agent")
         hello = {"t": "hello", "v": 1, "id": dev_id, "name": name, "secret": self.secret,
                  "token": relay.token() if token is None else token, "version": "2.1.0", "hostname": "pi5",
                  "platform": "linux-aarch64", "slot": "A", "web": 8080}
@@ -209,6 +214,9 @@ class FakeDevice:
             self.welcome = self.recv()
             check(self.welcome.get("t") == "welcome", "%s: expected welcome, got %s" % (dev_id, self.welcome))
 
+    def _connect(self, path):
+        return wsconnect(self.relay.ws_url(path))
+
     def recv(self):
         return recv_json(self.c)
 
@@ -216,7 +224,7 @@ class FakeDevice:
         self.c.send_text(json.dumps(obj))
 
     def data(self, sid, secret=None, dev_id=None):
-        d = wsconnect(self.relay.ws_url("/api/agent/data"))
+        d = self._connect("/api/agent/data")
         d.send_text(json.dumps({"t": "data", "v": 1, "id": dev_id or self.id, "secret": secret or self.secret,
                                 "sid": sid}))
         return d
@@ -225,9 +233,10 @@ class FakeDevice:
         self.c.close()
 
 
-def join(relay, dev, headers=None):
-    """Viewer -> relay -> device: a joined channel -> (viewer socket, device data socket)."""
-    v = wsconnect(relay.ws_url("/api/connect/" + dev.id), headers=headers)
+def join(relay, dev, headers=None, viewer=None):
+    """Viewer -> relay -> device: a joined channel -> (viewer socket, device data socket).
+    viewer: a function that opens the viewer's connection (default: a WebSocket)."""
+    v = viewer() if viewer else wsconnect(relay.ws_url("/api/connect/" + dev.id), headers=headers)
     msg = dev.recv()
     check(msg.get("t") == "open" and msg.get("sid"), "expected open, got %s" % msg)
     d = dev.data(msg["sid"])
@@ -245,6 +254,137 @@ def refusal(relay, dev_id, headers=None):
     return msg["error"]
 
 
+# ---------------------------------------------------------- pipe helpers
+K_TEXT, K_BINARY, K_CLOSE = 1, 2, 8
+OP_OF = {K_TEXT: wsmod.OP_TEXT, K_BINARY: wsmod.OP_BINARY}
+
+
+def pipe_open(base, path, headers=None):
+    """POST B/api/pipe/open -> (status, headers, body). base = the relay's URL up to B."""
+    return http(base + "/api/pipe/open", "POST", {"path": path}, headers)
+
+
+def down_records(body):
+    """A down answer -> [(kind, seq, payload)]."""
+    out, i = [], 0
+    while i < len(body):
+        kind, seq, n = struct.unpack_from(">BII", body, i)
+        out.append((kind, seq, body[i + 9:i + 9 + n]))
+        i += 9 + n
+    check(i == len(body), "a down answer ends with a whole record")
+    return out
+
+
+def up_body(*records):
+    return b"".join(struct.pack(">BI", kind, len(payload)) + payload for kind, payload in records)
+
+
+class PipeConn:
+    """A pipe used like a test WebSocket (send_text, send_binary, recv_message, close). A thread
+    long-polls down and acknowledges what it got (poll=False: call down() yourself)."""
+
+    def __init__(self, base, path, headers=None, poll=True):
+        status, _, body = pipe_open(base, path, headers)
+        if status != 200:
+            raise ConnectionError("pipe open: HTTP %d %s" % (status, body[:200]))
+        self.info = json.loads(body)
+        self.url = base + "/api/pipe/" + self.info["pipe"]
+        self.ack = self.seq = 0
+        self.q = queue.Queue()
+        self.close_code = None
+        self.stopped = False
+        if poll:
+            threading.Thread(target=self._down_loop, daemon=True).start()
+
+    def down(self, ack=None):
+        """One down request -> (status, [(kind, seq, payload)] or the error body)."""
+        status, h, body = http(self.url + "/down?ack=%d" % (self.ack if ack is None else ack),
+                               timeout=self.info["poll"] + 10)
+        return status, (down_records(body) if status == 200 else body)
+
+    def _down_loop(self):
+        while not self.stopped:
+            try:
+                status, recs = self.down()
+            except OSError as e:
+                self.q.put(("error", str(e)))
+                return
+            if status == 204:
+                continue
+            if status != 200:
+                self.q.put(("gone", status))
+                return
+            for kind, seq, payload in recs:
+                if seq < self.ack:
+                    continue                    # sent again (an answer we already had)
+                self.ack = seq + 1
+                if kind == K_CLOSE:
+                    code = struct.unpack(">H", payload[:2])[0] if len(payload) >= 2 else 1005
+                    self.q.put(("close", (code, payload[2:].decode())))
+                    try:
+                        self.down()             # acknowledge the close: the relay forgets the pipe
+                    except OSError:
+                        pass
+                    return
+                self.q.put((OP_OF[kind], payload))
+
+    def recv_message(self, timeout=5):
+        try:
+            op, data = self.q.get(timeout=timeout)
+        except queue.Empty:
+            raise socket.timeout("no message on the pipe")
+        if op == "close":
+            self.close_code = data[0]
+            raise wsmod.WSClosed("closed %d %s" % data)
+        if op in ("gone", "error"):
+            raise wsmod.WSClosed("pipe %s: %s" % (op, data))
+        return op, data
+
+    def up(self, *records, seq=None):
+        """One up request -> (status, JSON answer)."""
+        status, _, body = http(self.url + "/up?seq=%d" % (self.seq if seq is None else seq), "POST", up_body(*records),
+                               {"Content-Type": "application/octet-stream"}, timeout=self.info["poll"] + 10)
+        return status, json.loads(body) if body else None
+
+    def send(self, *records):
+        status, answer = self.up(*records)
+        check(status == 200, "pipe up: HTTP %d %s" % (status, answer))
+        self.seq = answer["next"]
+
+    def send_text(self, text):
+        self.send((K_TEXT, text.encode()))
+
+    def send_binary(self, data):
+        self.send((K_BINARY, bytes(data)))
+
+    def close(self, code=1000, reason=""):
+        self.send((K_CLOSE, struct.pack(">H", code) + reason.encode()))
+
+
+def pipe_close_code(conn, timeout=5):
+    """Read a PipeConn until its close record -> the code."""
+    try:
+        while True:
+            conn.recv_message(timeout)
+    except wsmod.WSClosed:
+        return conn.close_code
+
+
+class PipeDevice(FakeDevice):
+    """A device whose control and data connections are pipes (base: the relay's URL up to B)."""
+
+    def __init__(self, relay, dev_id, base=None, **kw):
+        self.base = base or relay.url("")
+        super().__init__(relay, dev_id, **kw)
+
+    def _connect(self, path):
+        return PipeConn(self.base, path)
+
+
+def pipe_viewer(base, dev_id, headers=None, poll=True):
+    return lambda: PipeConn(base, "/api/connect/" + dev_id, headers, poll)
+
+
 # --------------------------------------------------------------------- tests
 @test("RLY-21")
 def protocol_constants_match_e2e(ctx):
@@ -252,7 +392,7 @@ def protocol_constants_match_e2e(ctx):
     check(set(relay_server.MESSAGES) == set(e2e.RELAY_MESSAGES),
           "relay messages %s != e2e.RELAY_MESSAGES %s" % (sorted(relay_server.MESSAGES), sorted(e2e.RELAY_MESSAGES)))
     check(relay_server.PROTOCOL == e2e.VERSION, "protocol version differs")
-    check(relay_server.CHANNELS_PER_DEVICE == 32 and relay_server.MAX_DEVICES == 1000, "limits of PROTOCOL.md section 6")
+    check(relay_server.CHANNELS_PER_DEVICE == 32 and relay_server.MAX_DEVICES == 1000, "limits of PROTOCOL.md section 7")
 
 
 @test("RLY-21")
@@ -483,8 +623,9 @@ def viewer_password(ctx):
     check(http(r.url("/api/devices"), headers={"Authorization": "Bearer nope"})[0] == 401, "wrong Bearer -> 401")
     check(http(r.url("/api/devices"), headers={"Cookie": "arstro_devices=forged"})[0] == 401, "forged cookie -> 401")
     dev = FakeDevice(r, "pw-pi")
-    v, d, opened = join(r, dev, headers=dict(jar, **{"X-Forwarded-For": "203.0.113.7, 10.0.0.1"}))
-    check(opened["addr"] == "203.0.113.7", "RELAY_TRUST_PROXY: the first X-Forwarded-For entry: %s" % opened)
+    v, d, opened = join(r, dev, headers=dict(jar, **{"X-Forwarded-For": "198.51.100.66, 203.0.113.7"}))
+    check(opened["addr"] == "203.0.113.7",
+          "RELAY_TRUST_PROXY: the last X-Forwarded-For entry (the proxy's), not a faked first one: %s" % opened)
     v.close()
     try:
         wsconnect(r.ws_url("/api/connect/pw-pi"), headers=dict(bearer, Origin="https://evil.example"))
@@ -550,7 +691,7 @@ def base_path_and_traversal(ctx):
     check(http("http://127.0.0.1:%d/api/health" % r.port)[0] == 404, "nothing outside the base path")
     other = os.path.join(ctx["tmp"], "pkgclient")
     os.makedirs(other, exist_ok=True)
-    for name in ("client.py", "e2e.py", "ws.py"):
+    for name in ("client.py", "e2e.py", "ws.py", "pipe.py"):
         with open(os.path.join(other, name), "w") as f:
             f.write("# packaged %s\n" % name)
     b = Relay(ctx, RELAY_BASE="/x/devs", RELAY_CLIENT_DIR=other)
@@ -561,7 +702,7 @@ def base_path_and_traversal(ctx):
     check(json.loads(http(b.url("/api/info"))[2])["base"] == "/x/devs", "info names the base")
     check(http(b.url("/sw.js"))[1].get("Service-Worker-Allowed") == "/x/devs/", "sw.js scope follows the base")
     check(b"'/x/devs/static/boot.js'" in http(b.url("/d/lab-pi/80/"))[2], "{{BASE}} in pages becomes the base")
-    for name in ("arstro_relay_client.py", "e2e.py", "ws.py"):
+    for name in ("arstro_relay_client.py", "e2e.py", "ws.py", "pipe.py"):
         status, _, body = http(b.url("/client/" + name))
         want = {"arstro_relay_client.py": "client.py"}.get(name, name)
         check(status == 200 and body == ("# packaged %s\n" % want).encode(), "packaged client file %s" % name)
@@ -606,7 +747,9 @@ def static_routes(ctx):
 def client_download(ctx):
     r = ctx["main"]
     src = os.path.join(REPO, "server", "arstro_remote")
-    for name, path in (("e2e.py", "relay/e2e.py"), ("ws.py", "web/ws.py"), ("arstro_relay_client.py", "relay/client.py")):
+    check(os.path.exists(os.path.join(src, "relay", "pipe.py")), "the client's HTTP transport relay/pipe.py exists")
+    for name, path in (("e2e.py", "relay/e2e.py"), ("ws.py", "web/ws.py"), ("arstro_relay_client.py", "relay/client.py"),
+                       ("pipe.py", "relay/pipe.py")):
         status, h, body = http(r.url("/client/" + name))
         full = os.path.join(src, path)
         if not os.path.exists(full):
@@ -714,6 +857,338 @@ def log_lines(ctx):
     for secret in (dev.secret, "wrong-token-for-log", "secret-content-55aa"):
         check(secret not in log, "never logged: %s" % secret)
     check(log.count(r.token()) <= 1, "the join token appears at most in the start-up line")
+
+
+# ------------------------------------------------------- HTTP transport (pipes)
+@test("RLY-27")
+def pipe_constants_match_e2e(ctx):
+    for name in ("PIPE_MAX_UP", "PIPE_POLL", "PIPE_IDLE", "PIPE_BUFFER"):
+        check(getattr(relay_pipe, name) == getattr(e2e, name), "%s differs from e2e.py" % name)
+    check(relay_pipe.DOWN_MAX == e2e.MAX_MESSAGE, "a down answer holds up to MAX_MESSAGE")
+
+
+@test("RLY-27")
+def pipe_device_hello_and_welcome(ctx):
+    r = ctx["main"]
+    c = PipeConn(r.url(""), "/api/agent", poll=False)
+    check(c.info == {"pipe": c.info["pipe"], "max_up": e2e.PIPE_MAX_UP, "poll": e2e.PIPE_POLL}, "open: %s" % c.info)
+    check(re.match(r"^[A-Za-z0-9_-]{22}$", c.info["pipe"]), "the id is 128 random bits, base64url: %s" % c.info["pipe"])
+    hello = {"t": "hello", "v": 1, "id": "pipe-pi", "name": "Pipe Pi", "secret": "p" * 40, "token": r.token(),
+             "version": "2.1.0", "hostname": "pi5", "platform": "linux-aarch64", "slot": "B", "web": 8080}
+    c.send_text(json.dumps(hello))
+    status, h, body = http(c.url + "/down?ack=0", timeout=10)
+    check(status == 200 and h.get("Content-Type") == "application/octet-stream" and h.get("Cache-Control") == "no-store"
+          and h.get("X-Accel-Buffering") == "no" and h.get("Content-Length") == str(len(body)), "down headers: %s" % dict(h))
+    recs = down_records(body)
+    check(len(recs) == 1 and recs[0][:2] == (K_TEXT, 0), "one text record, seq 0: %s" % recs)
+    check(json.loads(recs[0][2]) == {"t": "welcome", "v": 1, "heartbeat": 20, "relay": __version__}, "welcome")
+    d = r.device("pipe-pi")
+    check(d and d["online"] and d["slot"] == "B", "a device over a pipe is listed: %s" % d)
+    c.send_text('{"t":"ping"}')
+    status, recs = c.down(ack=1)
+    check(status == 200 and [(k, q, json.loads(p)) for k, q, p in recs] == [(K_TEXT, 1, {"t": "pong"})], "pong: %s" % recs)
+    c.close(1000)
+    check(wait_until(lambda: not r.device("pipe-pi")["online"], 5), "a close record ends the device's connection")
+    status, recs = c.down(ack=2)
+    check(status == 200 and recs[0][0] == K_CLOSE and recs[0][1] == 2, "the relay answers the close: %s" % recs)
+    check(c.down(ack=3)[0] == 410, "after its close was acknowledged the pipe is gone (410)")
+    dev = PipeDevice(r, "pipe-pi2", name="Pipe Two")
+    dev.send({"t": "ping"})
+    check(dev.recv() == {"t": "pong"}, "ping -> pong over pipes")
+    dev.close()
+    log = r.log()
+    check("device online: pipe-pi (Pipe Pi) from 127.0.0.1, version 2.1.0, slot B, transport http" in log,
+          "the log names the transport")
+    check(c.info["pipe"] not in log and dev.c.info["pipe"] not in log, "pipe ids are never logged in full")
+
+
+@test("RLY-27")
+def pipe_viewer_with_websocket_device(ctx):
+    r = ctx["main"]
+    dev = FakeDevice(r, "mixv-pi")
+    v, d, opened = join(r, dev, viewer=pipe_viewer(r.url(""), "mixv-pi"))
+    check(opened["addr"] == "127.0.0.1" and r.device("mixv-pi")["viewers"] == 1, "joined: %s" % opened)
+    batch = [(K_TEXT, '{"t":"hello","v":1,"cn":"héllo"}'.encode()), (K_BINARY, os.urandom(1000)), (K_BINARY, b""),
+             (K_TEXT, b"text-2"), (K_BINARY, os.urandom(200000))]
+    v.send(*batch)
+    for kind, payload in batch:
+        check(d.recv_message() == (OP_OF[kind], payload), "viewer pipe -> device socket unchanged, in order")
+    downs = [(wsmod.OP_BINARY, os.urandom(70000)), (wsmod.OP_TEXT, b"down-text"), (wsmod.OP_BINARY, b"\x00"),
+             (wsmod.OP_BINARY, os.urandom(e2e.MAX_MESSAGE))]
+    for op, payload in downs:
+        d._send(op, payload)
+    for op, payload in downs:
+        check(v.recv_message() == (op, payload), "device socket -> viewer pipe unchanged, in order")
+    v.close(4001, "viewer leaves")
+    check(close_code(d) == 4001, "the viewer's close code reaches the device")
+    check(pipe_close_code(v) == 4001, "the pipe gets the relay's answer to its close")
+    check(wait_until(lambda: r.device("mixv-pi")["viewers"] == 0, 5), "the channel is gone")
+    check("channel open: device mixv-pi, viewer 127.0.0.1, transport viewer http, device ws" in r.log(), "log")
+    dev.close()
+
+
+@test("RLY-27")
+def pipe_device_with_websocket_viewer(ctx):
+    r = ctx["main"]
+    dev = PipeDevice(r, "mixd-pi")
+    v, d, opened = join(r, dev)
+    check(isinstance(d, PipeConn) and r.device("mixd-pi")["viewers"] == 1, "joined to the device's data pipe")
+    ups = [os.urandom(300000), b"\x01\x02", os.urandom(e2e.MAX_MESSAGE)]
+    for payload in ups:
+        v.send_binary(payload)
+    v.send_text("up-text")
+    for payload in ups:
+        check(d.recv_message() == (wsmod.OP_BINARY, payload), "viewer socket -> device pipe unchanged, in order")
+    check(d.recv_message() == (wsmod.OP_TEXT, b"up-text"), "text stays text")
+    d.send((K_BINARY, b"a" * 100), (K_TEXT, b"b"), (K_BINARY, os.urandom(150000)))
+    check(v.recv_message() == (wsmod.OP_BINARY, b"a" * 100) and v.recv_message() == (wsmod.OP_TEXT, b"b")
+          and len(v.recv_message()[1]) == 150000, "device pipe -> viewer socket unchanged, in order")
+    d.close(4002, "device leaves")
+    check(close_code(v) == 4002, "the device's close code reaches the viewer")
+    check(wait_until(lambda: r.device("mixd-pi")["viewers"] == 0, 5), "the channel is gone")
+    v, d, _ = join(r, dev, viewer=pipe_viewer(r.url(""), "mixd-pi"))
+    v.send_text("both-pipes")
+    check(d.recv_message() == (wsmod.OP_TEXT, b"both-pipes"), "viewer pipe -> device pipe")
+    d.send_binary(b"back")
+    check(v.recv_message() == (wsmod.OP_BINARY, b"back"), "device pipe -> viewer pipe")
+    check("channel open: device mixd-pi, viewer 127.0.0.1, transport http" in r.log(), "log: both over http")
+    v.close(1000)
+    check(pipe_close_code(d) == 1000, "pipe to pipe close")
+    dev.close()
+    check(wait_until(lambda: not r.device("mixd-pi")["online"], 5), "the device goes offline")
+
+
+@test("RLY-27")
+def pipe_up_retries_gaps_and_bad_bodies(ctx):
+    r = ctx["main"]
+    dev = FakeDevice(r, "seq-pi")
+    v, d, _ = join(r, dev, viewer=pipe_viewer(r.url(""), "seq-pi"))
+    check(v.up((K_TEXT, b"m0"), (K_TEXT, b"m1"), seq=0) == (200, {"next": 2}), "two records applied")
+    check(v.up((K_TEXT, b"m0"), (K_TEXT, b"m1"), seq=0) == (200, {"next": 2}), "a retried request is harmless")
+    check(v.up((K_TEXT, b"m1"), (K_BINARY, b"m2"), seq=1) == (200, {"next": 3}), "only the new record is applied")
+    check(v.up((K_TEXT, b"m9"), seq=5) == (409, {"next": 3}), "a gap -> 409 with the next expected index")
+    got = [d.recv_message() for _ in range(3)]
+    check(got == [(wsmod.OP_TEXT, b"m0"), (wsmod.OP_TEXT, b"m1"), (wsmod.OP_BINARY, b"m2")], "each once, in order: %s" % got)
+    d.sock.settimeout(0.5)
+    try:
+        d.recv_message()
+        raise AssertionError("a record was forwarded twice")
+    except socket.timeout:
+        pass
+    d.sock.settimeout(5)
+    for body, what in ((b"\x01\x00\x00", "a cut header"), (b"\x01\x00\x00\x00\x09abc", "a cut record"),
+                       (b"\x05\x00\x00\x00\x00", "an unknown kind")):
+        status, _, answer = http(v.url + "/up?seq=3", "POST", body)
+        check(status == 400 and b"bad up body" in answer, "%s -> 400: %d %s" % (what, status, answer))
+    check(http(v.url + "/up", "POST", up_body((K_TEXT, b"x")))[0] == 400, "seq is required")
+    check(http(v.url + "/down")[0] == 400, "ack is required")
+    check(http(v.url + "/down?ack=99")[0] == 400, "an ack ahead of the messages sent -> 400")
+    check(http(v.url + "/up?seq=3")[0] == 405 and http(v.url + "/down?ack=0", "POST", b"")[0] == 405, "methods")
+    limit = e2e.PIPE_MAX_UP + relay_pipe.PIPE_SLACK
+    with socket.create_connection(("127.0.0.1", r.port), timeout=5) as s:
+        s.sendall(("POST %s/up?seq=3 HTTP/1.1\r\nHost: x\r\nContent-Length: %d\r\n\r\n"
+                   % (v.url.split(str(r.port), 1)[1], limit + 1)).encode())
+        check(s.recv(4096).split(b" ")[1] == b"413", "a body over PIPE_MAX_UP -> 413")
+    full = os.urandom(e2e.PIPE_MAX_UP - 5)
+    check(v.up((K_BINARY, full), seq=3) == (200, {"next": 4}), "a body of exactly PIPE_MAX_UP is taken")
+    check(d.recv_message() == (wsmod.OP_BINARY, full), "and forwarded")
+    v.up((K_TEXT, b"\xc3\x28"), seq=4)
+    check(close_code(d) == 1007, "text that is not UTF-8 closes the channel with 1007, like a WebSocket")
+    check(pipe_close_code(v) == 1007, "the pipe gets the 1007 close")
+    check(http(r.url("/api/pipe/AAAAAAAAAAAAAAAAAAAAAA/down?ack=0"))[0] == 410, "an unknown pipe -> 410")
+    check(http(r.url("/api/pipe/AAAAAAAAAAAAAAAAAAAAAA/up?seq=0"), "POST", b"")[0] == 410, "up to an unknown pipe -> 410")
+    dev.close()
+
+
+@test("RLY-27")
+def pipe_acks_polls_idle_and_close(ctx):
+    r = Relay(ctx, RELAY_PIPE_POLL="1.5", RELAY_PIPE_IDLE="3")
+    base = r.url("")
+    dev = FakeDevice(r, "ack-pi")
+    v = PipeConn(base, "/api/connect/ack-pi", poll=False)
+    check(v.info["poll"] == 1.5, "open names the poll time: %s" % v.info)
+    d = dev.data(dev.recv()["sid"])
+    check(recv_json(d) == {"t": "linked"}, "linked")
+    check(v.down(0)[1] == [(K_TEXT, 0, b'{"t":"relay","ok":true}')], "relay ok is down message 0")
+    for text in ("a", "b", "c"):
+        d.send_text(text)
+    got = []
+    while len(got) < 3:
+        status, recs = v.down(1)
+        got = [(q, p) for _, q, p in recs]
+    check(got == [(1, b"a"), (2, b"b"), (3, b"c")], "seq numbers count down messages: %s" % got)
+    check([(q, p) for _, q, p in v.down(1)[1]] == got, "messages not acknowledged are sent again")
+    check([(q, p) for _, q, p in v.down(3)[1]] == [(3, b"c")], "ack forgets the messages before it")
+    t0 = time.monotonic()
+    status, _ = v.down(4)
+    check(status == 204 and 1.2 < time.monotonic() - t0 < 4, "nothing to send: 204 after the poll time (%d, %.1f s)"
+          % (status, time.monotonic() - t0))
+    first = {}
+
+    def older(ack):
+        first["answer"] = v.down(ack)
+        first["t"] = time.monotonic() - t0
+    t0 = time.monotonic()
+    th = threading.Thread(target=older, args=(4,))
+    th.start()
+    time.sleep(0.3)
+    d.send_text("m4")
+    th.join(5)
+    check(first["answer"] == (200, [(K_TEXT, 4, b"m4")]) and first["t"] < 1.0,
+          "a waiting down request answers as soon as a message is queued: %s" % first)
+    t0 = time.monotonic()
+    th = threading.Thread(target=older, args=(5,))
+    th.start()
+    time.sleep(0.3)
+    threading.Timer(0.5, lambda: d.send_text("m5")).start()
+    status, recs = v.down(5)
+    th.join(5)
+    check(first["answer"][0] == 204 and first["t"] < 0.8, "a newer down request ends the older one with 204: %s" % first)
+    check((status, recs) == (200, [(K_TEXT, 5, b"m5")]), "the newer one gets the message: %s %s" % (status, recs))
+    big = [os.urandom(700000) for _ in range(3)]
+    sender = threading.Thread(target=lambda: [d.send_binary(b) for b in big] + [d.send_binary(os.urandom(1 << 20))
+                                                                                  for _ in range(4)])
+    sender.start()
+    ack, sizes, got = 6, [], []
+    while len(got) < 7:
+        status, recs = v.down(ack)
+        if status == 200:
+            sizes.append(sum(9 + len(p) for _, _, p in recs))
+            got += [p for _, _, p in recs]
+            ack = recs[-1][1] + 1
+    sender.join(10)
+    check(got[:3] == big and all(len(p) == 1 << 20 for p in got[3:]), "7 MiB through the down buffer, in order")
+    check(all(n <= (1 << 20) + 9 for n in sizes) and len(sizes) == 7, "a down answer is at most 1 MiB, at least one "
+          "whole message: %s" % sizes)
+    v.close(1000)
+    check(close_code(d) == 1000, "the pipe's close reaches the device")
+    status, recs = v.down(ack)
+    check(status == 200 and recs[-1][0] == K_CLOSE, "the relay's close record")
+    check(v.up((K_TEXT, b"late"), seq=v.seq)[0] == 200, "up after the close: taken but dropped (the close is not "
+          "acknowledged yet)")
+    check(v.down(recs[-1][1] + 1)[0] == 410 and v.up((K_TEXT, b"x"), seq=0)[0] == 410, "410 once the close is acknowledged")
+    # idle: a viewer pipe without requests is dropped; the device's side is closed
+    w, d2, _ = join(r, dev, viewer=pipe_viewer(base, "ack-pi"))
+    w.stopped = True                # its last down request ends within the poll time, then nothing
+    d2.sock.settimeout(10)
+    t0 = time.monotonic()
+    check(close_code(d2) == 1001, "a dropped pipe closes the other side like a lost connection")
+    check(3 < time.monotonic() - t0 < 8, "dropped after the idle time: %.1f s" % (time.monotonic() - t0))
+    check(wait_until(lambda: http(w.url + "/down?ack=%d" % w.ack, timeout=5)[0] == 410, 3), "the dropped pipe -> 410")
+    check(wait_until(lambda: re.search(r"pipe [A-Za-z0-9_-]{6}\.\.\. for /api/connect/ack-pi from 127.0.0.1 dropped: "
+                                       r"no request for 3 s", r.log()), 3), "the drop is logged")
+    dev.close()
+    quiet = PipeDevice(r, "quiet-pipe")
+    quiet.c.stopped = True
+    check(wait_until(lambda: not r.device("quiet-pipe")["online"], 10), "a device whose pipe goes quiet goes offline")
+    r.stop()
+
+
+@test("RLY-27")
+def pipe_open_refused_like_websockets(ctx):
+    r = Relay(ctx, RELAY_PASSWORD="pw-pipe")
+    base = r.url("")
+    bearer = {"Authorization": "Bearer pw-pipe"}
+    check(pipe_open(base, "/api/connect/some-pi")[0] == 401, "no password -> 401")
+    check(pipe_open(base, "/api/connect/some-pi", {"Authorization": "Bearer nope"})[0] == 401, "wrong password -> 401")
+    status, _, body = pipe_open(base, "/api/connect/some-pi", dict(bearer, Origin="https://evil.example"))
+    check(status == 403 and b"other web sites" in body, "another web site -> 403: %d" % status)
+    check(pipe_open(base, "/api/connect/Bad_Id", bearer)[0] == 404, "an invalid device id -> 404")
+    v = PipeConn(base, "/api/connect/nobody-here", dict(bearer, Origin="http://127.0.0.1:%d" % r.port))
+    check(recv_json(v) == {"t": "relay", "ok": False, "error": "no device with id nobody-here"},
+          "an unknown device: refused inside the pipe, like the WebSocket")
+    expect_closed(v, "refused viewer pipe")
+    check(pipe_open(base, "/api/elsewhere")[0] == 404, "a route that is not a WebSocket route -> 404")
+    check(http(base + "/api/pipe/open", "POST", b"not json")[0] == 400, "a broken open body -> 400")
+    bad = PipeDevice(r, "tok-pipe", token="wrong", welcome=False)
+    check(bad.recv() == {"t": "error", "error": "wrong join token"}, "a wrong join token, inside the pipe")
+    expect_closed(bad.c, "refused device pipe")
+    check(bad.c.close_code == 1008, "closed with 1008 like the WebSocket")
+    r.stop()
+    r = Relay(ctx, RELAY_RATE_LIMIT="3/30")
+    for _ in range(3):
+        check(pipe_open(r.url(""), "/api/agent")[0] == 200, "within the rate limit")
+    status, h, _ = pipe_open(r.url(""), "/api/agent")
+    check(status == 429 and h.get("Retry-After"), "the 4th new connection in the window -> 429")
+    try:
+        wsconnect(r.ws_url("/api/agent"))
+        raise AssertionError("pipes and WebSockets share the rate limit")
+    except ConnectionError as e:
+        check("429" in str(e), "-> 429: %s" % e)
+    check(pipe_open(r.url(""), "/api/agent/data")[0] == 200, "data connections are not rate limited")
+    r.stop()
+    r = Relay(ctx)
+    codes = [pipe_open(r.url(""), "/api/agent/data")[0] for _ in range(relay_pipe.PIPES_PER_ADDRESS + 1)]
+    check(codes == [200] * relay_pipe.PIPES_PER_ADDRESS + [429], "at most %d pipes per address" % relay_pipe.PIPES_PER_ADDRESS)
+    r.stop()
+
+
+@test("RLY-27")
+def pipe_device_replaced_and_shutdown_bye(ctx):
+    r = Relay(ctx)
+    first = PipeDevice(r, "bye-pipe")
+    second = PipeDevice(r, "bye-pipe")
+    bye = first.recv()
+    check(bye.get("t") == "bye" and "replaced" in bye.get("reason", ""), "a replaced pipe device gets bye: %s" % bye)
+    expect_closed(first.c, "replaced device pipe")
+    time.sleep(0.3)                 # the second's next down request is waiting (not still connecting)
+    r.proc.send_signal(signal.SIGTERM)
+    check(second.recv() == {"t": "bye", "reason": "the device manager is shutting down"}, "bye on shutdown over a pipe")
+    check(r.proc.wait(5) == 0, "exits cleanly")
+    r.stop()
+
+
+@test("RLY-27")
+def pipes_through_nginx_without_websockets(ctx):
+    r = Relay(ctx, RELAY_TRUST_PROXY="1", RELAY_PIPE_POLL="3")
+    proxy = NginxProxy(r.port)
+    try:
+        url = proxy.start()
+    except NginxUnavailable as e:
+        print("      SKIP pipes_through_nginx_without_websockets: %s" % e, flush=True)
+        r.stop()
+        return
+    try:
+        base = url + BASE
+        check(http(base + "/api/health")[0] == 200, "the relay answers through nginx")
+        try:
+            wsconnect("ws://127.0.0.1:%d%s/api/agent" % (proxy.port, BASE))
+            raise AssertionError("a WebSocket must not pass this nginx")
+        except ConnectionError as e:
+            check("426" in str(e), "WebSocket through nginx -> the relay's 426: %s" % e)
+        dev = PipeDevice(r, "nginx-pi", base=base)
+        v, d, opened = join(r, dev, viewer=pipe_viewer(base, "nginx-pi", {"Origin": url}))
+        ups = [(K_TEXT, b'{"t":"hello"}'), (K_BINARY, os.urandom(250000))]
+        v.send(*ups)
+        for kind, payload in ups:
+            check(d.recv_message() == (OP_OF[kind], payload), "viewer -> device through nginx, unchanged")
+        downs = [(K_BINARY, os.urandom(200000)), (K_TEXT, b"down")]
+        d.send(*downs)
+        for kind, payload in downs:
+            check(v.recv_message() == (OP_OF[kind], payload), "device -> viewer through nginx, unchanged")
+        check(http(v.url + "/up?seq=%d" % v.seq, "POST", up_body((K_BINARY, os.urandom(1 << 20))))[0] == 413,
+              "an up request over 1 MiB is refused (by nginx's client_max_body_size)")
+        direct = FakeDevice(r, "direct-pi")           # a device with WebSockets, a viewer behind nginx
+        v2, d2, _ = join(r, direct, viewer=pipe_viewer(base, "direct-pi", {"Origin": url}))
+        big = os.urandom(e2e.MAX_MESSAGE)
+        d2.send_binary(big)
+        d2.send_text("after big")
+        check(v2.recv_message() == (wsmod.OP_BINARY, big) and v2.recv_message() == (wsmod.OP_TEXT, b"after big"),
+              "a 1 MiB message down through nginx")
+        v2.close()
+        direct.close()
+        time.sleep(4)              # longer than the poll time: down requests end with 204 and are made again
+        v.send_text("after a quiet while")
+        check(d.recv_message() == (wsmod.OP_TEXT, b"after a quiet while"), "still joined after 204 answers")
+        v.close(4003)
+        check(pipe_close_code(d) == 4003, "the close code through nginx")
+        dev.close()
+        check(wait_until(lambda: not r.device("nginx-pi")["online"], 5), "offline after its close")
+        check("device online: nginx-pi (Lab Pi) from 127.0.0.1" in r.log(), "nginx's X-Forwarded-For is used")
+        check(" 426 " in proxy.logs() and " 204 " in proxy.logs(), "nginx saw the 426 and the 204 answers")
+    finally:
+        proxy.stop()
+        r.stop()
 
 
 def setup():

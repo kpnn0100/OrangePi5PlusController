@@ -1,15 +1,21 @@
-"""Internet access, the device side (module `relay`, RLY-01..08).
+"""Internet access, the device side (module `relay`, RLY-01..08, RLY-27).
 
 Unit level: a throwaway instance (identity, settings, topic, validation, key rotation, a
 disabled module) and the device's end of a viewer channel over a socket pair (handshake,
 streams, header rules) - no device manager needed. Integration: the real device manager
 (relay/arstro_relay) as a subprocess on a free port, the instance advertising to it, and
 viewers using the standalone client (server/arstro_remote/relay/client.py): online in the
-list, ready, HTTP / WebSocket / TCP / ports, allow-list, kick, rotate, wrong keys.
+list, ready, HTTP / WebSocket / TCP / ports, allow-list, kick, rotate, wrong keys. The HTTP
+transport (pipe.py, RLY-27): a device and viewers forced onto pipes, a down poll broken again
+and again, and the automatic fallback behind a proxy that does not pass WebSockets (a small
+Python one, and nginx 1.14 in Docker when Docker is there - relay/tests/nginx_proxy.py).
 
     python3 server/tests/test_relay.py [-k NAME]
 """
 
+import contextlib
+import hashlib
+import http.client
 import http.server
 import json
 import logging
@@ -25,6 +31,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.parse
 import urllib.request
 
 from harness import check, run, test, wait_until
@@ -32,7 +39,7 @@ from harness import check, run, test, wait_until
 from instance import Instance, free_port
 
 from arstro_remote.relay import agent as ag
-from arstro_remote.relay import client, e2e, service
+from arstro_remote.relay import client, e2e, pipe, service
 from arstro_remote.web import ws
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -87,7 +94,8 @@ class HeaderEcho(http.server.BaseHTTPRequestHandler):
             self.wfile.write(out)
             return
         out = json.dumps({"method": self.command, "path": self.path, "headers": [[k, v] for k, v in self.headers.items()],
-                          "body": len(body), "text": body[:64].decode("latin-1")}).encode()
+                          "body": len(body), "text": body[:64].decode("latin-1"),
+                          "sha": hashlib.sha256(body).hexdigest()}).encode()
         self.send_response(201)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(out)))
@@ -559,6 +567,319 @@ def kick_and_rotate_disconnect_viewers(ctx):
     connect(ctx, r["key"]).close()
 
 
+# ================================================================== the HTTP transport (RLY-27)
+FALLBACK_LOG = "the device manager does not take WebSockets here - using HTTP"
+
+
+@contextlib.contextmanager
+def transport(value):
+    """ARSTRO_RELAY_TRANSPORT for this process's own client (pipe.connect reads it every time)."""
+    old = os.environ.get("ARSTRO_RELAY_TRANSPORT")
+    os.environ["ARSTRO_RELAY_TRANSPORT"] = value
+    try:
+        yield
+    finally:
+        if old is None:
+            os.environ.pop("ARSTRO_RELAY_TRANSPORT", None)
+        else:
+            os.environ["ARSTRO_RELAY_TRANSPORT"] = old
+
+
+class NoUpgradeProxy:
+    """A reverse proxy like an nginx without the Upgrade lines: every request goes to the relay as
+    plain HTTP without Upgrade / Connection (so its WebSocket routes answer 426), answers are
+    buffered whole, the client side is HTTP/1.1 keep-alive."""
+
+    def __init__(self, upstream_port):
+        class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def _forward(self):
+                n = int(self.headers.get("Content-Length") or 0)
+                body = self.rfile.read(n) if n else None
+                hdrs = {k: v for k, v in self.headers.items() if k.lower() not in ("connection", "upgrade", "keep-alive")}
+                up = http.client.HTTPConnection("127.0.0.1", upstream_port, timeout=60)
+                try:
+                    up.request(self.command, self.path, body, hdrs)
+                    r = up.getresponse()
+                    data = r.read()
+                finally:
+                    up.close()
+                self.send_response(r.status, r.reason)
+                for k, v in r.getheaders():
+                    if k.lower() not in ("connection", "keep-alive", "transfer-encoding", "content-length", "date",
+                                         "server"):
+                        self.send_header(k, v)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            do_GET = do_POST = _forward
+
+            def log_message(self, *a):
+                pass
+
+        class Server(http.server.ThreadingHTTPServer):
+            daemon_threads = True
+
+            def handle_error(self, request, client_address):
+                pass                             # clients cut their requests on purpose (pipe tests)
+
+        self.srv = Server(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.url = "http://127.0.0.1:%d" % self.srv.server_address[1]
+
+    def close(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+
+
+def ws_device(ctx):
+    """`t` online at the relay (the earlier tests do that; -k runs need it here)."""
+    if ctx.device_id is None:
+        ctx.t.c.call("relay.set", url=ctx.relay_url, token=ctx.join, name="Relay test", enabled=True)
+        check(ctx.t.c.wait_state("relay", lambda s: s["state"] == "online", 20), ctx.t.c.state.get("relay"))
+        ctx.device_id = ctx.t.c.state["relay"]["id"]
+    return ctx.t
+
+
+def http_device(ctx):
+    """A second instance forced onto pipes (ARSTRO_RELAY_TRANSPORT=http), online at the relay."""
+    if getattr(ctx, "th", None) is None:
+        th = Instance(["system", "relay"], app="test-relay-http")
+        th.env["ARSTRO_RELAY_TRANSPORT"] = "http"
+        ctx.th = th
+        th.start()
+        th.c.call("relay.set", url=ctx.relay_url, token=ctx.join, name="Relay HTTP test", enabled=True)
+    check(ctx.th.c.wait_state("relay", lambda s: s["state"] == "online", 20), ctx.th.c.state.get("relay"))
+    return ctx.th
+
+
+def echo_tcp(ch, port, size, breaker=None):
+    """Send `size` random bytes through a tcp stream to the echo server and read them back
+    (a reader thread: more than WINDOW in flight needs both directions moving)."""
+    s = ch.tcp(port)
+    blob = os.urandom(size)
+    got = bytearray()
+    err = []
+
+    def reader():
+        try:
+            while len(got) < len(blob):
+                ev = s.next(20)
+                if ev[0] != "data":
+                    err.append(ev)
+                    return
+                got.extend(ev[2])
+        except Exception as e:               # noqa: BLE001 - reported below
+            err.append(e)
+    th = threading.Thread(target=reader, daemon=True)
+    th.start()
+    for i in range(0, len(blob), 32 * 1024):
+        s.send_data(blob[i:i + 32 * 1024])
+        if breaker:
+            breaker(i)
+    th.join(60)
+    check(not err and bytes(got) == blob, "echo differs: %d of %d bytes, %s" % (len(got), len(blob), err[:1]))
+    s.send_json({"t": "end"})
+    ev = s.next(10)
+    check(ev[0] == "json" and ev[1]["t"] == "end", ev)
+    s.close()
+
+
+@test("RLY-27", "RLY-04", "RLY-06")
+def device_and_viewer_over_http_only(ctx):
+    th = http_device(ctx)
+    ws_device(ctx)
+    st = th.c.call("relay.status")
+    check(st["transport"] == "http" and st["error"] is None, st)
+    if ctx.t.env.get("ARSTRO_RELAY_TRANSPORT", "auto") != "http":
+        check(ctx.t.c.call("relay.status")["transport"] == "ws", "the WebSocket device must say ws")
+    d = {x["id"]: x for x in devices(ctx)}.get(st["id"])
+    check(d and d["online"] and d["name"] == "Relay HTTP test", d)
+    r = subprocess.run([sys.executable, "-m", "arstro_remote", "--json", "relay", "status"], cwd=os.path.join(ROOT, "server"),
+                       env=th.env, capture_output=True, text=True, timeout=60)
+    check(r.returncode == 0 and json.loads(r.stdout)["transport"] == "http", r.stdout[-300:] + r.stderr[-300:])
+    r = subprocess.run([sys.executable, "-m", "arstro_remote", "relay", "status"], cwd=os.path.join(ROOT, "server"),
+                       env=th.env, capture_output=True, text=True, timeout=60)
+    check("online (HTTP)" in r.stdout, r.stdout)
+    key = identity(th)["key"]
+    with transport("http"):
+        try:
+            client.Relay(ctx.relay_url, timeout=15).connect(st["id"], e2e.new_key()).close()
+            check(False, "a wrong key was accepted")
+        except e2e.WrongKey:
+            pass
+        ch = client.Relay(ctx.relay_url, timeout=15).connect(st["id"], key)
+    try:
+        check(ch.transport == "http" and ch.info["t"] == "ready" and ch.info["id"] == st["id"], ch.info)
+        check(th.c.wait_state("relay", lambda s: len(s["viewers"]) == 1, 5), th.c.state["relay"])
+        status, _r, _h, body = ch.http("GET", th.port, "/api/ping")
+        check(status == 200 and "version" in json.loads(body), body[:200])
+        # 3 MB up through an http stream (many up batches), 3 MB down
+        port = ctx.headers.server_address[1]
+        blob = os.urandom(3 << 20)
+        status, _r, _h, body = ch.http("PUT", port, "/upload", {"Content-Type": "application/octet-stream"}, blob)
+        got = json.loads(body)
+        check(status == 201 and got["body"] == len(blob) and got["sha"] == hashlib.sha256(blob).hexdigest(), got)
+        status, _r, _h, body = ch.http("GET", port, "/big/%d" % (3 << 20))
+        check(status == 200 and body == bytes(range(256)) * ((3 << 20) // 256), "3 MB download differs")
+        # a WebSocket stream: the instance's own /ws
+        s = ch.stream({"t": "ws", "port": th.port, "path": "/ws", "protocols": [],
+                       "headers": [["Authorization", "Bearer " + th.token]]})
+        ev = s.next(10)
+        check(ev[0] == "json" and ev[1]["t"] == "open", ev)
+        s.send_data(json.dumps({"op": "hello", "id": 7, "app": "relay-http-test"}).encode(), e2e.F_FIN | e2e.F_TEXT)
+        reply, end = None, time.monotonic() + 10
+        while reply is None and time.monotonic() < end:
+            ev = s.next(10)
+            check(ev[0] == "data", ev)
+            reply = next((m for m in frames(ev[2]) if m.get("id") == 7), None)
+        check(reply and reply["ok"] and reply["data"]["slot"] == "t", reply)
+        s.send_json({"t": "close", "code": 1000, "reason": "done"})
+        s.close()
+        echo_tcp(ch, ctx.echo.port, 1 << 20)
+        pipe_id = ch.conn._path.rsplit("/", 1)[1]
+    finally:
+        ch.close()
+    check(th.c.wait_state("relay", lambda s: not s["viewers"], 10), "the device kept the viewer after close")
+    # the standalone client: the files the device manager serves at B/client/, alone in a folder
+    d = tempfile.mkdtemp(prefix="arstro-client-")
+    try:
+        src = os.path.join(ROOT, "server", "arstro_remote")
+        for name, path in (("arstro_relay_client.py", "relay/client.py"), ("e2e.py", "relay/e2e.py"),
+                           ("ws.py", "web/ws.py"), ("pipe.py", "relay/pipe.py")):
+            shutil.copy(os.path.join(src, path), os.path.join(d, name))
+        env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "ARSTRO_RELAY_URL", "ARSTRO_RELAY_KEY")}
+        env["ARSTRO_RELAY_TRANSPORT"] = "http"
+        r = subprocess.run([sys.executable, "arstro_relay_client.py", "check", st["id"], "--key", key,
+                            "--relay", ctx.relay_url], cwd=d, env=env, capture_output=True, text=True, timeout=60)
+        check(r.returncode == 0 and "key ok" in r.stdout and "over HTTP" in r.stdout, r.stdout + r.stderr[-500:])
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    logs = open(th.log, encoding="utf-8", errors="replace").read()
+    relay_log = open(os.path.join(ctx.relay_dir, "relay.log"), encoding="utf-8", errors="replace").read()
+    check(pipe_id not in logs and pipe_id not in relay_log, "a pipe id is in a log")
+    check("tunnel up" in logs and "over HTTP" in logs and FALLBACK_LOG not in logs, "forced HTTP: no fallback line")
+    bad = [l for l in logs.splitlines() if "Traceback" in l or " ERROR " in l]
+    check(not bad, "errors in the server log:\n" + "\n".join(bad[:10]))
+
+
+@test("RLY-27")
+def pipe_keeps_order_when_polls_break(ctx):
+    """Client pipes to the WebSocket device: the down and up requests are cut again and again
+    while 2 MB go round through the echo - nothing lost, nothing doubled, nothing reordered."""
+    ws_device(ctx)
+    with transport("http"):
+        ch = connect(ctx)
+    try:
+        check(ch.transport == "http", ch.transport)
+        broken = [0]
+
+        def breaker(i):
+            if i % (128 * 1024) == 0:
+                for which in ("down", "up"):
+                    if getattr(ch.conn._conns.get(which), "sock", None) is not None:
+                        broken[0] += 1
+                    ch.conn._abort(which)
+        echo_tcp(ch, ctx.echo.port, 2 << 20, breaker)
+        check(broken[0] >= 10 and ch.conn.retries >= 5, "only %d connections were cut, %d requests sent again" % (
+            broken[0], ch.conn.retries))
+        status, _r, _h, body = ch.http("GET", ctx.t.port, "/api/ping")
+        check(status == 200, status)
+        check(not ch.closed, ch.reason)
+    finally:
+        ch.close()
+    # a raw pipe: ack / seq rules seen from outside
+    conn = pipe.open_pipe(ctx.relay_url, "/api/connect/" + ctx.device_id, timeout=10)
+    try:
+        conn.settimeout(15)
+        op, data = conn.recv_message()
+        check(op == ws.OP_TEXT and json.loads(data) == {"t": "relay", "ok": True}, data)
+    finally:
+        conn.close()
+    check(conn.closed, "closed")
+    try:
+        conn.send_text("{}")
+        check(False, "a closed pipe took a message")
+    except ws.WSClosed:
+        pass
+
+
+def forced(ctx, what):
+    """The fallback tests need `t` in auto mode: None, or skip when the suite forces a transport."""
+    mode = ctx.t.env.get("ARSTRO_RELAY_TRANSPORT", "auto")
+    if mode != "auto":
+        print("SKIP  %s: the whole suite runs with ARSTRO_RELAY_TRANSPORT=%s" % (what, mode))
+    return mode != "auto"
+
+
+def fallback_through(ctx, proxy_url, what):
+    """`t` (auto) and a viewer (auto) behind `proxy_url`: WebSockets get 426, both go over HTTP."""
+    t = ctx.t
+    url = proxy_url + BASE
+    t.c.call("relay.set", url=url)
+    try:
+        check(t.c.wait_state("relay", lambda s: s["state"] == "online" and s["url"] == url and s["transport"] == "http",
+                             30), "%s: the device did not fall back: %s" % (what, t.c.state["relay"]))
+        log = open(t.log, encoding="utf-8", errors="replace").read()
+        check(FALLBACK_LOG in log and "426" in log, "%s: the fallback is not logged" % what)
+        with transport("auto"):
+            ch = client.Relay(url, timeout=15).connect(ctx.device_id, identity(t)["key"])
+        try:
+            check(ch.transport == "http", "%s: the client did not fall back" % what)
+            status, _r, _h, body = ch.http("GET", t.port, "/api/ping")
+            check(status == 200 and "version" in json.loads(body), body[:200])
+            blob = os.urandom(3 << 19)                    # 1.5 MB: more than nginx's client_max_body_size
+            status, _r, _h, body = ch.http("PUT", ctx.headers.server_address[1], "/up", {}, blob)
+            check(status == 201 and json.loads(body)["sha"] == hashlib.sha256(blob).hexdigest(), body[:200])
+            echo_tcp(ch, ctx.echo.port, 1 << 20)
+        finally:
+            ch.close()
+    finally:
+        t.c.call("relay.set", url=ctx.relay_url)
+    check(t.c.wait_state("relay", lambda s: s["state"] == "online" and s["url"] == ctx.relay_url and s["transport"] == "ws",
+                         20), "no WebSockets again at the relay itself: %s" % t.c.state["relay"])
+
+
+def relay_port(ctx):
+    return int(urllib.parse.urlsplit(ctx.relay_url).port)
+
+
+@test("RLY-27")
+def falls_back_to_http_behind_a_proxy_without_websockets(ctx):
+    if forced(ctx, "python proxy"):
+        return
+    ws_device(ctx)
+    px = NoUpgradeProxy(relay_port(ctx))
+    try:
+        fallback_through(ctx, px.url, "python proxy")
+    finally:
+        px.close()
+
+
+@test("RLY-27")
+def falls_back_behind_nginx_1_14(ctx):
+    if forced(ctx, "nginx 1.14"):
+        return
+    ws_device(ctx)
+    sys.path.insert(0, os.path.join(ROOT, "relay", "tests"))
+    from nginx_proxy import NginxProxy, NginxUnavailable
+    proxy = NginxProxy(relay_port(ctx))
+    try:
+        url = proxy.start()
+    except NginxUnavailable as e:
+        print("SKIP  falls_back_behind_nginx_1_14: %s (needs Docker and the nginx:1.14 image)" % e)
+        return
+    try:
+        fallback_through(ctx, url, "nginx 1.14")
+        log = proxy.logs()
+        check(re.search(r'"GET /\S+/api/agent HTTP/1.1" 426 ', log) and '/api/pipe/open HTTP/1.1" 200 ' in log,
+              "nginx did not see the 426 and the pipes:\n" + log[-1500:])
+    finally:
+        proxy.stop()
+
+
 @test("RLY-05", "RLY-07")
 def wrong_keys_are_logged_then_locked_out(ctx):
     t = ctx.t
@@ -660,6 +981,8 @@ def setup():
 
 def teardown(ctx):
     ctx.t.stop()
+    if getattr(ctx, "th", None) is not None:
+        ctx.th.stop()
     if ctx.relay.poll() is None:
         ctx.relay.terminate()
         try:

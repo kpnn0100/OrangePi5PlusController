@@ -68,7 +68,7 @@ Pushed to every session whenever they change (whoever changed them), newest valu
 | `io.gpio` | `{held: [{chip, line, pin, mode, bias, drive, active_low, edge, debounce_us, value, events}], events: [{chip, line, pin, edge: rising\|falling, t}]}` (latest 20 events) |
 | `io.pwm` | the `io.pwm.list` chips after a change |
 | `apps` | the `apps.list` apps (run state, clients) |
-| `relay` | Internet access: `{enabled, url, name, id, key_id, state: off\|connecting\|online\|error, error, since, relay_version, token_set, ports, viewers: [{n, addr, since, streams, bytes_in, bytes_out}], wrong_keys}` - never the key, the join token or the secret |
+| `relay` | Internet access: `{enabled, url, name, id, key_id, state: off\|connecting\|online\|error, error, since, relay_version, transport: ws\|http\|null, token_set, ports, viewers: [{n, addr, since, streams, bytes_in, bytes_out}], wrong_keys}` - never the key, the join token or the secret |
 
 Other events: `stats` `{data}` (after `stats.subscribe`), `term.exit` `{term, code, reason?}`.
 

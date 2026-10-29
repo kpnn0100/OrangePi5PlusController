@@ -288,6 +288,7 @@ class RelayService:
                 "enabled": s["enabled"], "url": s["url"], "name": s["name"] or default_name(),
                 "id": ident["id"], "key_id": e2e.key_id(e2e.parse_key(ident["key"])),
                 "state": a.state, "error": a.error, "since": int(a.since), "relay_version": a.relay_version,
+                "transport": a.transport,
                 "token_set": bool(s["token"]), "ports": s["ports"], "viewers": a.viewers(),
                 "wrong_keys": a.wrong_total,
             }

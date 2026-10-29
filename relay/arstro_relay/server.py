@@ -11,8 +11,11 @@
   GET  B/api/connect/<id>     WebSocket: a viewer channel (viewer auth)
   GET  B/api/agent            WebSocket: a device's control connection (join token in its hello)
   GET  B/api/agent/data       WebSocket: a device's data connection (device secret)
+  POST B/api/pipe/open        the HTTP transport: one of the three WebSocket routes as a pipe (pipe.py)
+  GET  B/api/pipe/<id>/down   a pipe's messages to the client (long poll)
+  POST B/api/pipe/<id>/up     a pipe's messages from the client
   GET  B/api/health           {"ok": true}
-  GET  B/client/<file>        the standalone client: arstro_relay_client.py, e2e.py, ws.py
+  GET  B/client/<file>        the standalone client: arstro_relay_client.py, e2e.py, ws.py, pipe.py
 
 Routes, messages and limits: docs/relay/PROTOCOL.md sections 1, 2, 3 and 6. The relay never
 decrypts anything: once a viewer and a device's data connection are joined, every message is
@@ -34,8 +37,9 @@ import urllib.parse
 from collections import deque
 
 from . import __version__
+from .pipe import MAX_PIPES, PIPE_IDLE, PIPE_MAX_UP, PIPE_POLL, PIPE_SLACK, PIPES_PER_ADDRESS, Pipes
 from .store import Store
-from .websocket import MAX_HEAD, BadRequest, Closed, accept, read_request, respond, sendable
+from .websocket import MAX_BODY, MAX_HEAD, BadRequest, Closed, accept, read_request, respond, sendable
 
 log = logging.getLogger("relay")
 
@@ -52,6 +56,7 @@ IDLE = 60                       # s an idle keep-alive HTTP connection stays ope
 MESSAGES = ("hello", "welcome", "open", "refuse", "ping", "pong", "bye", "data", "linked", "relay", "error")
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,39}$")
 BOOT_RE = re.compile(r"^/d/([^/]+)/([0-9]{1,5})(/.*)?$")
+PIPE_RE = re.compile(r"^/api/pipe/([A-Za-z0-9_-]{1,64})/(down|up)$")
 COOKIE = "arstro_devices"
 COOKIE_AGE = 30 * 86400
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
@@ -61,7 +66,8 @@ TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=u
          ".json": "application/json", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon",
          ".webmanifest": "application/manifest+json", ".woff2": "font/woff2",
          ".txt": "text/plain; charset=utf-8", ".py": "text/x-python; charset=utf-8"}
-CLIENT_FILES = {"arstro_relay_client.py": "client.py", "e2e.py": "e2e.py", "ws.py": "ws.py"}   # B/client/<name>
+CLIENT_FILES = {"arstro_relay_client.py": "client.py", "e2e.py": "e2e.py", "ws.py": "ws.py",   # B/client/<name>
+                "pipe.py": "pipe.py"}
 
 
 class ConfigError(ValueError):
@@ -112,6 +118,8 @@ class Config:
             packaged if os.path.isdir(packaged) else os.path.join(REPO, "server", "arstro_remote", "relay"))
         self.heartbeat = _number(env, "RELAY_HEARTBEAT", 20, float, 0.2, 3600)
         self.pending = _number(env, "RELAY_PENDING", 10, float, 0.2, 600)
+        self.pipe_poll = _number(env, "RELAY_PIPE_POLL", PIPE_POLL, float, 0.2, 50)
+        self.pipe_idle = _number(env, "RELAY_PIPE_IDLE", PIPE_IDLE, float, 0.5, 3600)
         rate = env.get("RELAY_RATE_LIMIT") or "30/10"
         m = re.match(r"^([1-9][0-9]*)/([0-9]+(\.[0-9]+)?)$", rate)
         if not m or float(m.group(2)) <= 0:
@@ -176,6 +184,7 @@ class Relay:
         self.online = {}            # id -> Device
         self.pending = {}           # sid -> (device id, future of (data socket, done event))
         self.links = {}             # id -> {Link}
+        self.pipes = Pipes(cfg.pipe_poll, cfg.pipe_idle)
         self.hits = {}              # client address -> deque of recent connection times
         self._limited = set()
         self._tasks = set()
@@ -216,16 +225,26 @@ class Relay:
     def _spawn(self, coro):
         task = asyncio.ensure_future(coro)
         self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+        task.add_done_callback(self._task_done)
+        return task
+
+    def _task_done(self, task):
+        self._tasks.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            log.error("background task failed", exc_info=task.exception())
 
     async def _watch(self):
-        """Pick up the admin CLI's changes (forget, token rotation) and forget old rate-limit entries."""
+        """Pick up the admin CLI's changes (forget, token rotation), forget old rate-limit entries,
+        drop pipes without requests."""
         while True:
             await asyncio.sleep(1)
             try:
                 self._check_files()
             except Exception:
                 log.exception("checking the data directory failed")
+            for pipe in self.pipes.expire():
+                log.info("pipe %s for %s from %s dropped: no request for %g s", pipe.short, pipe.path, pipe.addr,
+                         pipe.idle)
             now, window = time.monotonic(), self.cfg.rate[1]
             for addr in [a for a, q in self.hits.items() if not q or q[-1] <= now - window]:
                 del self.hits[addr]
@@ -265,7 +284,7 @@ class Relay:
         try:
             while True:
                 try:
-                    req = await read_request(reader, IDLE)
+                    req = await read_request(reader, IDLE, self._body_limit)
                 except BadRequest as e:
                     await self._json(writer, None, e.status, {"error": e.message}, close=True)
                     break
@@ -281,11 +300,18 @@ class Relay:
         finally:
             writer.close()
 
+    def _body_limit(self, req):
+        """Pipe up requests carry up to PIPE_MAX_UP (and a little slack); everything else MAX_BODY."""
+        if req.method == "POST" and req.path.startswith(self.base + "/api/pipe/") and req.path.endswith("/up"):
+            return PIPE_MAX_UP + PIPE_SLACK
+        return MAX_BODY
+
     def _client(self, req, peer):
         """-> (client address, came over https)."""
         if not self.cfg.trust_proxy:
             return peer, False
-        addr = req.header("x-forwarded-for").split(",")[0].strip()
+        # the LAST entry is the one our proxy added; earlier ones come from the client and can be faked
+        addr = req.header("x-forwarded-for").split(",")[-1].strip()
         proto = req.header("x-forwarded-proto").split(",")[0].strip().lower()
         return _text(addr or peer), proto == "https"
 
@@ -302,9 +328,19 @@ class Relay:
                 return await self._login(req, writer)
             if rest == "/api/logout":
                 return await self._json(writer, req, 200, {"ok": True}, [("Set-Cookie", self._set_cookie(req, "", 0))])
+            if rest == "/api/pipe/open":
+                return await self._pipe_open(req, reader, writer)
+            m = PIPE_RE.match(rest)
+            if m and m.group(2) == "up":
+                return await self._pipe_up(req, writer, m.group(1))
             return await self._error(writer, req, 405, "method not allowed")
         if req.method not in ("GET", "HEAD"):
             return await self._error(writer, req, 405, "method not allowed")
+        m = PIPE_RE.match(rest)
+        if m:
+            if m.group(2) != "down" or req.method != "GET":
+                return await self._error(writer, req, 405, "method not allowed")
+            return await self._pipe_down(req, writer, m.group(1))
         if rest == "/":
             return await self._static(req, writer, "index.html")
         if rest == "/sw.js":
@@ -460,7 +496,7 @@ class Relay:
         return await self._static(req, writer, "boot.html")
 
     async def _client_file(self, req, writer, name):
-        """The standalone client for agents (B/client/arstro_relay_client.py, e2e.py, ws.py)."""
+        """The standalone client for agents (B/client/arstro_relay_client.py, e2e.py, ws.py, pipe.py)."""
         src = CLIENT_FILES.get(name)
         paths = [os.path.join(self.cfg.client_dir, src)] if src else []
         if name == "ws.py":         # repository layout: server/arstro_remote/web/ws.py
@@ -530,6 +566,21 @@ class Relay:
         return error[0] if error else None
 
     async def _ws(self, req, reader, writer):
+        """The route's connection after its checks: a WebSocket (upgrade) - or, when the route was
+        opened with B/api/pipe/open, a new pipe (the open request is answered here)."""
+        if req.pipe is not None:
+            path, answered = req.pipe
+            pipe = self.pipes.open(path, req.addr)
+            poll = self.cfg.pipe_poll
+            try:
+                await self._json(writer, req, 200, {"pipe": pipe.id, "max_up": PIPE_MAX_UP,
+                                                    "poll": int(poll) if poll == int(poll) else poll})
+            except (ConnectionError, OSError):
+                pipe.drop(Closed(1006, "connection lost"))
+                return None
+            finally:
+                answered.set_result(True)
+            return pipe
         try:
             return await accept(req, reader, writer, MAX_MESSAGE)
         except BadRequest as e:
@@ -579,8 +630,8 @@ class Relay:
         try:
             await ws.send_json({"t": "welcome", "v": PROTOCOL, "heartbeat": int(hb) if hb == int(hb) else hb,
                                 "relay": __version__})
-            log.info("device online: %s (%s) from %s, version %s, slot %s", dev.id, dev.name, dev.addr,
-                     info["version"], info["slot"])
+            log.info("device online: %s (%s) from %s, version %s, slot %s, transport %s", dev.id, dev.name, dev.addr,
+                     info["version"], info["slot"], ws.transport)
             while True:
                 try:
                     msg = await ws.recv_json(3 * hb)
@@ -695,7 +746,9 @@ class Relay:
         try:
             await data.send_json({"t": "linked"})
             await ws.send_json({"t": "relay", "ok": True})
-            log.info("channel open: device %s, viewer %s", dev_id, req.addr)
+            log.info("channel open: device %s, viewer %s, transport %s", dev_id, req.addr,
+                     ws.transport if ws.transport == data.transport
+                     else "viewer %s, device %s" % (ws.transport, data.transport))
             await asyncio.gather(self._pump(ws, data, link, True), self._pump(data, ws, link, False))
         except Closed:
             await asyncio.gather(ws.close(1001), data.close(1001))
@@ -717,6 +770,75 @@ class Relay:
             pass
         await ws.close(1000, error[:100])
         return False
+
+    # ---------------------------------------------------------------- pipes
+    async def _pipe_open(self, req, reader, writer):
+        """B/api/pipe/open {"path"}: the same checks as that WebSocket route, then its handler on a pipe."""
+        try:
+            path = json.loads(req.body or b"{}").get("path")
+        except (ValueError, AttributeError):
+            path = None
+        if not isinstance(path, str):
+            return await self._error(writer, req, 400, 'the body must be {"path": "/api/agent" | "/api/agent/data" | '
+                                     '"/api/connect/<id>"}')
+        if path == "/api/agent":
+            handler = self._agent
+        elif path == "/api/agent/data":
+            handler = self._data
+        elif path.startswith("/api/connect/"):
+            dev_id = urllib.parse.unquote(path[len("/api/connect/"):])
+            handler = lambda *a: self._viewer(*a, dev_id)    # noqa: E731
+        else:
+            return await self._error(writer, req, 404, "no such route: %s" % _text(path, 80))
+        if self.pipes.count(req.addr) >= PIPES_PER_ADDRESS or len(self.pipes) >= MAX_PIPES:
+            log.info("pipe refused for %s: too many open pipes", req.addr)
+            return await self._error(writer, req, 429, "too many open connections from your address - close some first",
+                                     [("Retry-After", "10")])
+        answered = asyncio.get_running_loop().create_future()
+        req.pipe = (path, answered)
+        task = self._spawn(handler(req, reader, writer))   # lives as long as the pipe; answers this request first
+        await asyncio.wait([task, answered], return_when=asyncio.FIRST_COMPLETED)
+        # answered: the pipe exists. Else the handler refused the request (its answer is written) or failed.
+        return answered.done() or (not task.cancelled() and task.exception() is None)
+
+    def _query_int(self, req, name):
+        """A non-negative integer query parameter, or None."""
+        value = urllib.parse.parse_qs(req.query).get(name, [""])[0]
+        return int(value) if value.isdigit() and len(value) < 16 else None
+
+    async def _pipe_down(self, req, writer, pipe_id):
+        """GET B/api/pipe/<id>/down?ack=n: the queued down messages from n on, or 204 after the poll time."""
+        ack = self._query_int(req, "ack")
+        if ack is None:
+            return await self._error(writer, req, 400, "ack=<number of down messages received> is required")
+        pipe = self.pipes.get(pipe_id)
+        if pipe is None:
+            return await self._error(writer, req, 410, "this pipe is closed")
+        headers = [("Cache-Control", "no-store"), ("X-Accel-Buffering", "no")]
+        with pipe.request():
+            status, body, last = await pipe.down(ack)
+            if status == 200:
+                await respond(writer, 200, [("Content-Type", "application/octet-stream")] + headers, body)
+                pipe.delivered(last)
+            elif status == 204:
+                await respond(writer, 204, headers)
+            elif status == 400:
+                await self._error(writer, req, 400, "ack is ahead of the messages sent")
+            else:
+                await self._error(writer, req, 410, "this pipe is closed")
+        return True
+
+    async def _pipe_up(self, req, writer, pipe_id):
+        """POST B/api/pipe/<id>/up?seq=n: up messages, each applied once and in order."""
+        seq = self._query_int(req, "seq")
+        if seq is None:
+            return await self._error(writer, req, 400, "seq=<index of the first record> is required")
+        pipe = self.pipes.get(pipe_id)
+        if pipe is None:
+            return await self._error(writer, req, 410, "this pipe is closed")
+        with pipe.request():
+            status, answer = await pipe.up(seq, req.body)
+            return await self._json(writer, req, status, answer)
 
     async def _pump(self, src, dst, link, up):
         """Forward src -> dst message by message, unchanged; when src ends, close dst the same way."""

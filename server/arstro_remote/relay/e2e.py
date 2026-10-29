@@ -44,6 +44,11 @@ NONCE_LEN = 32            # cn / sn
 CHUNK = 64 * 1024         # largest DATA payload in one frame
 WINDOW = 512 * 1024       # unacknowledged DATA bytes per stream and direction
 MAX_MESSAGE = 1 << 20     # largest WebSocket message anywhere on the path (the relay enforces it)
+# HTTP transport (PROTOCOL.md section 6): the same messages through proxies without WebSockets
+PIPE_MAX_UP = 256 * 1024  # largest up-request body (records of one batch)
+PIPE_POLL = 25            # seconds a down request waits for a message before answering 204
+PIPE_IDLE = 60            # seconds without any request of the client: the pipe is dropped (1006)
+PIPE_BUFFER = 2 << 20     # queued bytes per direction before the sender has to wait
 
 K_JSON = 1                # payload: UTF-8 JSON object with "t"
 K_DATA = 2                # payload: bytes of a stream

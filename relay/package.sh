@@ -34,7 +34,7 @@ NAME="arstro-devices-$VERSION"
 OUT="$ROOT/release/$NAME"
 # what the Dockerfile needs from the repository (build context = repo root)
 CONTEXT=(.dockerignore relay server/arstro_remote/relay/client.py server/arstro_remote/relay/e2e.py
-         server/arstro_remote/web/ws.py)
+         server/arstro_remote/web/ws.py server/arstro_remote/relay/pipe.py)
 
 rm -rf "$OUT" "$OUT.tar.gz"
 mkdir -p "$OUT/images"

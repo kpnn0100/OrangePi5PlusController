@@ -10,6 +10,8 @@
   const B = V.baseOf(new URL(document.currentScript.src).pathname, "static/app.js");
   const POLL = 5000;
   const SECURE = !!(window.isSecureContext && window.crypto && window.crypto.subtle && window.indexedDB);
+  // a transport forced for this tab (ArstroE2E.transport from sessionStorage, tests) is the worker's too
+  const SW_URL = B + "/sw.js" + (E.transport && E.transport !== "auto" ? "?transport=" + encodeURIComponent(E.transport) : "");
 
   const $ = (id) => document.getElementById(id);
   const main = $("main");
@@ -93,7 +95,7 @@
              "but keys and pages do not - use the agent / CLI client instead.");
     } else if (navigator.serviceWorker) {
       // install the viewer's service worker now, so "Open" lands on the device page directly
-      navigator.serviceWorker.register(B + "/sw.js", { scope: B + "/" }).catch((e) => {
+      navigator.serviceWorker.register(SW_URL, { scope: B + "/" }).catch((e) => {
         banner("The viewer could not start its service worker: " + e.message);
       });
     }
@@ -382,7 +384,7 @@
       const text = c.els.keyInput ? c.els.keyInput.value.trim() : "";
       if (text) await store(c, Object.assign(await E.keyFromText(text), { typed: true }));
       else if (!c.rec) throw new Error("Enter the device's access key first.");
-      await navigator.serviceWorker.register(B + "/sw.js", { scope: B + "/" }).catch(() => null);
+      await navigator.serviceWorker.register(SW_URL, { scope: B + "/" }).catch(() => null);
       const url = pageUrl(c.id, p);
       if (w) { try { w.opener = null; } catch (e) { /* cross-origin already */ } w.location.href = url; }
       else location.href = url;               // the popup was blocked: open it here

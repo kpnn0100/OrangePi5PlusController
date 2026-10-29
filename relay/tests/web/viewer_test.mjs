@@ -10,6 +10,14 @@
 // RELAY_URL must be a secure context for the browser: https://..., or http://localhost.
 // A run makes two wrong-key attempts on purpose; the device refuses new viewers for a minute
 // after more than five in 60 s, so leave a minute between runs.
+//
+// HTTP transport (RLY-27, PROTOCOL.md section 6): VIEWER_TRANSPORT=http (or ws) forces it in every
+// context - pages (sessionStorage arstro-relay-transport, read by e2e.js) and the service worker
+// (registered as sw.js?transport=...). EXPECT_TRANSPORT=http|ws checks what the worker's channel
+// uses (default: the forced one) - e.g. EXPECT_TRANSPORT=http with RELAY_URL pointing at a proxy
+// without WebSocket support (relay/tests/nginx_proxy.py), where "auto" must fall back by itself.
+// Every run checks that a browser keeps ONE channel per device while Arstro's page runs its
+// WebSockets (the service worker's status, and the device manager's `viewers` count).
 // puppeteer-core comes from server/tests/web/node_modules (cd server/tests/web && npm install).
 // Optional: CHROME=/path/to/chrome.
 
@@ -36,6 +44,8 @@ const PORT = Number(process.env.DEVICE_PORT || 0);
 const TOKEN = process.env.ARSTRO_TOKEN || "";
 const PASSWORD = process.env.RELAY_PASSWORD || "";
 const DEVICE_PAGE = RELAY + "/d/" + ID + "/" + PORT + "/";
+const TRANSPORT = process.env.VIEWER_TRANSPORT || "";
+const EXPECT = process.env.EXPECT_TRANSPORT || (TRANSPORT === "http" || TRANSPORT === "ws" ? TRANSPORT : "");
 
 const TESTS = [];
 const test = (name, reqs, fn) => TESTS.push({ name, reqs, fn });
@@ -77,10 +87,36 @@ function watch(page) {
   return page;
 }
 
+/** The transport forced for the run, in a page before any of its scripts (e2e.js reads it). Popups
+ *  opened by a page get a copy of its sessionStorage; the worker gets it from its registration URL. */
+async function forceTransport(page) {
+  if (TRANSPORT) {
+    await page.evaluateOnNewDocument((t) => { try { sessionStorage.setItem("arstro-relay-transport", t); } catch (e) { /* opaque */ } }, TRANSPORT);
+  }
+}
+
 async function newPage(c = ctx, { width = 1280, height = 800, mobile = false } = {}) {
   const page = watch(await c.newPage());
+  await forceTransport(page);
   await page.setViewport({ width, height, isMobile: mobile, hasTouch: mobile });
   return page;
+}
+
+/** The service worker's channels and relayed WebSockets (sw.js answers {t: "status"}). */
+function swStatus(page) {
+  return page.evaluate(() => new Promise((resolve, reject) => {
+    const sw = navigator.serviceWorker && navigator.serviceWorker.controller;
+    if (!sw) { reject(new Error("no service worker controls the page")); return; }
+    const mc = new MessageChannel();
+    const t = setTimeout(() => reject(new Error("the service worker did not answer")), 5000);
+    mc.port1.onmessage = (e) => { clearTimeout(t); resolve(e.data); };
+    sw.postMessage({ t: "status" }, [mc.port2]);
+  }));
+}
+
+async function viewersOfDevice() {
+  const d = (await relayApi("devices")).devices.find((x) => x.id === ID);
+  return d ? d.viewers : -1;
 }
 
 async function shot(page, name) {
@@ -278,6 +314,98 @@ test("arstro_websocket_api_through_the_shim", ["RLY-22"], async () => {
   check(r.events.includes("open"), "addEventListener('open')");
 });
 
+test("one_channel_per_device_carries_every_websocket", ["RLY-27", "RLY-22"], async () => {
+  check(appPage, "needs open_runs_arstro_remote_through_the_viewer");
+  // the device manager's count of channels to the device before: Arstro's page (and pipes of
+  // browsers that went away without closing them - an earlier run: dropped after PIPE_IDLE)
+  const before = await viewersOfDevice();
+  check(before >= 1, "the device manager counts no channel for the open Arstro page");
+  // Arstro's own page runs its /ws; add three more /ws (each says hello), /ws/preview and
+  // /ws/screen, and HTTP requests at the same time: all are streams of ONE channel
+  const r = await appPage.evaluate(async () => {
+    const proto = location.protocol === "https:" ? "wss://" : "ws://";
+    const open = (path) => new Promise((resolve) => {
+      const ws = new WebSocket(proto + location.host + path);
+      ws.binaryType = "arraybuffer";
+      const t = setTimeout(() => resolve({ ws, path, state: "timeout" }), 20000);
+      ws.onopen = () => { clearTimeout(t); resolve({ ws, path, state: "open" }); };
+      ws.onclose = (e) => { clearTimeout(t); resolve({ ws, path, state: "closed " + e.code }); };
+    });
+    const hello = (ws, id) => new Promise((resolve) => {
+      const t = setTimeout(() => resolve(null), 15000);
+      ws.addEventListener("message", (e) => {
+        if (!(e.data instanceof ArrayBuffer)) return;
+        const b = new Uint8Array(e.data);
+        if (b[0] !== 1) return;
+        const msg = JSON.parse(new TextDecoder().decode(b.subarray(5, 5 + ((b[1] << 24) | (b[2] << 16) | (b[3] << 8) | b[4]))));
+        if (msg.id === id) { clearTimeout(t); resolve(msg.ok); }
+      });
+      ws.send(JSON.stringify({ op: "hello", id, app: "viewer-test", version: "test" }));
+    });
+    const socks = await Promise.all(["/ws", "/ws", "/ws", "/ws/preview", "/ws/screen"].map(open));
+    const main = socks.filter((x) => x.path === "/ws" && x.state === "open");
+    const [hellos, pings] = await Promise.all([
+      Promise.all(main.map((x, i) => hello(x.ws, 100 + i))),
+      Promise.all([1, 2, 3, 4].map(() => fetch("/api/ping", { cache: "no-store" }).then((x) => x.status).catch(() => 0))),
+    ]);
+    window.__viewerTestSockets = socks.map((x) => x.ws);
+    return { states: socks.map((x) => x.path + " " + x.state), hellos, pings };
+  });
+  check(r.states.filter((x) => x === "/ws open").length === 3, "the extra /ws sockets: " + r.states.join(", "));
+  check(r.hellos.length === 3 && r.hellos.every(Boolean), "hello on each /ws: " + JSON.stringify(r.hellos));
+  check(r.pings.every((x) => x === 200), "HTTP requests meanwhile: " + r.pings);
+  // /ws/preview and /ws/screen reach the device's server: open, or its own answer (no camera /
+  // screen module: 503 -> the shim reports close 1006), never a hang
+  check(r.states.slice(3).every((x) => /open|closed/.test(x)), "preview / screen: " + r.states.slice(3).join(", "));
+  const st = await swStatus(appPage);
+  const mine = st.channels.filter((c) => c.id === ID && c.open);
+  check(mine.length === 1, "open channels to the device in the service worker: " + JSON.stringify(st.channels));
+  if (EXPECT) check(mine[0].transport === EXPECT, `the channel uses ${mine[0].transport}, expected ${EXPECT}`);
+  const sockets = st.sockets.filter((x) => x.device === ID && x.open).length;
+  const expected = 1 + 3 + r.states.slice(3).filter((x) => / open$/.test(x)).length;     // Arstro's /ws + ours
+  check(sockets >= expected, `WebSockets relayed by the worker: ${sockets}, expected at least ${expected}`);
+  const viewers = await viewersOfDevice();
+  check(viewers <= before, `the WebSockets opened channels of their own: the device manager counts ${viewers}, ${before} before`);
+  // flow control worker -> page: far more than the window (512 KiB) of answers on one relayed /ws,
+  // while the page is slow to take them at first - everything arrives, in order
+  const flood = await appPage.evaluate(async () => {
+    const ws = window.__viewerTestSockets[0];
+    const got = [];
+    let bytes = 0;
+    ws.addEventListener("message", (e) => {
+      if (!(e.data instanceof ArrayBuffer)) return;
+      const b = new Uint8Array(e.data);
+      bytes += b.length;
+      if (b[0] !== 1) return;
+      const msg = JSON.parse(new TextDecoder().decode(b.subarray(5, 5 + ((b[1] << 24) | (b[2] << 16) | (b[3] << 8) | b[4]))));
+      if (msg.id >= 1000) got.push(msg.id);
+      const end = Date.now() + (got.length < 50 ? 5 : 0);       // a slow consumer first
+      while (Date.now() < end) { /* busy */ }
+    });
+    const t0 = Date.now();
+    let sent = 0;
+    while (bytes < 3 * 1024 * 1024 && sent < 4000 && Date.now() - t0 < 30000) {
+      for (let i = 0; i < 100; i++, sent++) ws.send(JSON.stringify({ op: "hello", id: 1000 + sent, app: "viewer-test", version: "test" }));
+      const want = sent;
+      for (let i = 0; i < 300 && got.length < want; i++) await new Promise((r) => setTimeout(r, 50));
+      if (got.length < want) break;
+    }
+    return { sent, got: got.length, inOrder: got.every((v, i) => v === 1000 + i), bytes, ms: Date.now() - t0 };
+  });
+  check(flood.got === flood.sent && flood.inOrder, "answers on the flooded /ws: " + JSON.stringify(flood));
+  check(flood.bytes > 2 * 512 * 1024, "the flood stayed under the window: " + JSON.stringify(flood));
+  // closing ours ends their streams in the worker, the channel stays
+  await appPage.evaluate(() => { for (const ws of window.__viewerTestSockets) if (ws.readyState === 1) ws.close(1000, "done"); });
+  const after = await until(async () => {
+    const s2 = await swStatus(appPage);
+    return s2.sockets.filter((x) => x.device === ID && x.open).length <= sockets - expected + 1 ? s2 : null;
+  }, 10000);
+  check(after, "the closed WebSockets are still relayed: " + JSON.stringify((await swStatus(appPage)).sockets));
+  check(after.channels.filter((c) => c.id === ID && c.open).length === 1, "the channel was closed with the sockets");
+  console.log(`      one channel (${mine[0].transport}) carried ${sockets} WebSockets + HTTP; ${r.states.slice(3).join(", ")}; ` +
+              `${flood.sent} answers, ${(flood.bytes / 1048576).toFixed(1)} MiB on one /ws in ${flood.ms} ms`);
+});
+
 test("status_errors_and_bodies_pass_through", ["RLY-22"], async () => {
   check(appPage, "needs open_runs_arstro_remote_through_the_viewer");
   const r = await appPage.evaluate(async () => {
@@ -333,6 +461,63 @@ test("big_upload_and_download_through_the_page", ["RLY-22", "RLY-04"], async () 
   check(r.range[0] === 200 || (r.range[0] === 206 && r.range[1] === 100 && r.range[2]), "Range request: " + r.range);
 });
 
+test("browser_downloads_save_the_real_file", ["RLY-22", "RLY-04"], async () => {
+  check(appPage, "needs open_runs_arstro_remote_through_the_viewer");
+  // a real browser download (<a download> as Arstro's Files and Gallery make them) never reaches
+  // the service worker; the shim must route it through the channel - not save the boot page
+  const dir = fs.mkdtempSync(path.join(process.env.TMPDIR || "/tmp", "viewer-dl-"));
+  const bcdp = await browser.target().createCDPSession();
+  const done = new Map();
+  bcdp.on("Browser.downloadWillBegin", (e) => done.set(e.guid, { name: e.suggestedFilename, state: "started" }));
+  bcdp.on("Browser.downloadProgress", (e) => { const d = done.get(e.guid); if (d) Object.assign(d, { state: e.state, got: e.receivedBytes, total: e.totalBytes }); });
+  // headless Chrome denies downloads unless allowed - per browser context, and the pages live in ctx
+  await bcdp.send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: dir, eventsEnabled: true,
+                                                 browserContextId: ctx.id });
+  try {
+    const made = await appPage.evaluate(async () => {
+      const op = (name, args) => fetch("/api/op/" + name, { method: "POST", headers: { "Content-Type": "application/json" },
+                                                            body: JSON.stringify(args || {}) }).then((x) => x.json());
+      const root = (await op("files.roots")).data.roots[0].path.replace(/\/$/, "");
+      const size = 2 * 1024 * 1024 + 777;
+      const data = new Uint8Array(size);
+      for (let i = 0; i < size; i += 65536) crypto.getRandomValues(data.subarray(i, Math.min(i + 65536, size)));
+      const name = "viewer-dl-" + Date.now() + ".bin";
+      const up = await fetch(`/api/files/upload?dir=${encodeURIComponent(root)}&name=${encodeURIComponent(name)}&overwrite=1`,
+                             { method: "PUT", body: new Blob([data]) });
+      const hex = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", data)), (b) => b.toString(16).padStart(2, "0")).join("");
+      return { path: root + "/" + name, name, size, hex, up: up.status };
+    });
+    check(made.up === 200, "upload for the download test: " + made.up);
+    const want = (await import("node:crypto")).createHash;
+    const sha = (f) => want("sha256").update(fs.readFileSync(f)).digest("hex");
+    for (const how of ["in-page", "detached"]) {
+      const target = "dl-" + how + "-" + made.name;
+      const before = done.size;
+      await appPage.evaluate((p, n, how) => {
+        const a = document.createElement("a");
+        a.href = "/api/files/download?path=" + encodeURIComponent(p);   // as Arstro's Files view
+        a.download = n;
+        if (how === "in-page") { document.body.appendChild(a); a.click(); a.remove(); }
+        else a.click();                                                  // as the Gallery: never added
+      }, made.path, target);
+      await until(async () => [...done.values()].slice(before).some((d) => d.state === "completed" || d.state === "canceled"), 30000);
+      const d = [...done.values()].slice(before)[0];
+      check(d && d.state === "completed", how + ": download did not complete: " + JSON.stringify(d));
+      const file = path.join(dir, d.name);
+      const got = fs.statSync(file).size;
+      check(got === made.size, `${how}: saved ${got} bytes, expected ${made.size} (${d.name})`);
+      check(sha(file) === made.hex, how + ": the saved file differs from the uploaded one");
+      // the device's own Content-Disposition name wins over the page's download="..." (as without the viewer)
+    }
+    await appPage.evaluate((p) => fetch("/api/op/files.delete", { method: "POST", headers: { "Content-Type": "application/json" },
+                                                               body: JSON.stringify({ path: p }) }), made.path);
+  } finally {
+    await bcdp.send("Browser.setDownloadBehavior", { behavior: "default", browserContextId: ctx.id }).catch(() => {});
+    await bcdp.detach().catch(() => {});
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("links_and_iframes_are_rewritten_into_the_device", ["RLY-22"], async () => {
   check(appPage, "needs open_runs_arstro_remote_through_the_viewer");
   const prefix = new URL(DEVICE_PAGE).pathname.replace(/\/$/, "");
@@ -363,6 +548,7 @@ test("links_and_iframes_are_rewritten_into_the_device", ["RLY-22"], async () => 
 
 test("reload_keeps_the_app_login_in_the_cookie_jar", ["RLY-22"], async () => {
   check(appPage, "needs open_runs_arstro_remote_through_the_viewer");
+  const before = Math.max(1, (await swStatus(appPage)).sockets.filter((x) => x.device === ID).length);
   await appPage.reload({ waitUntil: "domcontentloaded" });
   await appPage.waitForSelector(".login-card, .view", { timeout: 20000 });
   check(!(await appPage.$(".login-card")), "Arstro asked for its password again after a reload");
@@ -376,6 +562,49 @@ test("reload_keeps_the_app_login_in_the_cookie_jar", ["RLY-22"], async () => {
   }), ID);
   check(jar.includes(ID + ":" + PORT), "cookie jar entry missing: " + jar);
   check(!(await appPage.evaluate(() => document.cookie)).includes("arstro_token"), "the app's cookie leaked into real cookies");
+  // the old page's WebSockets ended with it (pagehide): the worker relays only the new page's
+  const st = await until(async () => {
+    const s2 = await swStatus(appPage);
+    return s2.sockets.filter((x) => x.device === ID).length <= before ? s2 : null;
+  }, 10000);
+  check(st, `WebSockets of the old page are still relayed (${before} before the reload): ` +
+            JSON.stringify((await swStatus(appPage)).sockets));
+  check(st.channels.filter((c) => c.id === ID && c.open).length === 1, "one channel after the reload");
+});
+
+test("a_stopped_worker_ends_the_websockets_and_arstro_reconnects", ["RLY-22", "RLY-27"], async () => {
+  check(appPage, "needs open_runs_arstro_remote_through_the_viewer");
+  // the page's WebSockets live in the worker's channel; browsers stop idle workers (and a new
+  // version replaces one): the page notices within its alive check, closes them (1006), and the
+  // app reconnects through the new worker
+  await appPage.evaluate(() => {
+    window.__wsMade = 0;
+    const W = window.WebSocket;
+    window.WebSocket = new Proxy(W, { construct(t, args) { window.__wsMade++; return new t(...args); } });
+    window.__probe = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
+    window.__probeClose = new Promise((resolve) => {
+      window.__probe.onclose = (e) => resolve({ code: e.code, clean: e.wasClean });
+      setTimeout(() => resolve(null), 40000);
+    });
+  });
+  check(await until(() => appPage.evaluate(() => window.__probe.readyState === 1), 15000), "probe socket did not open");
+  const cdp = await appPage.target().createCDPSession();
+  await cdp.send("ServiceWorker.enable");
+  await cdp.send("ServiceWorker.stopAllWorkers");
+  const closed = await appPage.evaluate(() => window.__probeClose);
+  check(closed && closed.code === 1006 && !closed.clean, "the probe socket was not closed after the worker stopped: " + JSON.stringify(closed));
+  // Arstro's own /ws: closed too, reopened by the app through the new worker
+  check(await until(() => appPage.evaluate(() => window.__wsMade >= 2), 20000), "Arstro did not reopen its WebSocket");
+  const ok = await until(() => appPage.evaluate(() => new Promise((resolve) => {
+    const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
+    ws.onopen = () => { ws.close(); resolve(true); };
+    ws.onclose = () => resolve(false);
+  })), 20000, 500);
+  check(ok, "no WebSocket through the new worker");
+  const st = await swStatus(appPage);
+  check(st.channels.filter((c) => c.id === ID && c.open).length === 1, "channels after the restart: " + JSON.stringify(st.channels));
+  await cdp.detach();
+  await appPage.waitForSelector(".view", { timeout: 20000 });
 });
 
 test("a_port_without_a_server_explains_why", ["RLY-22", "RLY-04"], async () => {

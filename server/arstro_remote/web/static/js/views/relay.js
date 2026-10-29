@@ -120,6 +120,8 @@ export default {
           h("dt", null, "Name"), h("dd", null, st.name || "–"),
           h("dt", null, "Since"), h("dd", null, st.since ? fmtAgo(st.since) : "–"),
           st.relay_version ? [h("dt", null, "Manager version"), h("dd", null, st.relay_version)] : null,
+          st.transport ? [h("dt", null, "Connection"), h("dd", null, st.transport === "http"
+            ? "HTTP (the device manager's proxy does not pass WebSockets)" : "WebSocket")] : null,
           h("dt", null, "Ports"), h("dd", null, st.ports ? st.ports.join(", ") : "any")),
         h("div.hint", { style: { marginTop: "10px" } },
           "The machine connects out, so it needs no open port. Viewers pick it in the device manager's list and need its access key."));

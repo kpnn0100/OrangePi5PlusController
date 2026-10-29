@@ -24,11 +24,15 @@ Python 3.8+ with `cryptography` (`apt install python3-cryptography` or `pip inst
   ```
   B=https://abc.example.com/arstro/internal/devices
   mkdir -p arstro-client && cd arstro-client
-  for f in arstro_relay_client.py e2e.py ws.py; do curl -fsSO "$B/client/$f"; done
+  for f in arstro_relay_client.py e2e.py ws.py pipe.py; do curl -fsSO "$B/client/$f"; done
   python3 arstro_relay_client.py --help
   ```
   These files come from the device manager's server. If you do not trust its operator, take
   them from the repo instead (see [RELAY.md](RELAY.md), security model).
+
+**Proxies without WebSockets:** nothing to do. The client tries a WebSocket and, if the device
+manager's proxy does not pass them, switches to the HTTP transport by itself (slower per message,
+same features). `ARSTRO_RELAY_TRANSPORT=http` skips the WebSocket attempt, `ws` forbids the fallback.
 
 Settings: `--relay URL` or `ARSTRO_RELAY_URL`; `--key ak1_…`, `--key-file FILE` or
 `ARSTRO_RELAY_KEY`; `--password PW` or `ARSTRO_RELAY_PASSWORD`.
@@ -110,7 +114,7 @@ Base `B` = the device manager URL. Viewer password, when set: `Authorization: Be
 | `GET B/api/info` | `{name, version, base, auth: "password"\|"open", authorized}` |
 | `GET B/api/devices` | `{devices: [{id, name, hostname, platform, version, slot, web, online, since, last_seen, viewers}]}` |
 | `GET B/api/health` | `{"ok": true}` |
-| `GET B/client/<file>` | the client files (`arstro_relay_client.py`, `e2e.py`, `ws.py`) |
+| `GET B/client/<file>` | the client files (`arstro_relay_client.py`, `e2e.py`, `ws.py`, `pipe.py`) |
 | `WS B/api/connect/<id>` | a viewer channel (needs the key - use the client, or implement [PROTOCOL.md](PROTOCOL.md) section 4) |
 
 Implementing the channel in another language: follow [PROTOCOL.md](PROTOCOL.md) and check your

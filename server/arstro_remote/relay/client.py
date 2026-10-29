@@ -1,8 +1,8 @@
 """Arstro device manager client: reach any port of a device, end-to-end encrypted (RLY-26).
 
 For agents, scripts and the CLI (`arstro-remote relay devices|ports|http|forward`). Standalone
-too: download `arstro_relay_client.py`, `e2e.py` and `ws.py` from `<relay>/client/` into one
-folder (needs Python 3.8+ and `cryptography`) and run
+too: download `arstro_relay_client.py`, `e2e.py`, `ws.py` and `pipe.py` from `<relay>/client/`
+into one folder (needs Python 3.8+ and `cryptography`) and run
 
     python3 arstro_relay_client.py devices --relay https://abc.example.com/arstro/internal/devices
     python3 arstro_relay_client.py ports   <device> --key ak1_...
@@ -15,6 +15,9 @@ curl, `arstro-remote --url http://127.0.0.1:18080`, ssh -p ...) then works as if
 the device's LAN, through one encrypted channel. Settings come from the options or the
 environment: ARSTRO_RELAY_URL, ARSTRO_RELAY_KEY (or --key-file), ARSTRO_RELAY_PASSWORD (only
 when the device manager has a viewer password). docs/relay/AGENT_API.md has the details.
+
+When the device manager's proxy does not pass WebSockets, the channel goes over HTTP by itself
+(pipe.py); ARSTRO_RELAY_TRANSPORT=ws|http|auto forces one.
 """
 
 import argparse
@@ -30,11 +33,12 @@ import urllib.parse
 import urllib.request
 
 try:
-    from . import e2e
+    from . import e2e, pipe as pipemod
     from ..web import ws as wsmod
-except ImportError:                      # standalone: e2e.py and ws.py next to this file
+except ImportError:                      # standalone: e2e.py, ws.py and pipe.py next to this file
     import e2e
     import ws as wsmod
+    import pipe as pipemod
 
 OP_TEXT, OP_BINARY = 1, 2
 
@@ -157,10 +161,11 @@ class Channel:
         self.relay = relay
         url = ws_url(relay.url) + "/api/connect/" + urllib.parse.quote(device_id, safe="")
         try:
-            self.conn = wsmod.connect(url, relay.headers(), timeout=relay.timeout)
+            self.conn = pipemod.connect(url, relay.headers(), timeout=relay.timeout)
         except PermissionError:
             raise RelayError("the device manager needs its viewer password (--password)")
-        self.conn.sock.settimeout(relay.timeout)
+        self.transport = pipemod.kind(self.conn)          # "ws" | "http"
+        self.conn.settimeout(relay.timeout)
         first = self._text()
         if first.get("t") != "relay" or not first.get("ok"):
             self.conn.close()
@@ -187,7 +192,7 @@ class Channel:
         if kind != e2e.K_JSON or sid != 0 or self.info.get("t") != "ready":
             self.conn.close()
             raise RelayError("the device did not send ready")
-        self.conn.sock.settimeout(None)
+        self.conn.settimeout(None)
         self._send_lock = threading.Lock()
         self._streams = {}
         self._ids = itertools.count(1)
@@ -442,7 +447,8 @@ def main(argv=None):
             return 0
         ch = relay.connect(a.device, _key(a))
         if a.cmd == "check":
-            print(json.dumps(ch.info) if a.json else "key ok: %s (%s)" % (ch.info.get("name"), ch.info.get("hostname")))
+            print(json.dumps(ch.info) if a.json else "key ok: %s (%s)%s" % (
+                ch.info.get("name"), ch.info.get("hostname"), " - over HTTP" if ch.transport == "http" else ""))
         elif a.cmd == "ports":
             ports = ch.ports()
             if a.json:

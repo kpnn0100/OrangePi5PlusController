@@ -12,6 +12,12 @@ scripts use the same path through a small Python client that can also forward an
 Everything between you and the machine is **end-to-end encrypted with the access key**. The
 device manager forwards ciphertext and never has the key. Wire format: [PROTOCOL.md](PROTOCOL.md).
 
+**Behind any web proxy.** The connections are WebSockets when the path allows them. When a
+proxy does not pass WebSockets (e.g. an nginx without the `Upgrade` lines), the device, the
+client and the browser switch by themselves to an HTTP transport - a waiting GET brings messages
+down, small POSTs take them up - carrying the very same encrypted messages (RLY-27,
+PROTOCOL.md section 6). A plain `proxy_pass` is then enough; WebSockets are just faster.
+
 ```
  you (browser / agent)                 device manager (Docker)                      machine (behind NAT)
  holds the ACCESS KEY                  https://<server>/arstro/internal/devices     arstro-remote, module relay
