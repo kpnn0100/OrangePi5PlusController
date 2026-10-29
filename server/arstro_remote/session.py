@@ -30,11 +30,12 @@ FEATURE_MODULE = {"stats": "monitor", "wifi": "connection", "terminal": "termina
 # Ops that may block for seconds run on a worker pool so input and terminal traffic
 # from the same controller never waits behind them.
 SLOW_PREFIXES = ("wifi.", "stats.get", "recorder.", "gallery.", "jobs.", "admin.", "web.", "screen.",
-                 "camera.", "net.", "bt.", "io.", "files.", "system.", "log.", "apps.")
+                 "camera.", "net.", "bt.", "io.", "files.", "system.", "log.", "apps.", "relay.")
 # prefix -> daemon attribute of the service that runs those ops
 ROUTES = (("recorder.", "recorder"), ("gallery.", "recorder"), ("jobs.", "recorder"), ("camera.", "recorder"),
           ("web.", "web"), ("screen.", "screen"), ("io.", "io"), ("files.", "files"), ("net.", "conn"),
-          ("bt.", "conn"), ("system.", "system"), ("log.", "system"), ("apps.", "apps"))
+          ("bt.", "conn"), ("system.", "system"), ("log.", "system"), ("apps.", "apps"),
+          ("relay.", "relay"))
 QUIET_OPS = ("ping", "stats.get", "state.get", "log.tail", "term.resize", "io.gpio.get")
 RESPONDED = object()  # handler already sent its own response
 

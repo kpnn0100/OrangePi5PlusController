@@ -180,15 +180,20 @@ class WSStream:
 
 # ---------------------------------------------------------------------- client
 def connect(url, headers=None, timeout=10):
-    """Open a client WebSocket to ws://host:port/path (http:// is accepted too)."""
+    """Open a client WebSocket to ws://host:port/path or wss:// (http:// and https:// are
+    accepted too). TLS checks the server certificate against the system CAs."""
     u = urllib.parse.urlsplit(url)
-    if u.scheme not in ("ws", "http"):
-        raise ValueError("only ws:// or http:// URLs are supported (got %s)" % u.scheme)
-    host, port = u.hostname, u.port or 80
+    if u.scheme not in ("ws", "http", "wss", "https"):
+        raise ValueError("only ws://, wss://, http:// or https:// URLs are supported (got %s)" % u.scheme)
+    tls = u.scheme in ("wss", "https")
+    host, port = u.hostname, u.port or (443 if tls else 80)
     path = (u.path or "/") + ("?" + u.query if u.query else "")
     sock = socket.create_connection((host, port), timeout=timeout)
+    if tls:
+        import ssl
+        sock = ssl.create_default_context().wrap_socket(sock, server_hostname=host)
     key = base64.b64encode(os.urandom(16)).decode()
-    lines = ["GET %s HTTP/1.1" % path, "Host: %s:%d" % (host, port), "Upgrade: websocket",
+    lines = ["GET %s HTTP/1.1" % path, "Host: " + (host if u.port is None else "%s:%d" % (host, port)), "Upgrade: websocket",
              "Connection: Upgrade", "Sec-WebSocket-Key: " + key, "Sec-WebSocket-Version: 13"]
     for k, v in (headers or {}).items():
         lines.append("%s: %s" % (k, v))

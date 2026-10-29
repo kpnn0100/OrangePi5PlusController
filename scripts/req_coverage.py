@@ -8,6 +8,7 @@
 Tests name their requirements like this:
     server/tests/*.py        @test("REC-03", "ARC-03")  above the test function
     server/tests/web/*.mjs   test("name", ["REC-02", ...], async () => ...)
+    relay/tests/*.py, relay/tests/**/*.mjs   the same two forms (the device manager)
     app/test/*.dart          // covers: UX-03, REC-01      on the line(s) above test()/testWidgets()
     scripts/*, *.sh          # covers: SET-01               anywhere in the file (whole file = one check)
 Requirements that can only be checked by hand list the procedure in MANUAL below.
@@ -72,6 +73,16 @@ def scan():
                 src = open(os.path.join(web, f), encoding="utf-8").read()
                 for m in re.finditer(r'test\("(\w+)",\s*\[([^\]]*)\]', src):
                     add(ids(m.group(2)), "server/tests/web/" + f, m.group(1))
+    for sub in ("relay/tests", "relay/tests/web"):         # the device manager (RLY-2x)
+        d = os.path.join(ROOT, sub)
+        for f in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+            src = open(os.path.join(d, f), encoding="utf-8").read() if os.path.isfile(os.path.join(d, f)) else ""
+            if f.endswith(".py"):
+                for m in re.finditer(r"@test\(([^)]*)\)\s*\n\s*def (\w+)", src):
+                    add(ids(m.group(1)), sub + "/" + f, m.group(2))
+            elif f.endswith((".mjs", ".js")):
+                for m in re.finditer(r'test\("([^"]+)",\s*\[([^\]]*)\]', src):
+                    add(ids(m.group(2)), sub + "/" + f, m.group(1))
     dart = os.path.join(ROOT, "app", "test")
     for f in sorted(os.listdir(dart)) if os.path.isdir(dart) else []:
         if not f.endswith(".dart"):

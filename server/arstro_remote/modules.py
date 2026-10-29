@@ -11,6 +11,7 @@ device, i2c-dev, spidev, termios, sysfs PWM/LED/IIO, X11). Board specifics - the
 information (MOD-03).
 """
 
+import importlib.util
 import os
 import shutil
 
@@ -27,6 +28,7 @@ MODULES = {
     "io": ("IO Control", ("io.",), "GPIO, I2C, SPI, UART, PWM, LEDs, ADC"),
     "files": ("Files", ("files.",), "browse, upload and download files"),
     "apps": ("Apps", ("apps.",), "native apps with a web UI through the NTWB bridge"),
+    "relay": ("Internet access", ("relay.",), "reach this machine from anywhere through a device manager"),
 }
 ALWAYS = ("system",)          # needed to manage the server itself
 
@@ -41,6 +43,8 @@ def available():
         out["connection"] = "NetworkManager (nmcli) is not installed"
     if not (os.environ.get("DISPLAY") or os.path.exists("/tmp/.X11-unix")):
         out["screen"] = "no X display"
+    if importlib.util.find_spec("cryptography") is None:
+        out["relay"] = "python3-cryptography is not installed"
     return out
 
 

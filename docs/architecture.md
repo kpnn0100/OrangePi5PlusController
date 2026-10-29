@@ -46,6 +46,7 @@ and routes the rest to the owning service (`ROUTES`). Every service has `start()
 | io | `io.*` | `IoService` (`io`, `hwio/`) | GPIO chardev uAPI v2, i2c-dev, spidev, termios, sysfs PWM / LEDs / IIO |
 | files | `files.*` + `/api/files/*` | `FilesService` (`files`) | the file system, inside `files_roots` |
 | apps | `apps.*` + `/apps/<id>/`, `/ws/app/<id>`, `/ntwb/ntwb.js` | `AppsService` (`apps`, `ntwb/host.py`) | NTWB: Unix socket to app processes, WebSocket to browsers |
+| relay | `relay.*` | `RelayService` (`relay`, `relay/agent.py`) | an outbound WebSocket (`wss://`) to the device manager; `127.0.0.1:<port>` locally |
 
 Board-specific knowledge is only *information* in `boards/` (detected by the device-tree
 `compatible`): the Orange Pi 5 Plus 40-pin header (pin → GPIO chip/line, alternate
@@ -76,6 +77,24 @@ The protocol is defined once in `ntwb/spec.py` (validation + generated `docs/ntw
 Python SDK for apps, `web/static/ntwb/ntwb.js` the web SDK. The host never interprets an app's
 methods: it validates, rewrites call ids, routes, retains `state`, coalesces blobs per client
 and supervises the process. See [ntwb/NTWB.md](ntwb/NTWB.md).
+
+## Internet access: the device manager (RLY-01..26)
+
+```
+ viewer (browser: sw.js + shim.js + e2e.js | agent: relay/client.py)
+     │  WS B/api/connect/<id>              end-to-end: AES-256-GCM, keys from the access key
+     ▼
+ device manager (relay/arstro_relay, Docker)  ── forwards ciphertext, lists devices ──
+     ▲  WS B/api/agent (control)   WS B/api/agent/data (one per viewer)
+     │
+ RelayService ── agent.py: handshake, streams (http | ws | tcp | ports) ──► 127.0.0.1:<port>
+                 (8080 = this server's own web UI, or any other local port)
+```
+
+The machine dials out, so it needs no public address. The device manager never holds an
+access key; the protocol is defined once in `server/arstro_remote/relay/e2e.py` with test vectors the browser's
+WebCrypto code must match. See [relay/RELAY.md](relay/RELAY.md) (design, security model) and
+[relay/PROTOCOL.md](relay/PROTOCOL.md).
 
 ## Slots A/B (ADM-06)
 

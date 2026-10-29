@@ -1,0 +1,19 @@
+# Docker build context = the repository root (relay/Dockerfile). Keep it small: the image only
+# needs relay/arstro_relay, server/arstro_remote/relay/{client,e2e}.py and server/arstro_remote/web/ws.py.
+.git
+.github
+.claude
+app
+legacy
+docs
+scripts
+**/node_modules
+**/__pycache__
+**/*.pyc
+**/*.apk
+server/tests
+relay/tests
+# never send local settings or secrets to a build
+**/*.env
+**/.env*
+**/local.env*

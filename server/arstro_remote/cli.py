@@ -21,6 +21,9 @@ the app and the web page is here too (ARC-04), and changes made here show up the
     arstro-remote system info|modules [--set a,b]|restart|reboot|poweroff
     arstro-remote apps list|sessions ID|info|api|launch|stop|call ID METHOD [JSON]|state ID [KEY]|log ID|register PATH|unregister PATH|spec
                        [--session ID|new]   (launch/stop/call/state/info: one session of the app, default main)
+    arstro-remote relay status|set [--url U] [--token T] [--name N] [--enable|--disable] [--ports 8080,22|any]
+                        |key|rotate --yes|kick          Internet access through a device manager
+    arstro-remote relay devices|check|ports|http|forward ...   reach other machines through a device manager
     arstro-remote slots [--current|--idle]   which A/B slot hosts this session, which one to deploy into
     arstro-remote log [--file NAME] [-n N] [--grep TEXT] [--follow] | log level LEVEL
     arstro-remote stats | pair [SECONDS] | unpair ADDRESS | web [--rotate] | call OP [JSON]
@@ -1302,7 +1305,157 @@ def cmd_apps(ctl, a):
         print("unregistered")
 
 
+def _relay_human(r):
+    state = r["state"] + (" - %s" % r["error"] if r.get("error") else "")
+    print("Internet access : %s (%s)" % ("on" if r["enabled"] else "off", state))
+    print("Device manager  : %s%s" % (r.get("url") or "-", "" if r.get("token_set") else "  (no join token set)"))
+    print("This device     : %s  \"%s\"" % (r["id"], r["name"]))
+    print("Access key id   : %s   (the key: relay key)" % r["key_id"])
+    print("Ports           : %s" % ("any" if r.get("ports") is None else ", ".join(map(str, r["ports"]))))
+    if r.get("relay_version"):
+        print("Device manager v: %s" % r["relay_version"])
+    if r.get("wrong_keys"):
+        print("Wrong keys      : %d since the server started" % r["wrong_keys"])
+    v = r.get("viewers") or []
+    print("Viewers         : %d" % len(v))
+    for x in v:
+        print("  #%-3d %-22s since %s  streams %-3d in %s  out %s" % (
+            x["n"], x["addr"], time.strftime("%H:%M:%S", time.localtime(x["since"])), x["streams"],
+            fmt_size(x["bytes_in"]), fmt_size(x["bytes_out"])))
+
+
+def cmd_relay(ctl, a):
+    sub = a.relay_cmd or "status"
+    if sub == "status":
+        out(a, ctl.call("relay.status"), _relay_human)
+    elif sub == "set":
+        params = {}
+        if a.relay_url is not None:
+            params["url"] = a.relay_url
+        if a.relay_token is not None:
+            tok = a.relay_token
+            if tok == "-":
+                tok = sys.stdin.readline().strip()
+            params["token"] = tok
+        if a.relay_name is not None:
+            params["name"] = a.relay_name
+        if a.enable:
+            params["enabled"] = True
+        if a.disable:
+            params["enabled"] = False
+        if a.ports is not None:
+            params["ports"] = None if a.ports.strip().lower() in ("any", "all", "*", "") else a.ports
+        if not params:
+            sys.exit("relay set: give --url, --token, --name, --enable/--disable or --ports")
+        out(a, ctl.call("relay.set", **params), _relay_human)
+    elif sub == "key":
+        out(a, ctl.call("relay.key"), lambda r: print(r["key"]))
+    elif sub == "rotate":
+        if not a.yes:
+            sys.exit("this replaces the access key: every viewer is disconnected and needs the new key - add --yes")
+        out(a, ctl.call("relay.rotate"), lambda r: print("%s\n(new key id %s; %d viewer(s) disconnected)"
+                                                         % (r["key"], r["key_id"], r.get("closed", 0))))
+    elif sub == "kick":
+        out(a, ctl.call("relay.kick"), lambda r: print("disconnected %d viewer(s)" % r["closed"]))
+
+
+RELAY_CLIENT_CMDS = ("devices", "check", "ports", "http", "forward")
+
+
+def _relay_passthrough(argv):
+    """`relay devices|check|ports|http|forward ...` -> the standalone client (relay/client.py),
+    or None when argv is not such a command. --relay / --password may stand anywhere; without
+    --relay (and ARSTRO_RELAY_URL) this slot's own device manager is used."""
+    i = 0
+    globals_json = False
+    while i < len(argv):                     # skip the global options
+        t = argv[i]
+        if t in ("--url", "--token", "--slot"):
+            i += 2
+        elif t.startswith(("--url=", "--token=", "--slot=")):
+            i += 1
+        elif t == "--json":
+            globals_json = True
+            i += 1
+        else:
+            break
+    if i >= len(argv) or argv[i] != "relay":
+        return None
+    rest, front, j = argv[i + 1:], [], 0
+    cmd = None
+    for k, t in enumerate(rest):
+        if t in ("--relay", "--password") and k + 1 < len(rest):
+            continue
+        if k > 0 and rest[k - 1] in ("--relay", "--password"):
+            continue
+        if t.startswith("-"):
+            continue
+        cmd = t
+        break
+    if cmd not in RELAY_CLIENT_CMDS:
+        return None
+    args = []
+    while j < len(rest):                     # the client wants --relay / --password first
+        t = rest[j]
+        if t in ("--relay", "--password") and j + 1 < len(rest):
+            front += [t, rest[j + 1]]
+            j += 2
+            continue
+        if t.startswith(("--relay=", "--password=")):
+            front.append(t)
+            j += 1
+            continue
+        args.append(t)
+        j += 1
+    if globals_json and "--json" not in args:
+        args.append("--json")
+    for k, t in enumerate(argv[:i]):         # --slot picks whose device manager is the default
+        if t == "--slot" and k + 1 < i:
+            os.environ["ARSTRO_SLOT"] = argv[k + 1].lower()
+        elif t.startswith("--slot="):
+            os.environ["ARSTRO_SLOT"] = t.split("=", 1)[1].lower()
+    if not any(t == "--relay" or t.startswith("--relay=") for t in front) and not os.environ.get("ARSTRO_RELAY_URL"):
+        try:
+            from .relay.service import load_settings
+            from .paths import load_config
+            url = load_settings(load_config()).get("url")
+        except Exception:
+            url = None
+        if url:
+            front += ["--relay", url]
+    try:
+        from .relay import client
+    except ImportError as e:
+        sys.exit("arstro-remote: the device manager client is not available (%s)" % e)
+    return client.main(front + args) or 0
+
+
 def add_module_parsers(sub):
+    rl = sub.add_parser("relay", help="Internet access through a device manager (and reaching other machines)")
+    rls = rl.add_subparsers(dest="relay_cmd")
+    jp = argparse.ArgumentParser(add_help=False)          # --json after the subcommand too
+    jp.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="machine-readable output")
+    rls.add_parser("status", help="state, device manager, device id, viewers", parents=[jp])
+    rs_ = rls.add_parser("set", help="device manager URL, join token, name, on/off, port allow-list", parents=[jp])
+    rs_.add_argument("--url", dest="relay_url", help="the device manager, e.g. https://example.com/arstro/internal/devices")
+    rs_.add_argument("--token", dest="relay_token", help="its join token ('-' reads it from stdin)")
+    rs_.add_argument("--name", dest="relay_name", help="the name in the device list (empty: the host name)")
+    eg = rs_.add_mutually_exclusive_group()
+    eg.add_argument("--enable", action="store_true", help="switch Internet access on")
+    eg.add_argument("--disable", action="store_true", help="switch it off (disconnects every viewer)")
+    rs_.add_argument("--ports", help="ports viewers may reach, e.g. 8080,22 - or any")
+    rls.add_parser("key", help="print the access key (give it only to people who may use this machine)", parents=[jp])
+    rls.add_parser("rotate", help="replace the access key (every viewer is disconnected)",
+                   parents=[jp]).add_argument("--yes", action="store_true")
+    rls.add_parser("kick", help="disconnect every viewer", parents=[jp])
+    for name, what in (("devices", "list the devices of a device manager"),
+                       ("check", "check an access key"),
+                       ("ports", "list the listening ports of a device"),
+                       ("http", "an HTTP request to a port of a device"),
+                       ("forward", "forward a port of a device to a local one")):
+        rls.add_parser(name, help=what + " (the standalone client; `relay %s -h`)" % name, add_help=False).add_argument(
+            "args", nargs=argparse.REMAINDER)
+
     ap_ = sub.add_parser("apps", help="native apps with a web UI (NTWB)")
     aps = ap_.add_subparsers(dest="apps_cmd")
     aps.add_parser("list")
@@ -1710,6 +1863,9 @@ def build_parser():
 
 
 def main(argv=None):
+    rc = _relay_passthrough(sys.argv[1:] if argv is None else list(argv))
+    if rc is not None:
+        return rc
     ap = build_parser()
     a = ap.parse_args(argv)
     if getattr(a, "slot", None):
@@ -1755,7 +1911,7 @@ def main(argv=None):
                 "web": cmd_web, "screen": cmd_screen, "stats": cmd_stats, "wifi": cmd_wifi, "term": cmd_term, "input": cmd_input,
                 "rec": cmd_rec, "gallery": cmd_gallery, "jobs": cmd_jobs, "call": cmd_call,
                 "camera": cmd_camera, "net": cmd_net, "bt": cmd_bt, "io": cmd_io, "files": cmd_files,
-                "system": cmd_system, "log": cmd_log, "apps": cmd_apps}
+                "system": cmd_system, "log": cmd_log, "apps": cmd_apps, "relay": cmd_relay}
     try:
         return handlers[a.cmd](ctl, a) or 0
     except KeyboardInterrupt:

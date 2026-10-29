@@ -48,6 +48,29 @@ else
     bad "install.sh --slot y failed"; cat "$t/out"
 fi
 rm -rf "$t"
+# covers: RLY-08, RLY-02 - install.sh --relay: relay.json (0600, on), the identity (0600) and the
+# access key printed at the end; --relay without its token is refused
+t=$(mktemp -d)
+if HOME="$t" XDG_CONFIG_HOME="$t/cfg" XDG_DATA_HOME="$t/data" XDG_STATE_HOME="$t/state" XDG_RUNTIME_DIR="$t/run" \
+   DISPLAY=:99 "$ROOT/install.sh" --slot x --no-deps --no-perms --no-start --boot desktop --yes \
+   --modules system,relay --password testpass1 --relay https://devices.example.com/arstro/internal/devices/ \
+   --relay-token join-test-token --relay-name "Test box" >"$t/out" 2>&1; then
+    c="$t/cfg/arstro-remote-x"
+    key=$(sed -n 's/^Internet access key (give it only to people who may use this machine): //p' "$t/out")
+    [ "$(stat -c %a "$c/relay.json")" = 600 ] && [ "$(stat -c %a "$c/relay_identity.json")" = 600 ] &&
+    python3 -c "import json,sys; r=json.load(open('$c/relay.json')); i=json.load(open('$c/relay_identity.json')); sys.exit(not (r['url']=='https://devices.example.com/arstro/internal/devices' and r['token']=='join-test-token' and r['enabled'] is True and r['name']=='Test box' and i['key']=='$key' and '$key'.startswith('ak1_')))" &&
+        ok "install.sh --relay (relay.json, identity, key printed)" || { bad "install.sh --relay result"; cat "$t/out"; }
+    HOME="$t" XDG_CONFIG_HOME="$t/cfg" XDG_DATA_HOME="$t/data" XDG_STATE_HOME="$t/state" XDG_RUNTIME_DIR="$t/run" \
+        "$ROOT/server/uninstall.sh" --slot x --purge >/dev/null 2>&1
+else
+    bad "install.sh --relay failed"; cat "$t/out"
+fi
+out=$(HOME="$t" XDG_CONFIG_HOME="$t/cfg" XDG_DATA_HOME="$t/data" XDG_STATE_HOME="$t/state" XDG_RUNTIME_DIR="$t/run" \
+      "$ROOT/server/install.sh" --slot x --no-deps --no-perms --no-start --yes \
+      --relay https://devices.example.com/x 2>&1) &&
+    bad "install.sh accepted --relay without --relay-token" || ok "install.sh refuses --relay without --relay-token"
+[ ! -e "$t/data/arstro-remote-x" ] || bad "install.sh --relay without a token installed anyway"
+rm -rf "$t"
 out=$("$ROOT/server/install.sh" --slot 1 2>&1) && bad "install.sh accepted a bad slot" || ok "install.sh rejects a bad slot"
 # SET-06: setup_pi.sh deploys into a slot (a bad one is refused before any SSH)
 "$ROOT/scripts/setup_pi.sh" --slot 1 nobody@invalid.invalid >/dev/null 2>&1; [ $? = 2 ] &&

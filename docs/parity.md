@@ -2,7 +2,7 @@
 
 GUI = Android app, CLI = `arstro-remote` (on the Pi, or `--url` from anywhere),
 Web = the web UI on `http://<pi>:<port>/` (slot A 8080, B 8081), grouped by module
-(Monitor, Camera, Screen, Terminal, Connection, IO Control, Files, System). All three call the same ops (`docs/protocol.md`)
+(Monitor, Camera, Screen, Terminal, Connection, IO Control, Files, Apps, Internet access, System). All three call the same ops (`docs/protocol.md`)
 and all three are updated live by the same state events (ARC-03).
 **Keep this table in sync with every change** (the implement skill checks it).
 
@@ -73,6 +73,10 @@ and all three are updated live by the same state events (ARC-03).
 | Use an app (its own web UI) | APP-03/04/06, APP-10 | Apps (top bar) › an app (in-app web view, per slot) | `apps call ID METHOD '{json}'`, `apps state ID [KEY]`, `apps api ID` | Apps › Open (inside the shell) or `/apps/<id>/` |
 | App sessions: list, start another, join, stop one; who is viewing | APP-04/09, NTWB-12 | ³ | `apps sessions ID`, `apps launch ID --session new`, `--session S` on `info/stop/call/state` | Apps › the card's sessions (Open / New session / Stop), or `/apps/<id>/?session=S` |
 | The NTWB protocol reference | NTWB-01 | - | `apps spec [--json]` | `docs/ntwb/API.md` |
+| Internet access: device manager, on / off, name, port allow-list, status | RLY-01, RLY-08 | ³ | `relay status`, `relay set --url U --token T [--name N] [--enable\|--disable] [--ports 8080,22\|any]`, `install.sh --relay U --relay-token T` | Internet access |
+| Access key: show, replace | RLY-02 | ³ | `relay key`, `relay rotate --yes` | Internet access › Access key |
+| Who is connected through the device manager, disconnect them | RLY-05 | ³ | `relay status`, `relay kick` | Internet access › Viewers |
+| Reach another machine through a device manager (list, ports, HTTP, port forward) | RLY-06, RLY-26 | - (the device manager's page works in the phone's browser) | `relay devices / check / ports / http / forward` (or the standalone client) | the device manager's page `https://<server>/arstro/internal/devices/` |
 | Any op (tools, scripts) | ARC-02 | - | `call OP '{json}'` | `POST /api/op/OP` |
 
 ¹ A terminal cannot show video: the CLI saves the live H.264 stream to a file (play it with

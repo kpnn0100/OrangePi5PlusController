@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="referrer" content="no-referrer">
+  <title>Opening device… · Arstro device manager</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%233b63e0'/%3E%3Cpath d='M9 22 16 8l7 14M11.5 17h9' fill='none' stroke='%23fff' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="{{BASE}}/static/style.css">
+  <script src="{{BASE}}/static/e2e.js" defer></script>
+  <script src="{{BASE}}/static/viewer.js" defer></script>
+  <script src="{{BASE}}/static/boot.js" defer></script>
+</head>
+<body class="boot">
+  <div class="center">
+    <main class="card narrow" id="boot">
+      <div class="brand" style="margin-bottom:14px">
+        <div class="logo" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M9 22 16 8l7 14M11.5 17h9" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <div>
+          <h1 id="title">Opening device</h1>
+          <div class="sub" id="where"></div>
+        </div>
+      </div>
+      <p class="note" id="status"><span class="spin"></span><span id="status-text">Starting the viewer…</span></p>
+      <p class="err" id="error" role="alert"></p>
+      <form id="key-form" hidden>
+        <label for="key">Access key of this device</label>
+        <input class="input mono" id="key" type="password" autocomplete="off" spellcheck="false" placeholder="ak1_…" required>
+        <label class="check"><input type="checkbox" id="remember"> Remember on this browser</label>
+        <button class="btn primary" id="key-submit" type="submit">Open</button>
+        <p class="note">The key is shown on the device: the Internet access page of Arstro Remote, or
+          <code>arstro-remote relay key</code>. Not remembered, it is kept for 12 hours.</p>
+      </form>
+      <div class="row" id="actions" hidden>
+        <button class="btn primary" id="retry" type="button">Retry</button>
+        <button class="btn" id="other-key" type="button">Use another key</button>
+      </div>
+      <p class="note"><a id="back" href="{{BASE}}/">All devices</a></p>
+    </main>
+  </div>
+</body>
+</html>

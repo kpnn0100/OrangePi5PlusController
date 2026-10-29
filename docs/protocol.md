@@ -14,6 +14,7 @@ server code is `server/arstro_remote/protocol.py` + `session.py`; the Dart side 
 | App (developer) | TCP `tcp:host:port` to the control socket through an SSH tunnel (`scripts/dev_tunnel.sh`) | the socket owner |
 | CLI on the Pi | unix socket `$XDG_RUNTIME_DIR/arstro-remote-<slot>.sock` (0600; `ARSTRO_SOCKET` overrides) | file permissions |
 | CLI remote, web UI | WebSocket `ws://<pi>:<port>/ws` (slot A 8080, B 8081, ...) | password (see *HTTP*) |
+| Anyone, over the internet | through the device manager (module `relay`): the same HTTP / WebSocket, reached on `127.0.0.1:<port>` by an end-to-end encrypted channel ([relay/PROTOCOL.md](relay/PROTOCOL.md)) | the machine's access key, then the password |
 
 ## Frames
 
@@ -67,6 +68,7 @@ Pushed to every session whenever they change (whoever changed them), newest valu
 | `io.gpio` | `{held: [{chip, line, pin, mode, bias, drive, active_low, edge, debounce_us, value, events}], events: [{chip, line, pin, edge: rising\|falling, t}]}` (latest 20 events) |
 | `io.pwm` | the `io.pwm.list` chips after a change |
 | `apps` | the `apps.list` apps (run state, clients) |
+| `relay` | Internet access: `{enabled, url, name, id, key_id, state: off\|connecting\|online\|error, error, since, relay_version, token_set, ports, viewers: [{n, addr, since, streams, bytes_in, bytes_out}], wrong_keys}` - never the key, the join token or the secret |
 
 Other events: `stats` `{data}` (after `stats.subscribe`), `term.exit` `{term, code, reason?}`.
 
@@ -176,6 +178,11 @@ Other events: `stats` `{data}` (after `stats.subscribe`), `term.exit` `{term, co
 | `apps.log` | `app, lines?, grep?` | `{id, path, lines}` |
 | `apps.register` / `apps.unregister` | `path` (ntwb.json or its dir) | the app / `{registered}` |
 | `files.upload_check` | `dir, name, overwrite?` | `{path, exists}` - call before a big upload |
+| `relay.status` | | the `relay` topic (RLY-01) |
+| `relay.set` | `url?, token?, name?, enabled?, ports?` (`ports`: null / `"any"` = any, a list or `"8080, 22"`; an empty url or name resets it; switching on needs url + token) | the `relay` topic; a changed url / token / name / on-off reconnects, a new url or switching off also disconnects the viewers (RLY-08) |
+| `relay.key` | | `{key, key_id}` - the access key (RLY-02) |
+| `relay.rotate` | | `{key, key_id, closed}` - a new access key; every viewer is disconnected (RLY-02) |
+| `relay.kick` | | `{closed}` - disconnects every viewer (RLY-05) |
 
 Gallery items carry `verified` (`{raw, frames, checked}` for an FFV1 proven identical to its RAW, else null).
 Take ids are `REC_YYYYMMDD_HHMMSS`; its files are `<take>.arh` (RAW), `<take>_H265.mp4|mov|mkv`,

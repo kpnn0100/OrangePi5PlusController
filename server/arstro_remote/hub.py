@@ -18,7 +18,7 @@ import threading
 log = logging.getLogger("arstro.hub")
 
 TOPICS = ("recorder", "recorder.settings", "jobs", "gallery", "wifi", "terminals",
-          "pairing", "controllers")
+          "pairing", "controllers", "relay")
 
 
 class Hub:

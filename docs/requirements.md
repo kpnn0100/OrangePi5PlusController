@@ -149,7 +149,7 @@ IDs are stable: never renumber, mark removed ones `(withdrawn)`.
 
 | ID | Requirement |
 |---|---|
-| MOD-01 | Features come in modules - **Monitor, System, Camera, Connection, Terminal, Screen, IO Control, Files** - enabled per machine (`modules` in the slot's config, `install.sh --modules`; default all). The ops of a disabled module are refused with a clear message; hello reports each module's state (enabled / disabled / failed with the reason). |
+| MOD-01 | Features come in modules - **Monitor, System, Camera, Connection, Terminal, Screen, IO Control, Files, Apps, Internet access** - enabled per machine (`modules` in the slot's config, `install.sh --modules`; default all). The ops of a disabled module are refused with a clear message; hello reports each module's state (enabled / disabled / failed with the reason). |
 | MOD-02 | The modules can be changed from any controller (System › Modules, `system modules --set`); the server restarts itself to apply it. |
 | MOD-03 | Modules use standard Linux interfaces only; board-specific knowledge lives in a board module (`boards/`, e.g. the Orange Pi 5 Plus 40-pin header map) that only adds information. On an unknown board everything else works. |
 | MOD-04 | The controllers group their pages by module and show only the enabled ones (web: sidebar / tab bar by group, sub-tabs inside a group). |
@@ -235,6 +235,31 @@ IDs are stable: never renumber, mark removed ones `(withdrawn)`.
 | NTWB-10 | A test fails when the generated reference, the web SDK or the narrative drift from the definition. |
 | NTWB-11 | **MVVM - the app is the model, every client is its own view.** An app's observable state leaves only as `state` (the model, as whole values) and `event`s (facts), its pixels as blobs; a client's view state (layout, open panels, scroll, zoom, a drag in flight) stays in that client and never travels as shared state. So any number of clients - each laid out for its own screen - show one session, and a change made in one reaches every other through the model. An app's web UI is a view and view-model built on that model, never a stream of the app's own window (a remote screen gives every client the same pixels, sized for no one). |
 | NTWB-12 | Presence: a client learns which session it joined and how many clients share it (`ready.session`, `status.session` + `status.clients`) and is told again whenever that number changes; the web SDK exposes both. |
+
+## RLY – Internet access through the device manager
+
+The device manager (`relay/`, run as a Docker image on a public server) lists the machines that
+advertise to it and lets a viewer reach any port of one of them, end-to-end encrypted with
+the machine's access key. Design and security: `docs/relay/RELAY.md`; protocol:
+`docs/relay/PROTOCOL.md`; for agents: `docs/relay/AGENT_API.md`.
+
+| ID | Requirement |
+|---|---|
+| RLY-01 | **Advertise.** Module `relay` (Internet access): with a device manager URL and its join token set and Internet access on, the slot keeps one outbound WebSocket to the device manager (no inbound port), reconnects with back-off, and shows its state (off / connecting / online / error with the reason) live in topic `relay` on every controller. |
+| RLY-02 | **Identity and access key.** On its first start the slot makes a device id, a secret that binds the id at the device manager, and a 256-bit **access key** (`ak1_…`), all in 0600 files in the slot's config dir. The key is shown by `install.sh --relay`, `relay key` and the Internet access page; it can be replaced, which closes every viewer. |
+| RLY-03 | **End-to-end encryption.** Everything between a viewer and the machine is encrypted and authenticated with keys derived from the access key (HKDF-SHA256, AES-256-GCM, fresh nonces per channel; the machine proves the key first, then the viewer); the device manager only forwards ciphertext and never holds the key. One definition (`relay/e2e.py`) with test vectors that the browser implementation must match. |
+| RLY-04 | **Any local port.** A viewer reaches any TCP port of the machine (`127.0.0.1:<port>`) as HTTP pages, WebSockets or raw TCP; an optional allow-list limits the ports; an authenticated viewer can list the listening ports. |
+| RLY-05 | **Viewers are visible.** Every controller lists the open viewer channels (address, since, streams, bytes) and can disconnect them all; wrong keys are logged and refused for a minute after five in a row. |
+| RLY-06 | **CLI.** `relay status / set / key / rotate / kick` manage it; `relay devices / ports / http / forward` reach other machines through a device manager (the standalone client). |
+| RLY-07 | **Logging.** Tunnel up / down, viewer channels opened and closed (with address and bytes), wrong keys and setting changes (with who) are logged; the key, the join token and the secret never are. |
+| RLY-08 | **Settings from every controller.** Device manager URL, join token (write-only), name, on / off and the port allow-list are set from the web page, the CLI (`relay set`) and `install.sh --relay URL --relay-token T [--relay-name N]`. |
+| RLY-20 | **Docker image.** The device manager is one image (any architecture Python runs on, e.g. Oracle's arm64), runs with no configuration as a non-root user with one data volume and one port, serves under a base path (default `/arstro/internal/devices`) and works behind an HTTPS reverse proxy (a compose file with Caddy gives automatic HTTPS). |
+| RLY-21 | **Device list.** It lists the machines that advertise to it (name, host name, online / offline, last seen, viewers); a machine needs the join token, and a device id stays bound to the machine that registered it first. |
+| RLY-22 | **Browser viewer.** Pick a device, enter its access key (kept in the browser as a non-extractable key, remembered or for 12 h, can be forgotten), pick or type a port: the page of that port opens through the encrypted channel (service worker for HTTP, WebSocket shim, cookie jar), so web apps like Arstro Remote work fully. |
+| RLY-23 | **Viewer password.** An optional password (`RELAY_PASSWORD`) protects the list and the connections. |
+| RLY-24 | **Hardening.** Message size, channels per device and new connections per address are limited; strict security headers; forwarded content is never read or logged. |
+| RLY-25 | **Admin.** A CLI inside the container lists devices, forgets one and shows or replaces the join token; a running server picks changes up within 5 s. |
+| RLY-26 | **For agents.** A documented API (`docs/relay/AGENT_API.md`) and a standalone Python client, downloadable from the device manager, list devices, check a key, list ports, make HTTP requests and forward a device port to a local one. |
 
 ## UX – Look and feel
 

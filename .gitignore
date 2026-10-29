@@ -19,3 +19,4 @@ local.env
 release/
 # per-user Claude Code settings
 .claude/settings.local.json
+relay/.env

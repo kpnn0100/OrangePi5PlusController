@@ -121,6 +121,16 @@ arstro-remote log -f --grep error                  # follow the server log
 gives it - see [docs/ntwb/NTWB.md](docs/ntwb/NTWB.md) (reference: [docs/ntwb/API.md](docs/ntwb/API.md),
 example: `server/examples/ntwb/hello/`). `arstro-remote apps list | call ID METHOD JSON | spec`.
 
+**Over the internet (device manager).** Run the device manager on a public server
+(`DOMAIN=abc.example.com docker compose -f relay/docker-compose.yml up -d`, see
+[relay/README.md](relay/README.md)), point each machine at it
+(`install.sh --relay https://abc.example.com/arstro/internal/devices --relay-token <token>`, or
+the *Internet access* page), then open `https://abc.example.com/arstro/internal/devices/`, pick
+the machine, type its access key (`arstro-remote relay key`) and a port - 8080 opens this web
+UI, any other port that port's page. End-to-end encrypted; the server never sees the key.
+Agents and scripts: `arstro-remote relay forward <id> 8080 --listen 127.0.0.1:18080` -
+[docs/relay/AGENT_API.md](docs/relay/AGENT_API.md). Design and security: [docs/relay/RELAY.md](docs/relay/RELAY.md).
+
 ## Development
 
 | | |

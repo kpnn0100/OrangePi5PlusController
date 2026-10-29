@@ -17,7 +17,12 @@
 #   --password PW         web / remote-CLI password; without it a new slot asks for one
 #                         (Enter = "admin"); an existing slot keeps its password
 #   --modules LIST        comma list of modules or "all" (default all): monitor, system,
-#                         camera, connection, terminal, screen, io, files
+#                         camera, connection, terminal, screen, io, files, apps, relay
+#   --relay URL           Internet access (module relay): advertise this slot to the device
+#                         manager at URL (https://<server>/arstro/internal/devices) and switch
+#                         it on; prints the slot's access key at the end
+#   --relay-token T       the device manager's join token (needed with --relay)
+#   --relay-name N        the name in the device manager's list (default: the host name)
 #   --bluetooth on|off    own the app's Bluetooth link (default: on for a, off for others -
 #                         only one instance per machine can own it)
 #   --boot desktop|systemd|none
@@ -39,6 +44,7 @@ SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CODE="$SRC"                                   # the installed copy lives in <slot>/bin/
 [ -d "$CODE/arstro_remote" ] || [ ! -d "$SRC/../arstro_remote" ] || CODE="$(cd "$SRC/.." && pwd)"
 SLOT=a PORT="" PASSWORD="" MODULES="all" BT="" BOOT="" ACTIVATE=0
+RELAY_URL="" RELAY_TOKEN="" RELAY_NAME="" RELAY_KEY=""
 DEPS=1 PERMS=1 START=1 UNINSTALL=0 PURGE=0 YES=0 FORCE_OWN=0
 
 usage() { sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p}' "$0"; exit "${1:-0}"; }
@@ -48,6 +54,9 @@ while [ $# -gt 0 ]; do
         --port) PORT="$2"; shift 2 ;;
         --password) PASSWORD="$2"; shift 2 ;;
         --modules) MODULES="$2"; shift 2 ;;
+        --relay) RELAY_URL="$2"; shift 2 ;;
+        --relay-token) RELAY_TOKEN="$2"; shift 2 ;;
+        --relay-name) RELAY_NAME="$2"; shift 2 ;;
         --bluetooth) BT="$2"; shift 2 ;;
         --boot) BOOT="$2"; shift 2 ;;
         --activate) ACTIVATE=1; shift ;;
@@ -90,7 +99,7 @@ UNIT="$CONFIG_HOME/systemd/user/$NAME.service"
 LEGACY_CFG="$CONFIG_HOME/arstro-remote"
 ACTIVE_FILE="$CONFIG_HOME/arstro-remote-active"
 
-ALL_MODULES="monitor system camera connection terminal screen io files"
+ALL_MODULES="monitor system camera connection terminal screen io files apps relay"
 if [ "$MODULES" = all ]; then MOD_LIST="$ALL_MODULES"; MOD_JSON=null
 else
     MOD_LIST=$(echo "$MODULES" | tr ',' ' ')
@@ -98,6 +107,11 @@ else
     MOD_JSON="[$(for m in $MOD_LIST; do printf '"%s",' "$m"; done | sed 's/,$//')]"
 fi
 has_mod() { [[ " $MOD_LIST " == *" $1 "* ]]; }
+if [ -n "$RELAY_URL$RELAY_TOKEN$RELAY_NAME" ]; then
+    [ -n "$RELAY_URL" ] && [ -n "$RELAY_TOKEN" ] || die "--relay URL and --relay-token T go together"
+    [[ "$RELAY_URL" =~ ^https?://[^/?#@]+ ]] || die "--relay needs an http(s)://host/... URL"
+    has_mod relay || warn "--relay given but the relay module is not in --modules: it stays unused"
+fi
 
 launcher_pid() {  # pid of this slot's running launcher, or nothing
     local f="$RUN_DIR/$NAME-launcher.lock" pid
@@ -294,6 +308,35 @@ if [ -n "$PASSWORD" ]; then
     echo "   web password set"
 fi
 
+# Internet access (RLY-02, RLY-08): relay.json (0600, on) and the slot's identity + access key
+if [ -n "$RELAY_URL" ]; then
+    RELAY_URL="$RELAY_URL" RELAY_TOKEN="$RELAY_TOKEN" RELAY_NAME="$RELAY_NAME" \
+    python3 - "$CFG_DIR/relay.json" <<'PYEOF' || die "could not write the Internet access settings"
+import json, os, sys
+path = sys.argv[1]
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+except (OSError, ValueError):
+    cfg = {}
+cfg.update(url=os.environ["RELAY_URL"].rstrip("/"), token=os.environ["RELAY_TOKEN"], enabled=True)
+cfg.setdefault("ports", None)
+if os.environ.get("RELAY_NAME"):
+    cfg["name"] = os.environ["RELAY_NAME"]
+cfg.setdefault("name", None)
+tmp = path + ".tmp"
+fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "w") as f:
+    json.dump(cfg, f, indent=2)
+    f.write("\n")
+os.chmod(tmp, 0o600)
+os.replace(tmp, path)
+PYEOF
+    RELAY_KEY=$(ARSTRO_SLOT=$SLOT XDG_CONFIG_HOME="$CONFIG_HOME" PYTHONPATH="$APP_DIR" \
+                python3 -m arstro_remote.relay.service key) || die "could not make the access key"
+    echo "   Internet access on: ${RELAY_URL%/}"
+fi
+
 # --activate: this slot gets the default command and the Bluetooth link
 if [ "$ACTIVATE" = 1 ]; then
     echo "$SLOT" >"$ACTIVE_FILE"
@@ -405,5 +448,11 @@ if [ "$START" = 1 ]; then
     else
         warn "slot $SLOT_UP did not answer on port $PORT yet - see $LOG_DIR/launcher.log and arstro-remote.log"
     fi
+fi
+if [ -n "$RELAY_KEY" ]; then
+    echo
+    echo "Internet access key (give it only to people who may use this machine): $RELAY_KEY"
+    echo "   (show it again: $NAME relay key · replace it: $NAME relay rotate --yes)"
+    echo
 fi
 echo "Done. CLI: $NAME status · logs: $NAME log -f · remove: $APP_DIR/bin/install.sh --slot $SLOT --uninstall"

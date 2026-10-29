@@ -83,6 +83,7 @@ updated · deployed into the idle slot and verified · committed and pushed.
 | `server/arstro_remote/screen/` | remote screen service + worker |
 | `server/arstro_remote/web/` | HTTP/WS server, auth; `static/js/main.js` groups, `core.js`, `views/*.js` |
 | `server/arstro_remote/cli.py` | CLI controller (local socket of the slot, or `--url`) |
+| `server/arstro_remote/relay/` + `relay/` | Internet access (module `relay`) and the device manager server - change them with the `arstro.device_manager.implement` skill |
 | `app/lib/src/...` | Flutter app (dev PC, or the board after `scripts/setup_android_dev.sh`) |
 
 ## Patterns

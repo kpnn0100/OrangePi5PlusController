@@ -1,0 +1,11 @@
+# HTTPS in front of the device manager (relay/docker-compose.yml). Caddy gets and renews the
+# certificate for {$DOMAIN} by itself and passes WebSockets through; X-Forwarded-For and
+# X-Forwarded-Proto reach the relay (RELAY_TRUST_PROXY=1).
+{$DOMAIN} {
+	handle {$RELAY_BASE:/arstro/internal/devices}* {
+		reverse_proxy devices:8090
+	}
+	handle {
+		respond "Not found" 404
+	}
+}

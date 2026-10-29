@@ -119,13 +119,13 @@ test("login_wrong_then_right_password_and_cookie", ["CON-03", "SEC-03"], async (
 });
 
 const VIEWS = ["recorder", "gallery", "screen", "monitor", "wifi", "network", "bluetooth", "terminal", "remote",
-               "pins", "i2c", "spi", "uart", "pwm", "adc", "files", "system", "logs"];
+               "pins", "i2c", "spi", "uart", "pwm", "adc", "files", "relay", "system", "logs"];
 
 test("pages_are_grouped_by_the_servers_modules", ["MOD-04", "CAM-03", "ADM-07"], async () => {
   const page = await newPage();
   const hello = await page.evaluate(async () => (await (await fetch("/api/ping")).json()));
   const groups = await page.$$eval(".side .nav-item span", (els) => els.map((e) => e.textContent));
-  check(groups.includes("System") && groups.length <= 9, "groups: " + groups.join(", "));
+  check(groups.includes("System") && groups.length <= 10, "groups: " + groups.join(", "));
   await go(page, "gallery");                                            // an old link still works
   const subs = await page.$$eval(".subnav button", (els) => els.map((e) => e.textContent));
   check(subs.join("/") === "Live/Gallery", "camera sub-tabs: " + subs.join("/"));
@@ -923,6 +923,31 @@ test("wifi_monitor_system_show_server_state", ["WIFI-01", "STAT-01", "STAT-02", 
   const info = await op("web.info");
   check(await until(() => page.$eval(".view", (e, u) => e.textContent.includes(u), info.urls[0] || ""), 5000), "web URL not shown");
   void t1;
+  await page.close();
+});
+
+test("internet_access_page_state_key_and_settings", ["RLY-01", "RLY-02", "RLY-05", "RLY-08", "ARC-03"], async () => {
+  const st = await op("relay.status");
+  const page = await newPage(BASE, { width: 360, height: 740, mobile: true });
+  await go(page, "relay");
+  check(await until(() => page.$eval(".view", (e, id) => e.textContent.includes(id), st.id), 5000), "device id not shown");
+  check(!(await page.$eval(".view", (e) => e.textContent.includes("ak1_"))), "the key is shown before Show");
+  await page.click('button[aria-label="Show key"]');
+  const key = (await op("relay.key")).key;
+  check(await until(() => page.$eval(".view", (e, k) => e.textContent.includes(k), key), 5000), "Show did not reveal the key");
+  // the allow-list: set by another controller -> shown live; set here -> reaches the server (then restored)
+  try {
+    await op("relay.set", { ports: [9999] });
+    check(await until(() => page.$eval('input[aria-label="Allowed ports"]', (e) => e.value === "9999"), 5000), "ports not live");
+    await page.$eval('input[aria-label="Allowed ports"]', (e) => { e.value = ""; });
+    await page.type('input[aria-label="Allowed ports"]', "8080, 22");
+    await clickText(page, "button", "Save");
+    check(await until(async () => JSON.stringify((await op("relay.status")).ports) === "[22,8080]", 5000), "ports not saved");
+  } finally {
+    await op("relay.set", { ports: st.ports });
+  }
+  const [sw, iw] = await page.evaluate(() => [document.documentElement.scrollWidth, innerWidth]);
+  check(sw <= iw, `relay page overflows at 360 px: ${sw} > ${iw}`);
   await page.close();
 });
 

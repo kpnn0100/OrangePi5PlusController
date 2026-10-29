@@ -1,0 +1,48 @@
+# The device manager behind Caddy (automatic HTTPS from Let's Encrypt). From the repository root:
+#
+#   DOMAIN=devices.example.com docker compose -f relay/docker-compose.yml up -d
+#
+# The list is then at https://$DOMAIN/arstro/internal/devices/ and the join token is in
+#   docker compose -f relay/docker-compose.yml exec devices python -m arstro_relay admin token
+# DOMAIN must already point at this server, with ports 80 and 443 open (see relay/README.md).
+name: arstro-devices
+
+services:
+  devices:
+    build:
+      context: ..
+      dockerfile: relay/Dockerfile
+    image: arstro-devices
+    restart: unless-stopped
+    environment:
+      RELAY_TRUST_PROXY: "1"                  # Caddy in front: client address + https from X-Forwarded-*
+      RELAY_BASE: ${RELAY_BASE:-/arstro/internal/devices}
+      RELAY_NAME: ${RELAY_NAME:-Devices}
+      RELAY_PASSWORD: ${RELAY_PASSWORD:-}     # optional password for the device list
+      RELAY_JOIN_TOKEN: ${RELAY_JOIN_TOKEN:-} # empty: generated once into the data volume
+    volumes:
+      - devices-data:/data
+    expose:
+      - "8090"                                # only Caddy reaches it
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - devices
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN to this server's domain name, e.g. DOMAIN=devices.example.com}
+      RELAY_BASE: ${RELAY_BASE:-/arstro/internal/devices}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data                      # certificates - keep it, or Let's Encrypt rate limits bite
+      - caddy-config:/config
+
+volumes:
+  devices-data:
+  caddy-data:
+  caddy-config:

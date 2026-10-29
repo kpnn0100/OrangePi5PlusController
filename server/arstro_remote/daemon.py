@@ -74,6 +74,7 @@ class Daemon:
         self.conn = None
         self.system = None
         self.apps = None
+        self.relay = None
         self.loop = None
         self._lock_file = None
 
@@ -304,6 +305,10 @@ class Daemon:
             from .ntwb.host import AppsService
             return AppsService(ctx)
 
+        def relay(ctx):
+            from .relay.service import RelayService
+            return RelayService(ctx)
+
         self._start("system", "system", system, "system module")
         self._start("camera", "recorder", recorder, "camera (recorder)")
         self._start("screen", "screen", screen, "remote screen")
@@ -311,6 +316,7 @@ class Daemon:
         self._start("files", "files", files, "files")
         self._start("connection", "conn", conn, "connection")
         self._start("apps", "apps", apps, "apps (NTWB host)")
+        self._start("relay", "relay", relay, "internet access (relay)")
         if self.config.get("web_enabled", True):
             try:
                 from .web.server import WebServer
@@ -382,7 +388,7 @@ class Daemon:
                 sessions = list(self.sessions)
             for s in sessions:
                 s.close("server stopping")
-            for name in ("apps", "recorder", "screen", "io", "files", "conn", "system"):
+            for name in ("relay", "apps", "recorder", "screen", "io", "files", "conn", "system"):
                 svc = getattr(self, name)
                 if svc:
                     try:

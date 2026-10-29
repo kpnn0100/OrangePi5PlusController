@@ -12,6 +12,7 @@ mods=" $* "
 need=(python3 python3-psutil python3-gi python3-dbus gir1.2-glib-2.0 bluez)
 optional=()
 case "$mods" in *" connection "*) need+=(network-manager) ;; esac
+case "$mods" in *" relay "*) need+=(python3-cryptography) ;; esac     # AES-GCM for Internet access
 case "$mods" in *" screen "*)
     need+=(libxtst6)
     optional+=(gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
