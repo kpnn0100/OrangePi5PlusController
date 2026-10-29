@@ -29,7 +29,10 @@ device manager forwards ciphertext and never has the key. Wire format: [PROTOCOL
    `DOMAIN=abc.example.com docker compose -f relay/docker-compose.yml up -d` (Caddy gets the
    HTTPS certificate), or `docker run` the image behind your own HTTPS proxy. Open 80/443 in
    the VCN security list **and** the VM firewall. `docker logs` shows the **join token**.
-   Operator guide: [relay/README.md](../../relay/README.md).
+   Operator guide: [relay/README.md](../../relay/README.md). For someone who only has Docker,
+   `relay/package.sh --arm64-host <arm64 machine>` makes
+   `release/arstro-devices-<version>.tar.gz` (images for amd64 and arm64, compose with Caddy,
+   `run.sh`, a README for them): they unpack it, set `DOMAIN` and run `./run.sh`.
 2. **Each machine.** `install.sh --relay https://abc.example.com/arstro/internal/devices
    --relay-token <join token>`, or the web UI's *Internet access* page, or `arstro-remote relay
    set --url ... --token ... --enable`. The installer prints the **access key**; later

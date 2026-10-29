@@ -92,6 +92,20 @@ location /arstro/internal/devices {
 }
 ```
 
+## 2b. A kit for someone who only has Docker (no repository)
+
+```
+relay/package.sh --arm64-host user@arm64-machine     # e.g. the Orange Pi (Docker installed)
+```
+
+builds the image for amd64 here and for arm64 natively on that machine over SSH (Oracle's
+free Ampere VMs are arm64), and writes `release/arstro-devices-<version>.tar.gz` - send that
+one file. It holds both images (`docker save`, gzip, with `SHA256SUMS`), an image-only
+`docker-compose.yml` generated from this folder's, the `Caddyfile`, `.env.example`, `run.sh` and
+a README for the person running it (`relay/kit/README.md`: Oracle ports, start, token, update).
+They run `cp .env.example .env` (set `DOMAIN`), `./run.sh`, `./run.sh token`.
+`release/` is not committed; `--no-amd64` skips the local build.
+
 ## 3. Settings
 
 All settings are environment variables (`docker run -e NAME=value`, or the compose file).

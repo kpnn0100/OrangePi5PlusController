@@ -42,6 +42,7 @@ and must keep refusing old peers with a clear error.
 | `docs/relay/AGENT_API.md` | how an agent uses it: client commands, exit codes, error strings, recipes, HTTP API | client options/commands/output, relay routes, error texts |
 | `docs/relay/vectors.json` | generated test vectors | `e2e.py` crypto or framing changes (regenerate, never hand-edit) |
 | `relay/README.md` | operator guide: docker run / compose / env / admin / Oracle notes | env vars, ports, image, admin commands |
+| `relay/kit/README.md` | the guide inside the kit for a Docker-only operator | anything they run or open (ports, commands, update steps) |
 | `docs/protocol.md` | ops `relay.*`, topic `relay` of the machine | machine ops or topic fields |
 | `docs/parity.md` | the Internet access rows (GUI / CLI / Web) | any machine-side feature |
 | `docs/architecture.md` | the module row + the device manager section | structure changes |
@@ -62,6 +63,7 @@ and must keep refusing old peers with a clear error.
 | `relay/arstro_relay/` | the device manager: `server.py` (HTTP + routes, stdlib asyncio), `websocket.py`, `store.py` (devices.json, tokens), `admin.py` (`python3 -m arstro_relay admin list / forget / token`) |
 | `relay/arstro_relay/static/` | browser viewer: `index.html` + `app.js` (list, key, port), `boot.html`/`boot.js`, `sw.js`, `shim.js`, `viewer.js` (routing, cookie jar, key store - shared by worker, pages and Node tests), `e2e.js`. HTML uses `{{BASE}}` (the relay fills it in) |
 | `relay/Dockerfile` (context = repo root), `relay/docker-compose.yml`, `relay/Caddyfile`, `.dockerignore` | packaging |
+| `relay/package.sh`, `relay/kit/` (`run.sh`, `README.md`, `.env.example`) | the send-to-someone kit: `relay/package.sh --arm64-host user@<arm64 box>` → `release/arstro-devices-<version>.tar.gz` (not committed); its compose file is generated from `relay/docker-compose.yml` |
 | `relay/tests/` | relay server tests (Python), `e2e_vectors.mjs` (Node), `web/viewer_test.mjs` (puppeteer, full stack) |
 | `server/tests/test_relay.py`, `server/tests/test_relay_docs.py` | machine side + doc sync |
 
