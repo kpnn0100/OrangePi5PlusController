@@ -98,11 +98,12 @@ WebCrypto code must match. See [relay/RELAY.md](relay/RELAY.md) (design, securit
 
 ## Share this phone (PHN-01..19)
 
-The Android app can be a *device* too: `PhoneService` (Kotlin) runs the relay protocol's device
-side (`phone/core/RelayAgent.kt`, the same protocol and vectors as the Python agent) and hands
-every http / ws stream to an in-process `Router` (no local port) that serves the phone's web UI
-(`assets/phone/`) and the features (`phone/features/`). The contract is `phone/core/Api.kt` +
-[phone/PHONE.md](phone/PHONE.md).
+A phone can be a *device* too, with its own app, Arstro Remote Client (`client_app/`; Arstro
+Remote in `app/` stays the Pi's remote control and asks for none of the phone's permissions):
+`PhoneService` (Kotlin) runs the relay protocol's device side (`core/RelayAgent.kt`, the same
+protocol and vectors as the Python agent) and hands every http / ws stream to an in-process
+`Router` (no local port) that serves the phone's web UI (`assets/phone/`) and the features
+(`features/`). The contract is `core/Api.kt` + [phone/PHONE.md](phone/PHONE.md).
 
 ## Slots A/B (ADM-06)
 

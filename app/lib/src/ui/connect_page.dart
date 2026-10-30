@@ -5,8 +5,6 @@ import 'package:flutter/material.dart';
 import '../app_scope.dart';
 import '../bt/bluetooth.dart';
 import '../remote_client.dart';
-import 'phone/phone_api.dart';
-import 'phone/phone_page.dart';
 import 'settings_page.dart';
 
 class ConnectPage extends StatefulWidget {
@@ -141,13 +139,6 @@ class _ConnectPageState extends State<ConnectPage> {
           appBar: AppBar(
             title: const Text('Arstro Remote'),
             actions: [
-              if (PhoneApi.supported)
-                IconButton(
-                  tooltip: 'This phone',
-                  icon: const Icon(Icons.phone_android_outlined),
-                  onPressed: () =>
-                      Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PhonePage())),
-                ),
               IconButton(
                 tooltip: 'Settings',
                 icon: const Icon(Icons.settings_outlined),

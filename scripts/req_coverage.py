@@ -73,7 +73,7 @@ def scan():
                 src = open(os.path.join(web, f), encoding="utf-8").read()
                 for m in re.finditer(r'test\("(\w+)",\s*\[([^\]]*)\]', src):
                     add(ids(m.group(2)), "server/tests/web/" + f, m.group(1))
-    for sub in ("relay/tests", "relay/tests/web", "app/phone_web_test"):   # device manager, phone web UI
+    for sub in ("relay/tests", "relay/tests/web", "client_app/phone_web_test"):   # device manager, phone web UI
         d = os.path.join(ROOT, sub)
         for f in sorted(os.listdir(d)) if os.path.isdir(d) else []:
             src = open(os.path.join(d, f), encoding="utf-8").read() if os.path.isfile(os.path.join(d, f)) else ""

@@ -1,7 +1,10 @@
 # Arstro on Android: the phone as a device (PHN-01..)
 
-The Arstro Remote app can **share this phone**: a foreground service makes the phone a device of
-the device manager, exactly like an Arstro Remote machine (`docs/relay/`). From any browser you
+The **Arstro Remote Client** app (`client_app/`, package `com.arstro.arstro_remote_client`)
+**shares this phone**: a foreground service makes the phone a device of the device manager, exactly
+like an Arstro Remote machine (`docs/relay/`). It is its own app, apart from Arstro Remote (`app/`,
+the remote control of a Pi): a phone can have either or both, and only the client asks for the
+phone's sensitive permissions. From any browser you
 open the device list, pick the phone, give its access key, and get the phone's own web UI:
 screen view and control, camera, internet calls, find my phone, messages, files and more.
 
@@ -12,7 +15,7 @@ screen view and control, camera, internet calls, find my phone, messages, files 
                                                                        │    ├─ assets/phone/   the web UI
                                                                        │    ├─ POST /api/op/<op>, GET /api/..., /ws/...
                                                                        │    └─ Features    screen, camera, call, ...
- the app's "This phone" page (Flutter) ── MethodChannel arstro/phone ──┘    (each: permissions, ops, routes, sockets)
+ the app's page (Flutter)  ──────────── MethodChannel arstro/phone ──┘    (each: permissions, ops, routes, sockets)
 ```
 
 **No local server.** The relay agent hands every http / ws stream of a channel straight to the
@@ -27,12 +30,12 @@ agents use `http` (docs/relay/AGENT_API.md).
 
 | Path | Owner | What |
 |---|---|---|
-| `app/android/app/src/main/kotlin/com/arstro/arstro_remote/phone/core/Api.kt` | contract | `Feature`, `Request`, `Response`, `WsSession`, `WsHandler`, `PhoneContext`, `EventBus`, `SpecialAccess`, `OpError` |
-| `.../phone/core/` | core | `PhoneService` (foreground service), `RelayAgent` + `E2e` + transports (WebSocket, HTTP pipes), `Router`, `Store` (identity, settings, feature switches), `BootReceiver`, `TrampolineActivity`, `PhoneBridge` (MethodChannel for Flutter), `Features.kt` (the registry) |
-| `.../phone/features/` | features | one file per feature + `ControlService` (accessibility), `NotifListener`, `AdminReceiver`, `SmsReceiver`, `LostModeActivity`, `CallActivity` |
-| `app/android/app/src/main/assets/phone/` | web | the phone's web UI (served by the Router at `/`) |
-| `app/lib/src/ui/phone/` | core | Flutter: "This phone" page, first-run wizard |
-| `app/android/app/src/test/` | core / features | JVM unit tests (crypto against `docs/relay/vectors.json`, framing, router) |
+| `client_app/android/app/src/main/kotlin/com/arstro/arstro_remote_client/core/Api.kt` | contract | `Feature`, `Request`, `Response`, `WsSession`, `WsHandler`, `PhoneContext`, `EventBus`, `SpecialAccess`, `OpError` |
+| `.../arstro_remote_client/core/` | core | `PhoneService` (foreground service), `RelayAgent` + `E2e` + transports (WebSocket, HTTP pipes), `Router`, `Store` (identity, settings, feature switches), `BootReceiver`, `TrampolineActivity`, `PhoneBridge` (MethodChannel for Flutter), `Features.kt` (the registry) |
+| `.../arstro_remote_client/features/` | features | one file per feature + `ControlService` (accessibility), `NotifListener`, `AdminReceiver`, `SmsReceiver`, `LostModeActivity`, `CallActivity` |
+| `client_app/android/app/src/main/assets/phone/` | web | the phone's web UI (served by the Router at `/`) |
+| `client_app/lib/` | core | Flutter: the app's page, first-run wizard |
+| `client_app/android/app/src/test/` | core / features | JVM unit tests (crypto against `docs/relay/vectors.json`, framing, router) |
 
 ## Features (ids are stable)
 
@@ -70,7 +73,7 @@ the app"`. Switches are changed only on the phone (the web shows them read-only)
 * Screen capture: the consent ("Start now") is asked through `TrampolineActivity`. The
   `MediaProjection` and its single `VirtualDisplay` are kept for as long as the service runs; with
   nobody watching the display's surface is set to `null` (nothing is captured or encoded). With
-  `adb shell appops set com.arstro.arstro_remote PROJECT_MEDIA allow` the consent is automatic.
+  `adb shell appops set com.arstro.arstro_remote_client PROJECT_MEDIA allow` the consent is automatic.
 
 ## Conventions (all of the API below)
 
@@ -207,26 +210,40 @@ service.missing, relay.viewers, relay.token_set, relay.relay_version`, and each 
 * **Force stop** (Settings › Apps › Force stop) switches the app's accessibility service off -
   remote control then needs Accessibility again. Swiping the app away from Recents does not.
 * Screen sharing shows Android's red status-bar chip; camera and microphone their dots.
-* **Uninstalling** is refused while the app is an active device admin (Find my phone's "lock now").
+* **Uninstalling** (and clearing the app's data) is refused while the app is an active device admin
+  (Find my phone's "lock now").
   Turning Find my phone off in the app gives the device admin back; or Settings › Security ›
-  Device admin apps › Arstro Remote › Deactivate.
+  Device admin apps › Arstro Remote Client › Deactivate.
+* **Play Protect** may refuse to install the APK from a browser, chat or file manager because it asks
+  for SMS, accessibility and notification access ("enhanced fraud protection"). Installing over USB
+  (`adb -s <serial> install -r <apk>`) is not refused. Arstro Remote (`app/`) asks for none of these.
+
+## Building
+
+`scripts/build_apk.sh --client` (analyze, Flutter + JVM tests, signed release APK in
+`release/arstro-remote-client-v<version>.apk`). It is signed with the same key as Arstro Remote
+(`app/android/key.properties`); its version is in `client_app/pubspec.yaml`.
+
+Arstro Remote 2.4.0 had this built in; from 2.5.0 it is only in Arstro Remote Client. The client
+makes its own identity (device id and access key): a phone that shared through 2.4.0 shows up as a
+new device, and the old entry can be removed in the device manager.
 
 ## Testing
 
-* JVM: `cd app/android && ./gradlew :app:testDebugUnitTest` (crypto against `docs/relay/vectors.json`,
+* JVM: `cd client_app/android && ./gradlew :app:testDebugUnitTest` (crypto against `docs/relay/vectors.json`,
   router, the relay agent against the real Python relay + client over WebSocket and HTTP pipes, the
   features' pure parts).
-* Web UI: `node app/phone_web_test/ui_test.mjs` (mock phone) and `node app/phone_web_test/viewer_e2e.mjs`
+* Web UI: `node client_app/phone_web_test/ui_test.mjs` (mock phone) and `node client_app/phone_web_test/viewer_e2e.mjs`
   (through a real device manager).
 * End to end with the real app: `server/tests/test_phone_e2e.py` (opt-in) on an emulator. Set-up
   without tapping through the wizard (debug build):
   ```
-  A="adb -s emulator-5554"; P=com.arstro.arstro_remote
+  A="adb -s emulator-5554"; P=com.arstro.arstro_remote_client
   $A install -r -g app-debug.apk && $A shell pm grant $P android.permission.ACCESS_BACKGROUND_LOCATION
   for op in SYSTEM_ALERT_WINDOW MANAGE_EXTERNAL_STORAGE WRITE_SETTINGS PROJECT_MEDIA USE_FULL_SCREEN_INTENT ACCESS_RESTRICTED_SETTINGS; do $A shell appops set $P $op allow; done
-  $A shell cmd notification allow_listener $P/$P.phone.features.NotifListener; $A shell cmd notification allow_dnd $P
-  $A shell dpm set-active-admin $P/.phone.features.AdminReceiver; $A shell dumpsys deviceidle whitelist +$P
-  $A shell settings put secure enabled_accessibility_services $P/$P.phone.features.ControlService; $A shell settings put secure accessibility_enabled 1
+  $A shell cmd notification allow_listener $P/$P.features.NotifListener; $A shell cmd notification allow_dnd $P
+  $A shell dpm set-active-admin $P/.features.AdminReceiver; $A shell dumpsys deviceidle whitelist +$P
+  $A shell settings put secure enabled_accessibility_services $P/$P.features.ControlService; $A shell settings put secure accessibility_enabled 1
   # shared_prefs/arstro_phone.xml (run-as): url, token, name, enabled=true, first_run=false, feature.<id>=true; then reboot (starts at boot)
   ```
   The emulator reaches a device manager on the host at `http://10.0.2.2:<port>/...`; SMS, calls and

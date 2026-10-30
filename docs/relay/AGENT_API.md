@@ -105,7 +105,7 @@ s = ch.tcp(22)                               # raw stream: s.send_data(b"..."), 
 ch.close()
 ```
 
-## 3b. Phones (Arstro Remote's "Share this phone", docs/phone/PHONE.md)
+## 3b. Phones (the Arstro Remote Client app, docs/phone/PHONE.md)
 
 A shared phone answers only `http` and `ws` streams to port 8080 - no raw TCP, so no `forward`.
 Use `http` (or the Python API's `ch.http(...)` / `ch.stream({"t": "ws", ...})`):

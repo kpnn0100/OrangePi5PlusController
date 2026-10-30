@@ -1,0 +1,21 @@
+name: arstro_remote_client
+description: "Arstro Remote Client - share this Android phone through your own Arstro device manager (docs/phone/PHONE.md)."
+publish_to: 'none'
+
+# versionName+versionCode of the APK (scripts/build_apk.sh --client names the file after it)
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.10.4
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true

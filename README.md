@@ -66,6 +66,7 @@ Only parts of it:
 ```bash
 scripts/setup_pi.sh orangepi@<pi-address>     # install / update the Pi side (also --slot b, --autologin, --reboot, --test)
 ./build_apk.sh [--install SERIAL]             # build release/arstro-remote-vX.Y.Z.apk
+./build_apk.sh --client                       # build release/arstro-remote-client-vX.Y.Z.apk (share this phone)
 ```
 
 The app can also be developed on the Pi itself: `scripts/setup_android_dev.sh` (once) installs
@@ -131,11 +132,12 @@ UI, any other port that port's page. End-to-end encrypted; the server never sees
 Agents and scripts: `arstro-remote relay forward <id> 8080 --listen 127.0.0.1:18080` -
 [docs/relay/AGENT_API.md](docs/relay/AGENT_API.md). Design and security: [docs/relay/RELAY.md](docs/relay/RELAY.md).
 
-**Share this phone (Android).** The Arstro Remote app can also make the phone itself a device of
-the device manager: on first start a wizard lets you pick features (screen view and control,
-camera, internet calls, find my phone, messages, files, notifications and more), asks for exactly
-their permissions, and starts sharing; each feature has its own switch on the app's "This phone"
-page. Open the phone from the device list like any machine. [docs/phone/PHONE.md](docs/phone/PHONE.md).
+**Share this phone (Android): Arstro Remote Client.** A second app (`client_app/`, apart from the
+Pi remote) makes the phone itself a device of the device manager: on first start a wizard lets you
+pick features (screen view and control, camera, internet calls, find my phone, messages, files,
+notifications and more), asks for exactly their permissions, and starts sharing; each feature has
+its own switch in the app. Open the phone from the device list like any machine. Build it with
+`scripts/build_apk.sh --client`. [docs/phone/PHONE.md](docs/phone/PHONE.md).
 
 ## Development
 

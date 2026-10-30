@@ -5,6 +5,12 @@ app/.flutter-plugins-dependencies
 app/android/.gradle/
 app/android/.kotlin/
 app/android/local.properties
+client_app/build/
+client_app/.dart_tool/
+client_app/.flutter-plugins-dependencies
+client_app/android/.gradle/
+client_app/android/.kotlin/
+client_app/android/local.properties
 **/__pycache__/
 *.pyc
 dist/

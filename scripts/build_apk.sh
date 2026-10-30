@@ -2,26 +2,30 @@
 # Build the signed release APK of the Android app into release/ (SET-03).
 #
 #   scripts/build_apk.sh                      check toolchain, pub get, analyze, test, build
+#   scripts/build_apk.sh --client             the same for Arstro Remote Client (client_app/, docs/phone/PHONE.md)
 #   scripts/build_apk.sh --no-test            skip analyze + tests
 #   scripts/build_apk.sh --install [SERIAL]   also adb-install it (SERIAL or $ANDROID_SERIAL)
 #   scripts/build_apk.sh --debug-sign         never create a release key (use the debug key)
 #
 # Needs Flutter >= 3.38 (Dart 3.10), an Android SDK with platform 36 and JDK 17
 # (scripts/setup_android_dev.sh installs them, also on an ARM64 board).
-# Release signing uses app/android/key.properties + the keystore it names (both gitignored).
+# Release signing uses app/android/key.properties + the keystore it names (both gitignored);
+# Arstro Remote Client is signed with the same key.
 # If they are missing a new key is created there (keep a backup: an APK signed with
 # another key cannot update an installed one - uninstall the old app first).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP="$ROOT/app"
-KEYPROPS="$APP/android/key.properties"
+APP="$ROOT/app" NAME="arstro-remote"
+KEYDIR="$ROOT/app/android"          # the release key of both apps
+KEYPROPS="$KEYDIR/key.properties"
 TEST=1 INSTALL=0 SERIAL="${ANDROID_SERIAL:-}" DEBUG_SIGN=0
 while [ $# -gt 0 ]; do
     case "$1" in
+        --client) APP="$ROOT/client_app" NAME="arstro-remote-client"; shift ;;
         --no-test) TEST=0; shift ;;
         --install) INSTALL=1; shift; if [ $# -gt 0 ] && [[ "$1" != -* ]]; then SERIAL="$1"; shift; fi ;;
         --debug-sign) DEBUG_SIGN=1; shift ;;
-        -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
         *) echo "unknown option $1 (see --help)" >&2; exit 2 ;;
     esac
 done
@@ -53,21 +57,21 @@ fi
 
 step "Signing"
 keystore_of() { sed -n 's/^storeFile=//p' "$KEYPROPS" | head -1; }
-if [ -f "$KEYPROPS" ] && [ -n "$(keystore_of)" ] && [ -f "$APP/android/app/$(keystore_of)" ]; then
+if [ -f "$KEYPROPS" ] && [ -n "$(keystore_of)" ] && [ -f "$KEYDIR/app/$(keystore_of)" ]; then
     echo "release key: app/android/app/$(keystore_of)"
 elif [ "$DEBUG_SIGN" = 1 ]; then
     warn "no release key -> signed with the DEBUG key (--debug-sign)"
 else
     command -v keytool >/dev/null || die "keytool not found (install JDK 17), or use --debug-sign"
     store="arstro-release.jks"
-    [ -e "$APP/android/app/$store" ] && die "app/android/app/$store exists but key.properties is missing or wrong - fix it or move the keystore away"
+    [ -e "$KEYDIR/app/$store" ] && die "app/android/app/$store exists but key.properties is missing or wrong - fix it or move the keystore away"
     pass=$(head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 28)
-    keytool -genkeypair -noprompt -keystore "$APP/android/app/$store" -storetype PKCS12 -keyalg RSA -keysize 4096 \
+    keytool -genkeypair -noprompt -keystore "$KEYDIR/app/$store" -storetype PKCS12 -keyalg RSA -keysize 4096 \
         -validity 10000 -alias arstro -dname "CN=Arstro Remote" -storepass "$pass" -keypass "$pass" >/dev/null 2>&1 \
         || die "keytool failed"
     umask 077
     printf 'storePassword=%s\nkeyPassword=%s\nkeyAlias=arstro\nstoreFile=%s\n' "$pass" "$pass" "$store" > "$KEYPROPS"
-    chmod 600 "$KEYPROPS" "$APP/android/app/$store"
+    chmod 600 "$KEYPROPS" "$KEYDIR/app/$store"
     warn "created a NEW release key: app/android/app/$store (+ app/android/key.properties)."
     warn "Back both up. Phones with an APK signed by another key must uninstall it first."
 fi
@@ -90,6 +94,12 @@ if [ "$TEST" = 1 ]; then
         rm -f "$log"
         die "tests failed (fix them, or build anyway with --no-test)"
     fi
+    if [ "$NAME" = arstro-remote-client ]; then
+        step "JVM tests (relay protocol, router, features)"
+        [ -x android/gradlew ] || flutter build apk --config-only >/dev/null     # a fresh clone: make the Gradle wrapper
+        (cd android && ./gradlew -q :app:testDebugUnitTest) || die "JVM tests failed (client_app/build/app/reports/tests/)"
+        echo ok
+    fi
 fi
 
 step "flutter build apk --release"
@@ -98,13 +108,13 @@ flutter build apk --release 2>&1 | grep -E "Built|rror|FAILED" || true
 if [ "$(uname -m)" = aarch64 ]; then
     (cd android && ./gradlew --stop >/dev/null 2>&1) || true    # a board: give Gradle's 3 GB back now
 fi
-[ -f build/app/outputs/flutter-apk/app-release.apk ] || die "build failed (run: cd app && flutter build apk --release -v)"
+[ -f build/app/outputs/flutter-apk/app-release.apk ] || die "build failed (run: cd ${APP#$ROOT/} && flutter build apk --release -v)"
 if [ "$(wc -c < build/app/outputs/flutter-apk/app-release.apk)" -gt 150000000 ]; then
     warn "the APK is over 150 MB: its native libraries were not stripped (see scripts/setup_android_dev.sh)"
 fi
 ver=$(sed -n 's/^version: *\([0-9.]*\).*/\1/p' pubspec.yaml)
 mkdir -p "$ROOT/release"
-out="$ROOT/release/arstro-remote-v$ver.apk"
+out="$ROOT/release/$NAME-v$ver.apk"
 cp build/app/outputs/flutter-apk/app-release.apk "$out"
 (cd "$ROOT/release" && sha256sum "$(basename "$out")" > "$(basename "$out").sha256")
 echo "APK: $out"

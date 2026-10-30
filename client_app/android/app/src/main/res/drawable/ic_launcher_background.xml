@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Arstro Remote Client: teal, so it is told apart from Arstro Remote (blue-violet) on the home screen -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android">
+    <gradient android:angle="315" android:startColor="#FF228BE6" android:endColor="#FF14B8A6"/>
+</shape>

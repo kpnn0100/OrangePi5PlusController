@@ -266,7 +266,7 @@ the machine's access key. Design and security: `docs/relay/RELAY.md`; protocol:
 
 ## PHN – Share this phone (Android)
 
-The Arstro Remote app can make the phone itself a device of the device manager (`docs/phone/PHONE.md`).
+Arstro Remote Client, an Android app of its own (`client_app/`, apart from the Pi's remote control), makes the phone itself a device of the device manager (`docs/phone/PHONE.md`).
 
 | ID | Requirement |
 |---|---|
@@ -304,7 +304,7 @@ The Arstro Remote app can make the phone itself a device of the device manager (
 |---|---|
 | SET-01 | `scripts/setup_all.sh` sets everything up in one go: checks the dev tools, sets up the Pi over SSH (password asked once), builds the APK and optionally installs it. Settings come from arguments or `local.env`. |
 | SET-02 | `scripts/setup_pi.sh` installs or updates the Pi side over SSH (key installed, packages via sudo, groups, auto-login option, service restart, verification). |
-| SET-03 | `scripts/build_apk.sh` builds the signed release APK (creates a signing key if none exists) into `release/`. |
+| SET-03 | `scripts/build_apk.sh` builds the signed release APK (creates a signing key if none exists) into `release/` - Arstro Remote, or with `--client` Arstro Remote Client, signed with the same key. |
 | SET-04 | The Pi offers the latest Android app at `http://<pi>:8080/app.apk` (uploaded by `setup_pi.sh` from `release/`), so a phone on the same network installs or updates it from its browser without a cable; the web UI links to it and the CLI (`web`) prints the link. |
 | SET-05 | **One installer** (`install.sh` at the repo root, same as `server/install.sh`) sets the server up on any Debian/Ubuntu-family machine: packages for the chosen modules (sudo, only what is missing), device permissions, the slot's code / config / password / start at boot, then starts it and checks that it answers. `--uninstall` removes a slot. |
 | SET-06 | `scripts/setup_pi.sh --slot a\|b` deploys from the dev PC into a slot (device permissions through the Pi's sudo password). |

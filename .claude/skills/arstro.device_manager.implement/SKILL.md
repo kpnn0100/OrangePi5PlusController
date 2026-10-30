@@ -71,20 +71,22 @@ and must keep refusing old peers with a clear error.
 
 ## Share this phone (Android device side)
 
-The Arstro Remote app can be a device of the device manager (PHN-01..19). Same consistency rules:
+Arstro Remote Client (`client_app/`, its own app - never put it back into the Pi remote `app/`) makes a
+phone a device of the device manager (PHN-01..19). Same consistency rules:
 
 | Thing | The definition | Must follow it | Checked by |
 |---|---|---|---|
-| Feature list, ops, routes, sockets, media formats, conventions | `docs/phone/PHONE.md` | `phone/features/*`, the web UI `assets/phone/`, AGENT_API.md "Phones" | `server/tests/test_phone_e2e.py` (opt-in, emulator), `app/phone_web_test/ui_test.mjs` |
-| Core ↔ features contract | `app/android/app/src/main/kotlin/com/arstro/arstro_remote/phone/core/Api.kt` | core (`phone/core/`) and every `Feature` | compiling |
-| Device side of the relay protocol in Kotlin | `phone/core/E2e.kt`, `Transport.kt`, `RelayAgent.kt` | `docs/relay/PROTOCOL.md`, `vectors.json` | JVM tests (`E2eTest`, `RelayIntegrationTest` against the real Python relay + client) |
+| Feature list, ops, routes, sockets, media formats, conventions | `docs/phone/PHONE.md` | `features/*`, the web UI `assets/phone/`, AGENT_API.md "Phones" | `server/tests/test_phone_e2e.py` (opt-in, emulator), `client_app/phone_web_test/ui_test.mjs` |
+| Core ↔ features contract | `client_app/android/app/src/main/kotlin/com/arstro/arstro_remote_client/core/Api.kt` | core (`core/`) and every `Feature` | compiling |
+| Device side of the relay protocol in Kotlin | `core/E2e.kt`, `Transport.kt`, `RelayAgent.kt` | `docs/relay/PROTOCOL.md`, `vectors.json` | JVM tests (`E2eTest`, `RelayIntegrationTest` against the real Python relay + client) |
 | Permissions / components | `AndroidManifest.xml` (one place; features declare what they need in their `Feature`) | the wizard, `Permissions.kt` | the wizard's step 3 on the emulator |
 
 Rules: a new feature = a row in PHONE.md's table + its ops/routes there, a `Feature` registered in
 `Features.kt`, its page in `assets/phone/`, a test in `test_phone_e2e.py`, a PHN requirement.
 Never open a local port on the phone (any app could drive the remote control). Test on the
 emulator only (`adb -s emulator-5554`; never a device someone else uses); PHONE.md "Testing" has
-the provisioning without the wizard. Release builds shrink code (R8): test the release APK too.
+the provisioning without the wizard. Release builds shrink code (R8): test the release APK too
+(`scripts/build_apk.sh --client`, also runs the JVM tests).
 Gotchas: Android refuses accessibility for APK installs until "Allow restricted settings"; Force
 stop turns the accessibility service off; ops run on relay threads - views only on the main thread.
 
