@@ -64,3 +64,20 @@ android {
 flutter {
     source = "../.."
 }
+
+// "Share this phone" (docs/phone/PHONE.md): the connection to the device manager (WebSocket + HTTP
+// pipes), the camera, a lifecycle for the service; JVM unit tests run the relay protocol against
+// docs/relay/vectors.json and the real relay server.
+dependencies {
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.lifecycle:lifecycle-service:2.8.7")
+    implementation("androidx.camera:camera-core:1.4.1")
+    implementation("androidx.camera:camera-camera2:1.4.1")
+    implementation("androidx.camera:camera-lifecycle:1.4.1")
+    implementation("androidx.camera:camera-video:1.4.1")
+    // CameraX hands out Guava ListenableFutures (getInstance, enableTorch): the interface on the compile path
+    implementation("com.google.guava:guava:33.3.1-android")
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
+}

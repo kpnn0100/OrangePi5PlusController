@@ -264,6 +264,32 @@ the machine's access key. Design and security: `docs/relay/RELAY.md`; protocol:
 | RLY-28 | **Transfers panel.** In the browser viewer every download and every upload of at least 256 KiB gets a row in one Transfers list on the device page: name, direction, progress, size, current speed, time left, and a cancel button while it runs; finished rows show size, time and average speed, failed ones the reason; several transfers at once are listed together. Upload progress is what the service worker has sent to the device (the page's own upload progress is meaningless there). |
 | RLY-26 | **For agents.** A documented API (`docs/relay/AGENT_API.md`) and a standalone Python client, downloadable from the device manager, list devices, check a key, list ports, make HTTP requests and forward a device port to a local one. |
 
+## PHN – Share this phone (Android)
+
+The Arstro Remote app can make the phone itself a device of the device manager (`docs/phone/PHONE.md`).
+
+| ID | Requirement |
+|---|---|
+| PHN-01 | **Advertise.** A foreground service advertises the phone to the device manager with the relay protocol (`docs/relay/PROTOCOL.md`: WebSocket or HTTP pipes, end-to-end encryption with the phone's own access key, its own device id and secret), starts at boot, reconnects with back-off and shows its state in the app; nothing listens on a local port - the channel's streams reach an in-process router. |
+| PHN-02 | **Switches and first run.** On first run a wizard explains every feature and asks for exactly the permissions and special accesses of the features the user turns on; every feature has an on / off switch in the app, shows what it still needs, and can be turned off at any time. A feature that is off or not ready is refused remotely with the reason; the web shows the switches read-only. |
+| PHN-03 | **Status.** Battery (level, charging, temperature), storage, memory, network, signal, screen on / locked - live. |
+| PHN-04 | **Screen.** Live view of the screen (H.264, encoded only while someone watches, the capture session kept between viewers) and remote control: tap, long press, swipe, scroll, typing, Back / Home / Recents / notifications / quick settings / lock / power menu / wake. |
+| PHN-05 | **Camera.** Live view of the front or back camera, torch, a photo now, recording a video into the phone's Movies. |
+| PHN-06 | **Internet calls.** A voice call between the browser and the person holding the phone: the phone rings full screen (also locked), Answer / Decline, two-way audio with echo cancellation; the phone's camera can be watched alongside. |
+| PHN-07 | **Listen.** The phone's microphone, live. |
+| PHN-08 | **Messages.** SMS threads and messages, send an SMS, new messages pushed live. |
+| PHN-09 | **Contacts and call log.** Search contacts, the recent calls. |
+| PHN-10 | **Find my phone.** Location now and a 7-day history (a fix every 15 min), ring loudly also on silent / Do Not Disturb, lost mode (lock now and show a message and a number over the lock screen); works after a reboot without opening the app. |
+| PHN-11 | **Files.** Browse the phone's storage, download (with Range), upload any size, delete, new folder, rename. |
+| PHN-12 | **Notifications.** The current notifications live, dismiss, reply where the app allows it. |
+| PHN-13 | **Clipboard.** Put text on the phone's clipboard; read it while the app is in the foreground (Android does not allow it otherwise - said so). |
+| PHN-14 | **Apps.** List the installed apps with icons, open one. |
+| PHN-15 | **Audio and tools.** Volume per stream, media keys, speak a text, vibrate, torch, brightness, open a URL. |
+| PHN-16 | **Shell.** Run a command in the app's own sandbox (no root). |
+| PHN-17 | **Web UI.** The phone's own web UI covers every feature, opens from the device manager in any browser, works over the HTTP transport, at 360 px and on a desktop. |
+| PHN-18 | **For agents.** Every feature is an op or a route (`PHONE.md`), reachable with the relay client (`http`, `forward`). |
+| PHN-19 | **Security and privacy.** Reachable only through the encrypted channel with the phone's access key; the access key can be shown and replaced in the app; Android's own indicators (screen sharing, camera, microphone) stay visible; logs never hold keys, message, notification or clipboard texts. |
+
 ## UX – Look and feel
 
 | ID | Requirement |

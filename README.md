@@ -131,6 +131,12 @@ UI, any other port that port's page. End-to-end encrypted; the server never sees
 Agents and scripts: `arstro-remote relay forward <id> 8080 --listen 127.0.0.1:18080` -
 [docs/relay/AGENT_API.md](docs/relay/AGENT_API.md). Design and security: [docs/relay/RELAY.md](docs/relay/RELAY.md).
 
+**Share this phone (Android).** The Arstro Remote app can also make the phone itself a device of
+the device manager: on first start a wizard lets you pick features (screen view and control,
+camera, internet calls, find my phone, messages, files, notifications and more), asks for exactly
+their permissions, and starts sharing; each feature has its own switch on the app's "This phone"
+page. Open the phone from the device list like any machine. [docs/phone/PHONE.md](docs/phone/PHONE.md).
+
 ## Development
 
 | | |

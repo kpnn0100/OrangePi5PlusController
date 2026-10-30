@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import '../app_scope.dart';
 import '../proto/frames.dart';
 import '../remote_client.dart';
+import 'phone/phone_api.dart';
+import 'phone/phone_page.dart';
 import 'system_section.dart';
 
 class SettingsPage extends StatelessWidget {
@@ -23,6 +25,16 @@ class SettingsPage extends StatelessWidget {
             child: ListView(
               padding: const EdgeInsets.symmetric(vertical: 8),
               children: [
+                if (PhoneApi.supported) ...[
+                  const _Header('Share this phone'),
+                  ListTile(
+                    leading: const Icon(Icons.phone_android_outlined),
+                    title: const Text('This phone'),
+                    subtitle: const Text('Reach this phone from any browser through your device manager'),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PhonePage())),
+                  ),
+                ],
                 const _Header('Touchpad'),
                 _SliderTile(
                   title: 'Pointer speed',

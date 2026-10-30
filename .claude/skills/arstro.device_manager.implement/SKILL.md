@@ -69,6 +69,25 @@ and must keep refusing old peers with a clear error.
 | `relay/tests/` | relay server tests (Python), `e2e_vectors.mjs` (Node), `web/viewer_test.mjs` (puppeteer, full stack) |
 | `server/tests/test_relay.py`, `server/tests/test_relay_docs.py` | machine side + doc sync |
 
+## Share this phone (Android device side)
+
+The Arstro Remote app can be a device of the device manager (PHN-01..19). Same consistency rules:
+
+| Thing | The definition | Must follow it | Checked by |
+|---|---|---|---|
+| Feature list, ops, routes, sockets, media formats, conventions | `docs/phone/PHONE.md` | `phone/features/*`, the web UI `assets/phone/`, AGENT_API.md "Phones" | `server/tests/test_phone_e2e.py` (opt-in, emulator), `app/phone_web_test/ui_test.mjs` |
+| Core ↔ features contract | `app/android/app/src/main/kotlin/com/arstro/arstro_remote/phone/core/Api.kt` | core (`phone/core/`) and every `Feature` | compiling |
+| Device side of the relay protocol in Kotlin | `phone/core/E2e.kt`, `Transport.kt`, `RelayAgent.kt` | `docs/relay/PROTOCOL.md`, `vectors.json` | JVM tests (`E2eTest`, `RelayIntegrationTest` against the real Python relay + client) |
+| Permissions / components | `AndroidManifest.xml` (one place; features declare what they need in their `Feature`) | the wizard, `Permissions.kt` | the wizard's step 3 on the emulator |
+
+Rules: a new feature = a row in PHONE.md's table + its ops/routes there, a `Feature` registered in
+`Features.kt`, its page in `assets/phone/`, a test in `test_phone_e2e.py`, a PHN requirement.
+Never open a local port on the phone (any app could drive the remote control). Test on the
+emulator only (`adb -s emulator-5554`; never a device someone else uses); PHONE.md "Testing" has
+the provisioning without the wizard. Release builds shrink code (R8): test the release APK too.
+Gotchas: Android refuses accessibility for APK installs until "Allow restricted settings"; Force
+stop turns the accessibility service off; ops run on relay threads - views only on the main thread.
+
 ## Workflow
 
 1. **Requirement** in § RLY (new ID or edited text), as in the embedded-server skill.

@@ -23,6 +23,7 @@ ALLOWED = [
     r"10\.0\.0\.\d+",                    # example LAN in fixtures/docs
     r"192\.0\.2\.\d+",                   # RFC 5737 documentation range
     r"127\.0\.0\.1", r"0\.0\.0\.0",
+    r"10\.0\.2\.2",                       # the Android emulator's fixed alias for its host
     r"00:11:22:33:44:55", r"AA:BB:CC:DD:EE:\w\w", r"00:00:00:00:00:00",
     r"C0:FF:EE:\w\w:\w\w:\w\w",
     r"00:11:22:AA:BB:CC",                # address-field hint in the app

@@ -96,6 +96,14 @@ access key; the protocol is defined once in `server/arstro_remote/relay/e2e.py` 
 WebCrypto code must match. See [relay/RELAY.md](relay/RELAY.md) (design, security model) and
 [relay/PROTOCOL.md](relay/PROTOCOL.md).
 
+## Share this phone (PHN-01..19)
+
+The Android app can be a *device* too: `PhoneService` (Kotlin) runs the relay protocol's device
+side (`phone/core/RelayAgent.kt`, the same protocol and vectors as the Python agent) and hands
+every http / ws stream to an in-process `Router` (no local port) that serves the phone's web UI
+(`assets/phone/`) and the features (`phone/features/`). The contract is `phone/core/Api.kt` +
+[phone/PHONE.md](phone/PHONE.md).
+
 ## Slots A/B (ADM-06)
 
 ```

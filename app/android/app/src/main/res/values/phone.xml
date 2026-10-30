@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="arstro_accessibility_description">Lets you control this phone from your own Arstro device manager: taps, swipes, the Back / Home / Recents keys and typing, only while you are connected with the phone\'s access key. Nothing is read or sent anywhere else.</string>
+    <!-- TrampolineActivity: invisible, only brings the app to the foreground for a moment -->
+    <style name="Arstro.Transparent" parent="@android:style/Theme.Translucent.NoTitleBar">
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:backgroundDimEnabled">false</item>
+    </style>
+</resources>

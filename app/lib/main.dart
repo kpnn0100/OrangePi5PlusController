@@ -5,6 +5,7 @@ import 'src/app_scope.dart';
 import 'src/remote_client.dart';
 import 'src/ui/connect_page.dart';
 import 'src/ui/home_page.dart';
+import 'src/ui/phone/first_run.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -81,6 +82,15 @@ class _Root extends StatefulWidget {
 class _RootState extends State<_Root> {
   bool _inSession = false;
   bool _everConnected = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // "Share this phone": the setup wizard on the app's first start (PHN-02; skippable)
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) FirstRunWizard.maybeShow(context).catchError((_) {});
+    });
+  }
 
   @override
   Widget build(BuildContext context) {

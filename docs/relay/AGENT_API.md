@@ -105,6 +105,24 @@ s = ch.tcp(22)                               # raw stream: s.send_data(b"..."), 
 ch.close()
 ```
 
+## 3b. Phones (Arstro Remote's "Share this phone", docs/phone/PHONE.md)
+
+A shared phone answers only `http` and `ws` streams to port 8080 - no raw TCP, so no `forward`.
+Use `http` (or the Python API's `ch.http(...)` / `ch.stream({"t": "ws", ...})`):
+
+```bash
+P=pixel-8-phone-ab12cd
+python3 arstro_relay_client.py http $P 8080 /api/info                                   # model, features, what is on
+python3 arstro_relay_client.py http $P 8080 /api/op/status.get -d '{}'                  # battery, network, ...
+python3 arstro_relay_client.py http $P 8080 /api/op/find.locate -d '{"fresh": true}'    # where is it
+python3 arstro_relay_client.py http $P 8080 /api/op/messages.send -d '{"to": "+84...", "text": "hi"}'
+python3 arstro_relay_client.py http $P 8080 /api/screen/shot > screen.png               # what is on the screen
+python3 arstro_relay_client.py http $P 8080 /api/op/screen.tap -d '{"x": 0.5, "y": 0.9}'
+```
+
+Every op, route and socket is in PHONE.md. A feature the owner turned off answers 403, one that
+still needs a permission 409 - with the reason.
+
 ## 4. The device manager's own HTTP API
 
 Base `B` = the device manager URL. Viewer password, when set: `Authorization: Bearer <password>`.
