@@ -171,6 +171,18 @@ class RelayAgent(
         signal()
     }
 
+    /** The phone's network changed (Wi-Fi <-> mobile data, or back after none): connect again now
+     *  instead of waiting for the old connection to time out and then for the back-off. */
+    fun networkChanged() {
+        val old: RelayConn?
+        synchronized(lock) {
+            gen++
+            old = conn
+        }
+        old?.close()
+        signal()
+    }
+
     fun allow(): Set<Int>? = cfg?.ports?.toSet()
 
     internal fun readyMessage(): JSONObject {

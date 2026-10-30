@@ -71,6 +71,7 @@ class PhoneApi extends ChangeNotifier {
   Future<PhoneState?> start() => _call('start');
   Future<PhoneState?> stop() => _call('stop');
   Future<PhoneState?> finishFirstRun() => _call('finishFirstRun');
+  Future<PhoneState?> setAwake(bool on) => _call('setAwake', {'on': on});
   Future<void> openAppInfo() => _methods.invokeMethod<void>('openAppInfo');
 }
 
@@ -137,9 +138,11 @@ class PhoneState {
     required this.tokenSet,
     required this.keyId,
     required this.firstRun,
+    required this.awake,
     required this.features,
     required this.serviceMissing,
     required this.sdk,
+    required this.manufacturer,
     required this.defaultUrl,
   });
 
@@ -159,12 +162,33 @@ class PhoneState {
   final bool tokenSet;
   final String keyId;
   final bool firstRun;
+
+  /// Stay reachable while the screen is off (the CPU stays awake while sharing).
+  final bool awake;
   final List<PhoneFeature> features;
   final List<PhoneNeed> serviceMissing;
   final int sdk;
+  final String manufacturer;
   final String defaultUrl;
 
   bool get online => relayState == 'online';
+
+  /// Phone makers whose own battery manager stops apps in the background on top of Android's rules
+  /// (dontkillmyapp.com): a hint where to allow it, or null.
+  String? get makerHint {
+    final m = manufacturer.toLowerCase();
+    if (const ['tecno', 'infinix', 'itel'].contains(m)) {
+      return 'Phone Master can still stop the app while the screen is off: in Phone Master › Application '
+          'manager › Auto-start management turn on Arstro Remote Client, turn off App Power Saving for it '
+          'in the battery settings, and lock the app in Recents (pull its card down).';
+    }
+    if (const ['xiaomi', 'redmi', 'poco', 'oppo', 'realme', 'oneplus', 'vivo', 'huawei', 'honor', 'samsung', 'meizu', 'asus']
+        .contains(m)) {
+      return 'Phones of this maker can still stop apps in the background: allow Arstro Remote Client to '
+          'auto-start and run in the background in its App info › Battery settings, and lock it in Recents.';
+    }
+    return null;
+  }
 
   factory PhoneState.fromMap(Map<Object?, Object?> m) {
     final relay = (m['relay'] as Map?) ?? const {};
@@ -183,12 +207,14 @@ class PhoneState {
       tokenSet: relay['token_set'] == true,
       keyId: '${m['key_id'] ?? ''}',
       firstRun: m['first_run'] == true,
+      awake: m['awake'] != false,
       features: [
         for (final f in (m['features'] as List?) ?? const [])
           if (f is Map) PhoneFeature.fromMap(f)
       ],
       serviceMissing: _needs(service['missing']),
       sdk: (m['sdk'] as int?) ?? 0,
+      manufacturer: '${m['manufacturer'] ?? ''}',
       defaultUrl: '${m['default_url'] ?? ''}',
     );
   }

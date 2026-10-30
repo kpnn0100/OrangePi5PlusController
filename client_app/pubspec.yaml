@@ -3,7 +3,7 @@ description: "Arstro Remote Client - share this Android phone through your own A
 publish_to: 'none'
 
 # versionName+versionCode of the APK (scripts/build_apk.sh --client names the file after it)
-version: 1.0.0+1
+version: 1.1.0+2
 
 environment:
   sdk: ^3.10.4

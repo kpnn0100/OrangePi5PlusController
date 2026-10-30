@@ -2,7 +2,10 @@ package com.arstro.arstro_remote_client.features
 
 import android.accessibilityservice.AccessibilityService
 import android.app.Activity
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
@@ -45,6 +48,10 @@ import java.util.concurrent.TimeUnit
  *
  * The video always shows the screen upright in its current rotation, so the config's `rotation` is 0 and
  * control coordinates are 0..1 of the picture as shown.
+ *
+ * Android captures nothing while the phone's screen is off: opening the screen view turns it on, and
+ * while someone watches it stays on (dimmed after the phone's own timeout). The power button still
+ * turns it off; `screen_on` in the state says so and the viewer's Wake key turns it on again.
  */
 object ScreenFeature : Feature("screen", "Screen view & control") {
     override val specialAccess = listOf(SpecialAccess.SCREEN_CAPTURE, SpecialAccess.ACCESSIBILITY)
@@ -67,6 +74,8 @@ object ScreenFeature : Feature("screen", "Screen view & control") {
     private var thread: HandlerThread? = null
     @Volatile private var handler: Handler? = null
     private var displayListener: DisplayManager.DisplayListener? = null
+    private var screenReceiver: BroadcastReceiver? = null
+    private var keepOn: PowerManager.WakeLock? = null
     private val controls = Executors.newSingleThreadExecutor { r -> Thread(r, "arstro-control").apply { isDaemon = true } }
     private val hub = VideoHub { encoder?.requestKeyFrame() }
 
@@ -115,6 +124,17 @@ object ScreenFeature : Feature("screen", "Screen view & control") {
         }
         displayListener = l
         dm?.registerDisplayListener(l, handler)
+        val r = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                if (intent.action == Intent.ACTION_SCREEN_ON) encoder?.requestKeyFrame()   // the picture is back
+                publish()
+            }
+        }
+        screenReceiver = r
+        ctx.app.registerLocal(r, IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_SCREEN_OFF)
+        })
         publish()
     }
 
@@ -122,8 +142,11 @@ object ScreenFeature : Feature("screen", "Screen view & control") {
         stopProjection(ctx, "${title} was turned off on the phone")
         displayListener?.let { ctx.app.getSystemService(DisplayManager::class.java)?.unregisterDisplayListener(it) }
         displayListener = null
+        ctx.app.unregisterQuietly(screenReceiver)
+        screenReceiver = null
         hub.closeAll(1001, "${title} was turned off on the phone")
         this.ctx = null
+        updateKeepOn(ctx.app)        // nobody watches any more: the phone's own screen timeout
     }
 
     override fun note(ctx: PhoneContext): String? = when {
@@ -166,6 +189,7 @@ object ScreenFeature : Feature("screen", "Screen view & control") {
     private fun status(app: Context): JSONObject {
         val d = realDisplay(app)
         return jsonOf("consent" to (projection != null), "waiting" to waiting, "watching" to hub.count,
+                      "screen_on" to app.getSystemService(PowerManager::class.java).isInteractive,
                       "width" to d.w, "height" to d.h, "rotation" to d.rotation,
                       "control" to (ControlService.instance != null), "error" to lastError)
     }
@@ -394,6 +418,7 @@ object ScreenFeature : Feature("screen", "Screen view & control") {
     private fun openViewer(c: PhoneContext, s: WsSession): WsHandler {
         remember(c)
         val v = hub.add(s)
+        updateKeepOn(c.app)          // turns the screen on: a dark screen has no picture
         if (projection == null) {
             s.sendText(stateMessage(c.app))
             requestConsent(c)
@@ -427,8 +452,28 @@ object ScreenFeature : Feature("screen", "Screen view & control") {
 
             override fun onClose(session: WsSession, code: Int, reason: String) {
                 hub.remove(session)
+                updateKeepOn(c.app)
                 reconfigure()
                 publish()
+            }
+        }
+    }
+
+    /** While someone watches: the screen on (it was off: turned on), dimmed after the phone's timeout.
+     *  Nobody: the phone's own timeout again. */
+    @Suppress("DEPRECATION")
+    @android.annotation.SuppressLint("WakelockTimeout")    // released when the last viewer leaves / in stop
+    private fun updateKeepOn(app: Context) {
+        synchronized(lock) {
+            val held = keepOn
+            if (hub.count > 0 && ctx != null) {
+                if (held?.isHeld == true) return
+                keepOn = app.getSystemService(PowerManager::class.java)
+                    .newWakeLock(PowerManager.SCREEN_DIM_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP, "arstro:screen-viewers")
+                    .apply { setReferenceCounted(false); acquire() }
+            } else {
+                held?.let { if (it.isHeld) it.release() }
+                keepOn = null
             }
         }
     }

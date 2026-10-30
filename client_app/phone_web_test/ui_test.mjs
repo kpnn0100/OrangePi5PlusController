@@ -300,6 +300,15 @@ test("screen_touch_on_a_phone", ["PHN-04", "PHN-17"], async () => {
   await sleep(400);
   check(!((await log()).screen || []).some((m) => m.t === "tap"), "a tap was sent without control");
   await mockPost("/mock/state", { topic: "screen", data: { ...scr, control: true } });
+  // the phone's screen went off (its power button): said so instead of a frozen picture; Wake turns it on
+  await mockPost("/mock/state", { topic: "screen", data: { ...scr, control: true, consent: true, screen_on: false } });
+  check(await until(() => text(page).then((t) => t.includes("The phone's screen is off"))), "no screen-off message");
+  check(!(await page.$eval(".screen-stage", (e) => e.classList.contains("playing"))), "a dark screen still shown as playing");
+  await mockPost("/mock/clear");
+  check(await clickText(page, ".btn", "Wake the screen"), "no Wake button");
+  check(await until(async () => ((await log()).screen || []).some((m) => m.t === "key" && m.key === "wake")), "wake not sent");
+  await mockPost("/mock/state", { topic: "screen", data: { ...scr, control: true, consent: true, screen_on: true } });
+  check(await until(() => page.$eval(".screen-stage", (e) => e.classList.contains("playing"))), "the picture did not come back");
   await page.close();
 });
 

@@ -67,6 +67,11 @@ class Store(context: Context) {
     var firstRun: Boolean
         get() = p.getBoolean("first_run", true)
         set(v) = p.edit().putBoolean("first_run", v).apply()
+    /** Keep the CPU awake while sharing, so the device manager reaches the phone also while it sleeps
+     *  (off: only while someone is connected). On unless turned off. */
+    var awake: Boolean
+        get() = p.getBoolean("awake", true)
+        set(v) = p.edit().putBoolean("awake", v).apply()
 
     /** Feature switches: all off until the wizard (or the page) turns them on. */
     fun isOn(featureId: String): Boolean = p.getBoolean("feature.$featureId", false)

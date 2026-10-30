@@ -286,7 +286,7 @@ class Phone:
                          "accuracy_m": 15 + (i % 5) * 6, "time": t0 - (96 - i) * 15 * 60_000} for i in range(96)]
         self.topics = {
             "status": self.status(), "features": self.feature_list(),
-            "screen": {"consent": False, "watching": 0, "width": 720, "height": 1280, "rotation": 0, "control": True, "waiting": False},
+            "screen": {"consent": False, "watching": 0, "screen_on": True, "width": 720, "height": 1280, "rotation": 0, "control": True, "waiting": False},
             "call": {"state": "idle", "since": t0}, "find": {"ringing": False, "lost": False},
         }
         threading.Thread(target=self._status_loop, daemon=True).start()

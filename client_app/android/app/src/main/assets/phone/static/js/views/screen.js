@@ -93,7 +93,9 @@ export default {
 
     // ------------------------------------------------------------- states
     function render() {
-      const playing = video.state === "live";
+      // Android captures nothing while the phone's screen is off (the power button was pressed there)
+      const dark = st.screen_on === false && !stopped && st.consent;
+      const playing = video.state === "live" && !dark;
       pill.className = "glass" + (playing ? " live" : "");
       pill.lastChild.textContent = playing ? (st.watching > 1 ? `Live · ${st.watching} watching` : "Live") : "Screen";
       stage.classList.toggle("nocontrol", !control());
@@ -107,6 +109,10 @@ export default {
       } else if (startErr) {
         ic = "alert"; title = "The screen did not start"; detail = startErr;
         btn = h("button.btn.sm", { onclick: () => begin() }, icon("refresh"), "Try again");
+      } else if (dark) {
+        ic = "moon"; title = "The phone's screen is off";
+        detail = "Its picture comes back as soon as the screen is on.";
+        btn = control() ? h("button.btn.sm", { onclick: () => sendKey("wake") }, icon("sun"), "Wake the screen") : null;
       } else if (consentWait && !st.consent) {
         ic = "phone"; title = "Waiting for consent on the phone";
         detail = "Someone at the phone must allow screen capture (“Start now”). It is asked once and kept while the app runs.";

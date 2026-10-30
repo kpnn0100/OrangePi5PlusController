@@ -74,6 +74,17 @@ the app"`. Switches are changed only on the phone (the web shows them read-only)
   `MediaProjection` and its single `VirtualDisplay` are kept for as long as the service runs; with
   nobody watching the display's surface is set to `null` (nothing is captured or encoded). With
   `adb shell appops set com.arstro.arstro_remote_client PROJECT_MEDIA allow` the consent is automatic.
+* **Asleep:** while sharing, the service holds a partial wake lock (`Store.awake`, "Stay reachable
+  when the screen is off", on by default): with the CPU asleep the agent's pings (every heartbeat,
+  20 s) and the HTTP pipe's requests (a down request every 25 s) stop and the device manager lists the
+  phone offline. A foreground service keeps its network and its wake lock in Doze. With the setting
+  off the lock is held only while a viewer is connected.
+* **Network changes** (Wi-Fi <-> mobile data): a default-network callback makes the agent connect again
+  at once (`RelayAgent.networkChanged`) instead of after a timeout and the back-off.
+* **Screen off:** Android captures nothing while the screen is off. A viewer opening `/ws/screen` turns
+  it on; while anyone watches, a screen wake lock keeps it on (dimmed after the phone's own timeout).
+  The power button still turns it off: the `screen` state's `screen_on` says so and the viewer's Wake
+  key turns it on again. When the last viewer leaves, the phone's own timeout applies.
 
 ## Conventions (all of the API below)
 
@@ -117,7 +128,7 @@ All paths are relative to the device root (`B/d/<id>/8080/`). JSON bodies; error
 | Op | Args | Result |
 |---|---|---|
 | `status.get` | | `{battery: {level, charging, plugged, temperature_c, health}, storage: {total, free}, memory: {total, available}, network: {type, connected, wifi_ssid?, ip?}, signal?: {type, level}, uptime_s, screen_on, locked}` |
-| `screen.status` | | `{consent: bool, watching: n, width, height, rotation, control: bool}` |
+| `screen.status` | | `{consent: bool, waiting: bool, watching: n, screen_on: bool, width, height, rotation, control: bool, error}` (also the `screen` topic) |
 | `screen.start` / `screen.stop` | | asks for consent on the phone if needed → `{consent, waiting}` / stops capture and releases the projection |
 | `screen.tap` / `screen.long` | `x, y` (0..1 of the screen) | |
 | `screen.swipe` | `x1, y1, x2, y2, ms?` | |
@@ -196,9 +207,10 @@ browser's microphone, same format) played on the phone's earpiece / speaker; tex
 | `key` / `rotateKey` | | `{key, key_id}` |
 | `start` / `stop` | | state (the service) |
 | `finishFirstRun` | | state |
+| `setAwake` | `on` | state (`awake`: stay reachable when the screen is off) |
 
 The page listens to `arstro/phone/events` (EventChannel) for state changes. Extras: `openAppInfo`
-(for "Allow restricted settings"); `state` also carries `enabled, sdk, default_url,
+(for "Allow restricted settings"); `state` also carries `enabled, awake, manufacturer, sdk, default_url,
 service.missing, relay.viewers, relay.token_set, relay.relay_version`, and each `missing` item a
 `title`; `setRelay` keeps the stored token when given an empty one.
 
@@ -210,6 +222,10 @@ service.missing, relay.viewers, relay.token_set, relay.relay_version`, and each 
 * **Force stop** (Settings › Apps › Force stop) switches the app's accessibility service off -
   remote control then needs Accessibility again. Swiping the app away from Recents does not.
 * Screen sharing shows Android's red status-bar chip; camera and microphone their dots.
+* **Phone makers' battery managers** stop apps in the background on top of Android's rules (TECNO,
+  Infinix and itel: Phone Master; Xiaomi, OPPO, vivo, Huawei, Samsung and others too - dontkillmyapp.com).
+  The app's page shows a hint for these makers: allow auto-start / background running for Arstro
+  Remote Client and lock it in Recents. "Unrestricted battery use" alone is not enough there.
 * **Uninstalling** (and clearing the app's data) is refused while the app is an active device admin
   (Find my phone's "lock now").
   Turning Find my phone off in the app gives the device admin back; or Settings › Security ›

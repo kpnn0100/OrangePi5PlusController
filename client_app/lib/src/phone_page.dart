@@ -206,6 +206,26 @@ class _PhonePageState extends State<PhonePage> {
             const SizedBox(width: 8),
             FilledButton.tonal(onPressed: () => allowFor(context, need: n), child: const Text('Allow')),
           ]),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Stay reachable when the screen is off'),
+          subtitle: Text(
+              s.awake
+                  ? 'The phone stays online while it sleeps. Uses some more battery.'
+                  : 'Off: the phone saves battery but can go offline while it sleeps.',
+              style: theme.textTheme.bodySmall),
+          value: s.awake,
+          onChanged: _busy ? null : (on) => _guard(() => api.setAwake(on)),
+        ),
+        if (s.makerHint != null)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Expanded(child: Text(s.makerHint!, style: theme.textTheme.bodySmall)),
+              const SizedBox(width: 8),
+              FilledButton.tonal(onPressed: () => api.openAppInfo(), child: const Text('App info')),
+            ]),
+          ),
         const SizedBox(height: 8),
         KeyValueRow('Name', s.name),
         KeyValueRow('Device id', s.id, mono: true, selectable: true),

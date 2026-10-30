@@ -1,5 +1,6 @@
 package com.arstro.arstro_remote_client.core
 
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.ActivityManager
 import android.app.Notification
@@ -11,6 +12,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.Network
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -94,6 +97,27 @@ class PhoneService : Service(), PhoneContext {
 
     private val prefs = SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> main.post { refresh() } }
 
+    /** Wi-Fi <-> mobile data in a pocket: the connection may sit on a network that is gone - connect
+     *  again at once instead of after a timeout and the back-off. */
+    private val network = object : ConnectivityManager.NetworkCallback() {
+        private var current: Network? = null
+        private var first = true
+
+        override fun onAvailable(n: Network) {
+            val changed = !first && n != current
+            first = false
+            current = n
+            if (changed && instance === this@PhoneService) {
+                log(LogLevel.INFO, "the network changed - connecting again")
+                agent.networkChanged()
+            }
+        }
+
+        override fun onLost(n: Network) {
+            if (n == current) current = null
+        }
+    }
+
     private val check = object : Runnable {
         override fun run() {
             refresh()
@@ -118,6 +142,11 @@ class PhoneService : Service(), PhoneContext {
         agent = RelayAgent(router, onChange = { main.post { onAgentChange() } }) { level, msg -> log(level, msg) }
         Transports.onFallback = { msg -> log(LogLevel.INFO, msg) }
         store.listen(prefs)
+        try {
+            getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(network)
+        } catch (e: RuntimeException) {
+            log(LogLevel.WARN, "no network callback: ${e.javaClass.simpleName}")
+        }
         agent.start()
         refresh()
         main.postDelayed(check, CHECK_MS)
@@ -142,6 +171,7 @@ class PhoneService : Service(), PhoneContext {
         instance = null
         main.removeCallbacks(check)
         store.unlisten(prefs)
+        try { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(network) } catch (_: RuntimeException) {}
         if (::agent.isInitialized) {
             val a = agent
             Thread({ a.stop() }, "relay-stop").start()
@@ -181,6 +211,7 @@ class PhoneService : Service(), PhoneContext {
             keySig = key
             agent.configure(agentConfig(), closeChannels = keyChanged)
         }
+        updateWake()
         val fs = Features.all.joinToString(",") {
             val note = try { it.note(this) } catch (e: Exception) { null }
             "${it.id}:${store.isOn(it.id)}:${isReady(it.id)}:$note"
@@ -217,8 +248,7 @@ class PhoneService : Service(), PhoneContext {
     }
 
     private fun onAgentChange() {
-        val viewers = agent.viewers().size
-        if (viewers > 0) holdWake() else releaseWake()
+        updateWake()
         updateNotification()
         notifyListeners()
     }
@@ -383,13 +413,20 @@ class PhoneService : Service(), PhoneContext {
     }
 
     // ------------------------------------------------------------------------------ wake lock
-    /** While someone watches, the CPU stays awake (a stream must not stall when the screen goes off). */
+    /** The CPU stays awake while sharing ("Stay reachable", Store.awake): asleep, the phone would stop
+     *  its pings and its pipe requests, and the device manager would list it offline. With the setting
+     *  off, only while someone is connected (a stream must not stall when the screen goes off). */
+    private fun updateWake() {
+        if (store.awake || agent.viewers().isNotEmpty()) holdWake() else releaseWake()
+    }
+
+    @SuppressLint("WakelockTimeout")      // held for as long as the phone is shared; released in onDestroy
     private fun holdWake() {
         if (wakeLock?.isHeld == true) return
         wakeLock = (getSystemService(Context.POWER_SERVICE) as PowerManager)
-            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "arstro:phone-viewers").apply {
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "arstro:phone-sharing").apply {
                 setReferenceCounted(false)
-                acquire(6 * 60 * 60 * 1000L)
+                acquire()
             }
     }
 

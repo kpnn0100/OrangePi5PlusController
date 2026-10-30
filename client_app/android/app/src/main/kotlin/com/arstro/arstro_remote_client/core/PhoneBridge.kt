@@ -92,9 +92,11 @@ class PhoneBridge(private val activity: Activity, messenger: BinaryMessenger) : 
             ),
             "key_id" to store.keyId,
             "first_run" to store.firstRun,
+            "awake" to store.awake,
             "features" to features,
             "service" to mapOf("missing" to Permissions.serviceMissing(ctx).map { it.toMap() }),
             "sdk" to Build.VERSION.SDK_INT,
+            "manufacturer" to (Build.MANUFACTURER ?: ""),
             "default_url" to Store.DEFAULT_URL,
         )
     }
@@ -144,6 +146,11 @@ class PhoneBridge(private val activity: Activity, messenger: BinaryMessenger) : 
                 "finishFirstRun" -> {
                     store.firstRun = false
                     result.success(state())
+                }
+                "setAwake" -> {
+                    store.awake = call.argument<Boolean>("on") != false
+                    result.success(state())
+                    push()
                 }
                 "openAppInfo" -> {
                     try { activity.startActivity(Permissions.appInfoIntent(ctx)) } catch (_: ActivityNotFoundException) {}
