@@ -52,6 +52,7 @@ and all three are updated live by the same state events (ARC-03).
 | Connected controllers | CON-05 | Settings › Connected controllers | `status`, `watch controllers` | System |
 | Install / update the app without a cable | SET-04 | (open `http://<pi>:8080/app.apk` in the phone browser) | `web` prints the link | Login page and System › Android app |
 | Camera source: HDMI input, USB (V4L2) camera, test pattern | CAM-01/02 | Settings sheet › Source (HDMI / test) ³ | `camera sources`, `camera select hdmi\|test\|v4l2:/dev/videoN [--mode "MJPG 1280x720@30"]` | Camera › Live › Settings › Source |
+| Which source is live (by name); a USB camera's own microphone as "from the camera" audio | CAM-04 | ³ | `rec status` › Source, Audio in | Camera › Live: the header, the audio meter's title; Settings › Audio input |
 | Network interfaces, Ethernet connect / disconnect | NET-01 | ³ | `net devices` | Connection › Network |
 | Connection profiles: edit IPv4 (DHCP / static / DNS / MTU), activate, delete, add Ethernet | NET-02/03 | ³ | `net connections / show UUID / set UUID --method manual --addresses A/24 --gateway G --dns D / up / down / delete UUID`, `net add-ethernet IFACE ...` | Connection › Network (tap a connection) |
 | Bluetooth devices: scan, pair, connect, forget; adapter power | NET-04/05 | ³ | `bt status / power on\|off / scan / devices / pair / connect / disconnect / trust / remove ADDR` | Connection › Bluetooth |

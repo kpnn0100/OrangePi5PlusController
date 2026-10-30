@@ -354,6 +354,7 @@ class RecorderService:
             "simulate": None if self.camera else self.simulate,
             "camera": self.camera,
             "source": self.source_id(),
+            "source_title": self.source_title(),
         }
 
     def _publish_status(self):
@@ -600,6 +601,23 @@ class RecorderService:
         self._publish_status()
         return dict(data, file=os.path.basename(data.get("path") or ""))
 
+    def source_title(self):
+        """What the source is called: "HDMI input", "Test pattern" or the camera's own name."""
+        sid = self.source_id()
+        if getattr(self, "_title_for", None) != sid:
+            title = "HDMI input"
+            if self.camera:
+                from . import v4l2
+                dev = self.camera.split("@")[0]
+                try:
+                    title = ((v4l2._v4l2_info(dev) or {}).get("card")) or dev
+                except v4l2.CameraError:
+                    title = dev
+            elif self.simulate:
+                title = "Test pattern"
+            self._title_for, self._title = sid, title
+        return self._title
+
     def source_id(self):
         if self.camera:
             return "v4l2:" + self.camera
@@ -648,8 +666,8 @@ class RecorderService:
                     "note": None if hdmi else "no HDMI receiver on this machine"}]
         for cam in v4l2.list_cameras():
             sources.append({"id": "v4l2:" + cam["device"], "kind": "v4l2", "title": cam["name"],
-                            "device": cam["device"], "available": True, "modes": cam["modes"],
-                            "note": "%s · %s" % (cam["driver"], cam["bus"])})
+                            "device": cam["device"], "available": not cam.get("error"), "modes": cam["modes"],
+                            "note": cam.get("error") or "%s · %s" % (cam["driver"], cam["bus"])})
         if self.camera and not any(s_.get("device") == self.camera.split("@")[0] for s_ in sources):
             sources.append({"id": "v4l2:" + self.camera, "kind": "v4l2", "title": self.camera,
                             "device": self.camera.split("@")[0], "available": False, "note": "not connected"})
@@ -918,7 +936,15 @@ class RecorderService:
 
     # ------------------------------------------------------ film work (REC-09..16, GAL-13)
     def _inputs(self):
-        return [{"id": "hdmi", "name": "HDMI input (from the camera)"}] + audio_inputs()
+        """The audio inputs; "hdmi" is "from the camera": the HDMI input's sound, or a USB camera's
+        own microphone when a USB camera is the source."""
+        name = "HDMI input (from the camera)"
+        if self.camera:
+            from . import v4l2
+            card = v4l2.camera_audio_card(self.camera.split("@")[0])
+            mic = next((i["name"] for i in audio_inputs() if i["id"] == "alsa:" + card), card) if card else None
+            name = "The camera's microphone (%s)" % mic if mic else "From the camera (it has no microphone)"
+        return [{"id": "hdmi", "name": name}] + audio_inputs()
 
     def _input_name(self, source):
         return next((i["name"] for i in self._inputs() if i["id"] == source), source)

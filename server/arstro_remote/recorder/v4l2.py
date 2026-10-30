@@ -1,7 +1,12 @@
-"""HDMI RX device helpers: EDID, signal detection, display plane and audio lookup."""
+"""HDMI RX device helpers: EDID, signal detection, display plane and audio lookup; V4L2
+cameras (USB / UVC webcams) found and described through the V4L2 uAPI directly."""
+import ctypes
+import errno
+import fcntl
 import glob
 import os
 import re
+import struct
 import subprocess
 
 EDID_TYPES = {
@@ -12,7 +17,10 @@ EDID_TYPES = {
 
 
 def v4l2(dev, *args):
-    r = subprocess.run(["v4l2-ctl", "-d", dev, *args], capture_output=True, text=True)
+    try:
+        r = subprocess.run(["v4l2-ctl", "-d", dev, *args], capture_output=True, text=True)
+    except FileNotFoundError:
+        return 127, "v4l2-ctl is not installed (package v4l-utils)"
     return r.returncode, r.stdout + r.stderr
 
 
@@ -264,6 +272,28 @@ def audio_inputs():
     return out
 
 
+def _usb_device(sysfs_device):
+    """/sys/devices/.../usb1/1-5/1-5:1.2 -> /sys/devices/.../usb1/1-5 (the USB device of an interface)."""
+    path = os.path.realpath(sysfs_device)
+    if "/usb" not in path:
+        return None
+    base = os.path.basename(path)
+    return os.path.dirname(path) if ":" in base else path
+
+
+def camera_audio_card(dev):
+    """The ALSA card id of a USB camera's own microphone (the same USB device), or None."""
+    cam = _usb_device("/sys/class/video4linux/%s/device" % os.path.basename(dev))
+    if not cam:
+        return None
+    for card in sorted(glob.glob("/sys/class/sound/card[0-9]*")):
+        if _usb_device(os.path.join(card, "device")) == cam:
+            card_id = _sysfs(card, "id")
+            if card_id and alsa_card_present(card_id):
+                return card_id
+    return None
+
+
 def alsa_card_present(card):
     return any(i["id"] == "alsa:" + card for i in audio_inputs())
 
@@ -315,39 +345,122 @@ class SimulatedSignal:
 
 
 # --------------------------------------------------------------------- V4L2 cameras
+# linux/videodev2.h - the structures the ioctls below fill in (sizes checked against the kernel's)
+class _Capability(ctypes.Structure):
+    _fields_ = [("driver", ctypes.c_char * 16), ("card", ctypes.c_char * 32), ("bus_info", ctypes.c_char * 32),
+                ("version", ctypes.c_uint32), ("capabilities", ctypes.c_uint32), ("device_caps", ctypes.c_uint32),
+                ("reserved", ctypes.c_uint32 * 3)]
+
+
+class _FmtDesc(ctypes.Structure):
+    _fields_ = [("index", ctypes.c_uint32), ("type", ctypes.c_uint32), ("flags", ctypes.c_uint32),
+                ("description", ctypes.c_char * 32), ("pixelformat", ctypes.c_uint32), ("mbus_code", ctypes.c_uint32),
+                ("reserved", ctypes.c_uint32 * 3)]
+
+
+class _FrmSize(ctypes.Structure):        # u: discrete (w, h) or stepwise (min_w, max_w, step_w, min_h, max_h, step_h)
+    _fields_ = [("index", ctypes.c_uint32), ("pixel_format", ctypes.c_uint32), ("type", ctypes.c_uint32),
+                ("u", ctypes.c_uint32 * 6), ("reserved", ctypes.c_uint32 * 2)]
+
+
+class _FrmIval(ctypes.Structure):        # u: discrete (num, den) or stepwise (min, max, step) fractions
+    _fields_ = [("index", ctypes.c_uint32), ("pixel_format", ctypes.c_uint32), ("width", ctypes.c_uint32),
+                ("height", ctypes.c_uint32), ("type", ctypes.c_uint32), ("u", ctypes.c_uint32 * 6),
+                ("reserved", ctypes.c_uint32 * 2)]
+
+
+assert (ctypes.sizeof(_Capability), ctypes.sizeof(_FmtDesc), ctypes.sizeof(_FrmSize), ctypes.sizeof(_FrmIval)) == \
+    (104, 64, 44, 52)
+
+
+def _vioc(direction, nr, size):
+    return (direction << 30) | (size << 16) | (ord("V") << 8) | nr
+
+
+VIDIOC_QUERYCAP = _vioc(2, 0, ctypes.sizeof(_Capability))
+VIDIOC_ENUM_FMT = _vioc(3, 2, ctypes.sizeof(_FmtDesc))
+VIDIOC_ENUM_FRAMESIZES = _vioc(3, 74, ctypes.sizeof(_FrmSize))
+VIDIOC_ENUM_FRAMEINTERVALS = _vioc(3, 75, ctypes.sizeof(_FrmIval))
+CAP_VIDEO_CAPTURE, CAP_VIDEO_CAPTURE_MPLANE = 0x1, 0x1000
+CAP_VIDEO_M2M, CAP_VIDEO_M2M_MPLANE, CAP_DEVICE_CAPS = 0x8000, 0x4000, 0x80000000
+BUF_TYPE_VIDEO_CAPTURE = 1
+FRMSIZE_DISCRETE, FRMIVAL_DISCRETE = 1, 1
+
+
+class CameraError(Exception):
+    """A camera device this server cannot use (the message says why and what to do)."""
+
+
+def _open(dev):
+    try:
+        return os.open(dev, os.O_RDWR | os.O_NONBLOCK)
+    except PermissionError:
+        raise CameraError("permission denied - the server's user needs the video group "
+                          "(sudo usermod -aG video $USER, then log in again or reboot)")
+    except OSError as e:
+        raise CameraError("cannot open %s: %s" % (dev, e.strerror or e))
+
+
+def _enum(fd, request, struct_, **fields):
+    """Fill struct_ with index 0, 1, ... until the driver says EINVAL; yields each answer."""
+    for i in range(256):
+        s = struct_(index=i, **fields)
+        try:
+            fcntl.ioctl(fd, request, s)
+        except OSError as e:
+            if e.errno in (errno.EINVAL, errno.ENOTTY):
+                return
+            raise
+        yield s
+
+
+def _fourcc(code):
+    return struct.pack("<I", code).decode("ascii", "replace").strip(" \x00")
+
+
 def _v4l2_info(dev):
-    """{"driver", "card", "bus", "capture"} from `v4l2-ctl -D` (standard V4L2 querycap)."""
-    rc, out = v4l2(dev, "-D")
-    if rc != 0:
+    """{"driver", "card", "bus", "capture"} from VIDIOC_QUERYCAP (raises CameraError)."""
+    fd = _open(dev)
+    try:
+        cap = _Capability()
+        fcntl.ioctl(fd, VIDIOC_QUERYCAP, cap)
+    except OSError:
         return None
-    info = {"driver": "", "card": "", "bus": "", "capture": False}
-    for key, field in (("Driver name", "driver"), ("Card type", "card"), ("Bus info", "bus")):
-        m = re.search(r"^\s*%s\s*:\s*(.*)$" % key, out, re.M)
-        if m:
-            info[field] = m.group(1).strip()
-    caps = out.split("Device Caps", 1)[-1]
-    info["capture"] = "Video Capture" in caps and "Memory-to-Memory" not in caps
-    return info
+    finally:
+        os.close(fd)
+    caps = cap.device_caps if cap.capabilities & CAP_DEVICE_CAPS else cap.capabilities
+    text = lambda b: b.split(b"\0", 1)[0].decode("utf-8", "replace").strip()
+    return {"driver": text(cap.driver), "card": text(cap.card), "bus": text(cap.bus_info),
+            "capture": bool(caps & (CAP_VIDEO_CAPTURE | CAP_VIDEO_CAPTURE_MPLANE)) and
+                       not caps & (CAP_VIDEO_M2M | CAP_VIDEO_M2M_MPLANE)}
 
 
 def camera_modes(dev):
-    """[(fourcc, w, h, fps)] the device offers (`v4l2-ctl --list-formats-ext`)."""
-    rc, out = v4l2(dev, "--list-formats-ext")
-    if rc != 0:
+    """[(fourcc, w, h, fps)] the device offers: VIDIOC_ENUM_FMT / _FRAMESIZES / _FRAMEINTERVALS.
+    A stepwise or continuous size counts by its largest size, a stepwise interval by its fastest."""
+    try:
+        fd = _open(dev)
+    except CameraError:
         return []
-    modes, fourcc, size = [], None, None
-    for line in out.splitlines():
-        m = re.search(r"\[\d+\]: '(\w+)'", line)
-        if m:
-            fourcc, size = m.group(1), None
-            continue
-        m = re.search(r"Size: Discrete (\d+)x(\d+)", line)
-        if m:
-            size = (int(m.group(1)), int(m.group(2)))
-            continue
-        m = re.search(r"\(([\d.]+) fps\)", line)
-        if m and fourcc and size:
-            modes.append((fourcc, size[0], size[1], float(m.group(1))))
+    modes = []
+    try:
+        for fmt in _enum(fd, VIDIOC_ENUM_FMT, _FmtDesc, type=BUF_TYPE_VIDEO_CAPTURE):
+            fourcc = _fourcc(fmt.pixelformat)
+            for size in _enum(fd, VIDIOC_ENUM_FRAMESIZES, _FrmSize, pixel_format=fmt.pixelformat):
+                w, h = (size.u[0], size.u[1]) if size.type == FRMSIZE_DISCRETE else (size.u[1], size.u[4])
+                for iv in _enum(fd, VIDIOC_ENUM_FRAMEINTERVALS, _FrmIval, pixel_format=fmt.pixelformat,
+                                width=w, height=h):
+                    num, den = iv.u[0], iv.u[1]          # discrete, or the fastest of a stepwise range
+                    if num:
+                        modes.append((fourcc, w, h, round(den / num, 3)))
+                    if iv.type != FRMIVAL_DISCRETE:
+                        break
+                if size.type != FRMSIZE_DISCRETE:
+                    break
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
     return modes
 
 
@@ -368,6 +481,14 @@ def best_mode(modes, max_pixels=1920 * 1080):
     return max(usable, key=score)
 
 
+def _sysfs(path, attr):
+    try:
+        with open(os.path.join(path, attr)) as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
 def list_cameras():
     """USB / UVC capture devices (the board's HDMI receiver is its own source)."""
     out = []
@@ -380,7 +501,14 @@ def list_cameras():
             continue
         if "hdmirx" in name.lower():
             continue
-        info = _v4l2_info(dev)
+        try:
+            info = _v4l2_info(dev)
+        except CameraError as e:
+            # unreadable: report USB cameras only (their capture node is index 0; a board's own
+            # video nodes and UVC metadata nodes would just be noise)
+            if "/usb" in os.path.realpath(os.path.join(path, "device")) and _sysfs(path, "index") == "0":
+                out.append({"device": dev, "name": name, "driver": "", "bus": "", "modes": [], "error": str(e)})
+            continue
         if not info or not info["capture"]:
             continue
         if not (info["bus"].startswith("usb-") or info["driver"] == "uvcvideo"):

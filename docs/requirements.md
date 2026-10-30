@@ -159,7 +159,8 @@ IDs are stable: never renumber, mark removed ones `(withdrawn)`.
 | ID | Requirement |
 |---|---|
 | CAM-01 | The camera source is chosen from any controller: the board's HDMI input, a V4L2 (USB/UVC) camera, or the test pattern; the choice is saved and survives restarts. Live view, recording, gallery and conversions work the same for every source. |
-| CAM-02 | V4L2 cameras are found automatically (USB capture devices with a usable pixel format) with their modes; the best mode up to 1080p is picked unless one is chosen. |
+| CAM-02 | V4L2 cameras - USB / UVC webcams and capture sticks - are found automatically through the V4L2 uAPI itself (no `v4l2-ctl` needed): capture devices with a usable pixel format, with their modes; the best mode up to 1080p is picked unless one is chosen. A USB camera this server cannot open is listed as unavailable with the reason (e.g. the `video` group). |
+| CAM-04 | With a USB camera as the source, "from the camera" audio is that camera's own microphone (the sound card on the same USB device), named after it; without one there is no camera audio. Every controller shows which source is live by its name (web: the Recorder's header; CLI: `rec status` › Source), and the HDMI-only EDID setting is shown only for the HDMI input. |
 | CAM-03 | The gallery is part of the Camera group (web: Camera › Live / Gallery). |
 
 ## NET – Connection

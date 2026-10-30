@@ -30,7 +30,7 @@ from gi.repository import GLib, Gst, GstVideo  # noqa: E402
 
 from . import arh, monitor, timecode  # noqa: E402
 from .gstutil import gst_buffer, is_dmabuf  # noqa: E402
-from .v4l2 import (alsa_card_present, audio_present, find_pulse_hdmiin, find_pulse_source,  # noqa: E402
+from .v4l2 import (alsa_card_present, audio_present, camera_audio_card, find_pulse_hdmiin, find_pulse_source,  # noqa: E402
                    lock_timings, query_signal)
 
 POLL_MS = 1000
@@ -133,7 +133,8 @@ class Capture:
         if self.audio_source.startswith("alsa:"):
             return alsa_card_present(self.audio_source[5:])  # an audio interface, any video source
         if self.sim:
-            return not getattr(self.sim, "device", None)      # a V4L2 camera has no audio here
+            dev = getattr(self.sim, "device", None)          # a V4L2 camera: its own microphone, if any
+            return bool(camera_audio_card(dev)) if dev else True
         return bool(self.audio_card) and audio_present(self.dev)
 
     def audio_alive(self):
@@ -230,6 +231,8 @@ class Capture:
         self.audio_in_pipeline = self._want_audio()
         if self.audio_in_pipeline:
             card = self.audio_source[5:] if self.audio_source.startswith("alsa:") else None
+            if not card and self.sim and getattr(self.sim, "device", None):
+                card = camera_audio_card(self.sim.device)     # "from the camera": a USB camera's own microphone
             if card:
                 # a USB audio interface (REC-09); through PulseAudio when it holds the card
                 pulse = find_pulse_source(card)

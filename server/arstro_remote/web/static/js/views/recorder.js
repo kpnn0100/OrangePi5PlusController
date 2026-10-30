@@ -123,8 +123,8 @@ export default {
     const statsCard = h("div.card", null, h("div.card-title", null, "Status"), statsBox, diskBox, whyBox);
     const lastCard = h("div.card.hidden");
 
-    const head = h("div.view-head", null,
-      h("div", null, h("h1", null, "Recorder"), h("div.sub", null, "HDMI input · record and watch live")));
+    const headSub = h("div.sub", null, "HDMI input · record and watch live");
+    const head = h("div.view-head", null, h("div", null, h("h1", null, "Recorder"), headSub));
     root.append(head, h("div.rec-layout", null,
       h("div", null, stage, previewBar),
       h("div.rec-panel", null, recMain, modeCard, statsCard, lastCard)));
@@ -208,7 +208,10 @@ export default {
       clockWarn.classList.toggle("hidden", rec.clock_synced !== false);
       modeText.textContent = rec.mode_text || "–";
       const s = store.get("recorder.settings") || {};
-      modeSub.textContent = [s.audio?.record ? "Audio on" : "Audio off", "EDID " + (s.edid || "–")].join(" · ");
+      headSub.textContent = (rec.source_title || "HDMI input") + " · record and watch live";
+      // the EDID only matters for the HDMI input (a USB camera or the test pattern has none)
+      modeSub.textContent = [s.audio?.record ? "Audio on" : "Audio off",
+                             rec.source === "hdmi" ? "EDID " + (s.edid || "–") : null].filter(Boolean).join(" · ");
 
       const disk = rec.disk || {};
       const sto = rec.storage || {};

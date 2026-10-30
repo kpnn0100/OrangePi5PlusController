@@ -444,6 +444,8 @@ def cmd_rec(ctl, a):
 
         def human(st):
             sig, r, d = st["signal"], st["recording"], st["disk"]
+            if st.get("source_title"):
+                print("Source   : %s  (%s)" % (st["source_title"], st.get("source")))
             print("Signal   : %s" % (sig.get("text") if sig.get("present") else "none - %s" % (sig.get("why") or "")))
             if r.get("active"):
                 print("Recording: %s %s  %s  %s/s  drops %s%s" % (

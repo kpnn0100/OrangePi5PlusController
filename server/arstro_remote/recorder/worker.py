@@ -450,11 +450,12 @@ class Worker:
         self.loop.quit()
 
     def capabilities(self):
-        from . import gpu, monitor
+        from . import gpu, monitor, v4l2
         f = self.Gst.ElementFactory.find
         return {"vpu_h265": bool(f("mpph265enc")), "vpu_h264": bool(f("mpph264enc")),
                 "x265": bool(f("x265enc")), "ffv1": bool(f("avenc_ffv1")), "gpu_ffv1": gpu.available(),
-                "audio": bool(self.audio_card) or (bool(self.sim) and not getattr(self.sim, "device", None)),
+                "audio": bool(self.audio_card) or (bool(self.sim) and (not getattr(self.sim, "device", None) or
+                                                                       bool(v4l2.camera_audio_card(self.sim.device)))),
                 "device": self.dev or getattr(self.sim, "device", None),
                 "simulate": bool(self.sim) and not getattr(self.sim, "device", None),
                 "analysis": monitor.available(), "lut": monitor.available(),
