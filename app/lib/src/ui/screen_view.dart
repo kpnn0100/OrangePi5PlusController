@@ -7,9 +7,11 @@ import '../media.dart';
 import '../remote_client.dart';
 import 'recorder/common.dart';
 
-/// Remote screen (SCR-01..04): the Pi's desktop, live over Wi-Fi, controlled by touch -
+/// Remote screen (SCR-01..06): the Pi's desktop, live over Wi-Fi, controlled by touch -
 /// tap = click, double tap = double click, long press = right click, drag = drag with the
 /// left button, two fingers = scroll. Everything is mapped to the same desktop pixel.
+/// SCR-06: the picture is one monitor (`showing`) at `region` on the desktop: a point of the
+/// picture + region's x, y is the desktop pixel; a menu picks the monitor when there are several.
 class ScreenView extends StatefulWidget {
   const ScreenView({super.key, required this.client, required this.active});
   final RemoteClient client;
@@ -82,7 +84,10 @@ class _ScreenViewState extends State<ScreenView> with WidgetsBindingObserver {
     final ox = (box.width - sw * k) / 2, oy = (box.height - sh * k) / 2;
     final x = (p.dx - ox) / k, y = (p.dy - oy) / k;
     if (x < 0 || y < 0 || x >= sw || y >= sh) return null;
-    return [x.round(), y.round()];
+    final reg = _st['region'];
+    final rx = reg is List && reg.length >= 2 ? (reg[0] as num).round() : 0;
+    final ry = reg is List && reg.length >= 2 ? (reg[1] as num).round() : 0;
+    return [x.round() + rx, y.round() + ry];
   }
 
   void _moveTo(List<int> p, {bool now = false}) {
@@ -111,6 +116,42 @@ class _ScreenViewState extends State<ScreenView> with WidgetsBindingObserver {
     client.notify('in.btn', {'b': button, 'a': action});
   }
 
+  // ------------------------------------------------------------ monitors
+  List<Map<String, dynamic>> _monitors(Map<String, dynamic> st) =>
+      [for (final m in (st['monitors'] is List ? st['monitors'] as List : const [])) asMap(m)];
+
+  /// SCR-06: which monitor the picture shows (a shared, saved setting).
+  Widget _monitorMenu(BuildContext context, Map<String, dynamic> st) {
+    final mons = _monitors(st);
+    final showing = st['showing'] as String? ?? st['monitor'] as String? ?? 'primary';
+    final desk = st['desktop'] is List ? st['desktop'] as List : null;
+    String label(String v) {
+      if (v == 'all') return 'All monitors';
+      final i = mons.indexWhere((m) => m['name'] == v);
+      return i < 0 ? v : '${i + 1} · $v';
+    }
+
+    return PopupMenuButton<String>(
+      tooltip: 'Monitor',
+      initialValue: showing,
+      onSelected: (v) => runOp(context, client, 'screen.settings.set', {'settings': {'monitor': v}}),
+      itemBuilder: (_) => [
+        for (final (i, m) in mons.indexed)
+          PopupMenuItem(
+            value: m['name'] as String,
+            child: Text('${i + 1} · ${m['name']}  ${m['width']}×${m['height']}${m['primary'] == true ? ' · primary' : ''}'),
+          ),
+        PopupMenuItem(value: 'all', child: Text('All monitors${desk != null ? '  ${desk[0]}×${desk[1]}' : ''}')),
+      ],
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        const Icon(Icons.desktop_windows_outlined, size: 18),
+        const SizedBox(width: 6),
+        Text(label(showing)),
+        const Icon(Icons.arrow_drop_down),
+      ]),
+    );
+  }
+
   // --------------------------------------------------------------- build
   @override
   Widget build(BuildContext context) {
@@ -130,6 +171,7 @@ class _ScreenViewState extends State<ScreenView> with WidgetsBindingObserver {
               Tag(playing ? 'Live' : st['state'] == 'error' ? 'No picture' : 'Screen',
                   color: playing ? kOk : null, dot: true),
               if (scr != null) Text('${scr[0]}×${scr[1]}', style: theme.textTheme.bodySmall),
+              if (_monitors(st).length > 1) _monitorMenu(context, st),
               InkWell(
                 onTap: () => setState(() => _control = !_control),
                 child: Row(mainAxisSize: MainAxisSize.min, children: [

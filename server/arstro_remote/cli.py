@@ -862,7 +862,12 @@ def cmd_screen(ctl, a):
 
         def human(st):
             scr = st.get("screen")
-            print("Desktop : %s%s" % (st.get("display") or "none", "  %dx%d" % tuple(scr) if scr else ""))
+            print("Desktop : %s%s" % (st.get("display") or "none", "  %dx%d" % tuple(st["desktop"]) if st.get("desktop") else ""))
+            if len(st.get("monitors") or ()) > 1 or st.get("showing"):
+                reg = st.get("region")
+                print("Monitor : %s%s (setting: %s)" % (st.get("showing") or st.get("monitor"),
+                                                      "  %dx%d at %d,%d" % (reg[2], reg[3], reg[0], reg[1]) if reg else "",
+                                                      st.get("monitor", "primary")))
             print("State   : %s%s" % (st["state"], " - %s" % st["error"] if st.get("error") else ""))
             print("Viewers : %d · quality %s · encoder %s · bitrate %s" % (
                 st["viewers"], st["quality"], st.get("encoder", "auto"),
@@ -884,6 +889,25 @@ def cmd_screen(ctl, a):
         bps = parse_bitrate(a.value)
         ctl.call("screen.settings.set", settings={"bitrate": bps})
         print("screen bitrate: %s" % ("%d kbit/s" % (bps // 1000) if bps else "auto (from the quality)"))
+    elif sub == "monitor":
+        if a.value:
+            st = ctl.call("screen.settings.set", settings={"monitor": a.value})
+            print("screen monitor: %s" % a.value)
+            return
+        st = ctl.call("screen.status")
+
+        def human(st):
+            mons = st.get("monitors") or []
+            if not mons:
+                print("No monitor list yet (no desktop, or the server has not looked yet).")
+            now = st.get("showing") or st.get("monitor")
+            for i, m in enumerate(mons):
+                print("%s %d  %-16s %dx%d at %d,%d%s" % ("*" if m["name"] == now else " ", i + 1, m["name"], m["width"],
+                                                        m["height"], m["x"], m["y"], "  primary" if m.get("primary") else ""))
+            d = st.get("desktop")
+            print("%s    %-16s %s" % ("*" if now == "all" else " ", "all", "%dx%d (the whole desktop)" % tuple(d) if d else "the whole desktop"))
+            print("Setting: %s - change it with: screen monitor <name|primary|all>" % st.get("monitor", "primary"))
+        out(a, {k: st.get(k) for k in ("monitor", "showing", "monitors", "region", "desktop")}, human)
     elif sub == "save":
         save_preview(ctl, a.file, a.seconds, "/ws/screen")
 
@@ -1787,6 +1811,8 @@ def build_parser():
     se.add_argument("value", choices=["auto", "vpu", "cpu"])
     sb = scs.add_parser("bitrate", help="stream bitrate (shared): e.g. 2.5M, 800k, or auto (from the quality)")
     sb.add_argument("value")
+    sm = scs.add_parser("monitor", help="which monitor the picture shows (shared): without a value, list them")
+    sm.add_argument("value", nargs="?", help="a monitor's name (see the list), primary, or all (the whole desktop)")
     sv = scs.add_parser("save", help="save the live desktop to an .h264 file")
     sv.add_argument("file")
     sv.add_argument("--seconds", type=float, default=5)

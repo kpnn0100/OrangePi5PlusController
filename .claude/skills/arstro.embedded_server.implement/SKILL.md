@@ -80,7 +80,8 @@ updated · deployed into the idle slot and verified · committed and pushed.
 | `server/arstro_remote/hwio/` | IO Control: `gpio.py` (chardev uAPI v2 via ioctl), `i2c.py`, `spi.py`, `uart.py` (`SerialTerminal`), `sysfs.py` (PWM/LED/ADC), `dt.py` (device-tree names), `service.py` (`io.*`) |
 | `server/arstro_remote/boards/` | board modules: `detect()` by DT `compatible`; `orangepi5plus.py` header map |
 | `server/arstro_remote/recorder/` | Camera: service (`recorder.*`, `gallery.*`, `jobs.*`, `camera.*`), worker, capture, v4l2 (HDMI RX, `V4l2Camera`, EDID) |
-| `server/arstro_remote/screen/` | remote screen service + worker |
+| `server/arstro_remote/screen/` | remote screen service + worker; `xdisplay.py` (X screen size, RandR monitors - helper processes only) |
+| `server/arstro_backup/`, `server/scripts/install_backup.sh` | the backup terminal (port 8181, ADM-09/10): installed frozen (copies of the relay agent, ws.py, xterm), never by slot deploys |
 | `server/arstro_remote/web/` | HTTP/WS server, auth; `static/js/main.js` groups, `core.js`, `views/*.js` |
 | `server/arstro_remote/cli.py` | CLI controller (local socket of the slot, or `--url`) |
 | `server/arstro_remote/relay/` + `relay/` | Internet access (module `relay`) and the device manager server - change them with the `arstro.device_manager.implement` skill |

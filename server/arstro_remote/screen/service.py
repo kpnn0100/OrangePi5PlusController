@@ -1,16 +1,23 @@
-"""Remote screen service (SCR-01..05): runs the capture worker while someone watches.
+"""Remote screen service (SCR-01..06): runs the capture worker while someone watches.
 
 Viewers connect to the web server's /ws/screen (same messages as /ws/preview, see
 recorder/preview.py). Control goes through the normal input ops (in.move_to, in.btn,
 in.scroll, in.key, in.text), so every controller can drive the Pi from the picture.
 
 State topic "screen": {available, state, viewers, screen: [w, h], stream: {...},
-quality, encoder, bitrate, error}.
+quality, encoder, bitrate, monitor, monitors, showing, region: [x, y, w, h], desktop: [w, h], error}.
+
+Monitors (SCR-06): the picture is one monitor of the desktop - the `monitor` setting (primary,
+all, or a monitor's name), `showing` the one shown now; `screen` is its size and `region` its
+place on the desktop, so a controller turns a point of the picture into desktop pixels for
+in.move_to by adding region's x, y. The list comes from the capture worker, and from a short
+probe (a helper process: the daemon never opens the X display itself) when nobody watches.
 """
 
 import json
 import logging
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -25,7 +32,8 @@ log = logging.getLogger("arstro.screen")
 QUALITIES = ("low", "medium", "high")
 ENCODERS = ("auto", "vpu", "cpu")             # auto = the VPU when there is one (SCR-05)
 BITRATE_RANGE = (200_000, 20_000_000)         # bits/s; 0 = from the quality
-DEFAULTS = {"quality": "medium", "encoder": "auto", "bitrate": 0}
+DEFAULTS = {"quality": "medium", "encoder": "auto", "bitrate": 0, "monitor": "primary"}
+MONITOR_RE = re.compile(r"^[\w.:+-]{1,64}$")     # RandR names: HDMI-A-0, DP-1, eDP-1, ...
 FRAME = struct.Struct(">BQI")
 SIZE = struct.Struct(">I")
 
@@ -58,6 +66,11 @@ def validate(new, base=DEFAULTS):
             raise ValueError("bitrate must be 0 (from the quality) or %d k - %d M bits/s"
                              % (BITRATE_RANGE[0] // 1000, BITRATE_RANGE[1] // 1_000_000))
         out["bitrate"] = b
+    if "monitor" in new:
+        m = new["monitor"]
+        if not isinstance(m, str) or not MONITOR_RE.match(m):
+            raise ValueError("monitor must be primary, all or a monitor's name")
+        out["monitor"] = m
     return out
 
 
@@ -87,6 +100,10 @@ class ScreenService:
         self.lock = threading.Lock()
         self.stream = None
         self.screen = None
+        self.region = None                     # [x, y, w, h] of the shown monitor on the desktop
+        self.showing = None                    # its name, or "all"
+        self.monitors = []                     # [{name, x, y, width, height, primary}]
+        self.desktop = None                    # [w, h] of the whole desktop
         self.error = None
         self.state = "stopped"
         self._restarts = 0
@@ -95,6 +112,28 @@ class ScreenService:
     # ------------------------------------------------------------ lifecycle
     def start(self):
         self._publish()
+        if self.display:
+            threading.Thread(target=self.probe_monitors, name="screen-probe", daemon=True).start()
+
+    def probe_monitors(self):
+        """The desktop's monitors without capturing: a short helper process (ARC-06)."""
+        try:
+            r = subprocess.run([sys.executable, "-m", "arstro_remote.screen.xdisplay", "--display", self.display],
+                               capture_output=True, text=True, timeout=10, env=self._env())
+            desc = json.loads(r.stdout or "null")
+        except (OSError, ValueError, subprocess.TimeoutExpired) as e:
+            log.debug("screen: no monitor list (%s)", e)
+            return
+        if desc and not self._wanted:          # while capturing, the worker's own list counts
+            self.monitors = desc.get("monitors") or []
+            self.desktop = desc.get("screen")
+            self._publish()
+
+    def _env(self):
+        pkg_parent = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        env = dict(os.environ)
+        env["PYTHONPATH"] = pkg_parent + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+        return env
 
     def shutdown(self):
         self._wanted = False
@@ -120,16 +159,13 @@ class ScreenService:
         with self.lock:
             if self.proc and self.proc.poll() is None:
                 return
-            pkg_parent = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            env = dict(os.environ)
-            env["PYTHONPATH"] = pkg_parent + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
             logf = open(os.path.join(state_dir(), "screen.log"), "a")
             try:
                 self.proc = subprocess.Popen(
                     [sys.executable, "-m", "arstro_remote.screen.worker", "--quality", self.settings["quality"],
                      "--encoder", self.settings["encoder"], "--bitrate", str(self.settings["bitrate"]),
-                     "--display", self.display],
-                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=logf, env=env, bufsize=0)
+                     "--monitor", self.settings["monitor"], "--display", self.display],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=logf, env=self._env(), bufsize=0)
             except OSError as e:
                 logf.close()
                 self._fail("could not start the screen capture: %s" % e)
@@ -139,8 +175,9 @@ class ScreenService:
         self.error = None
         self.state = "starting"
         self.preview.set_state("starting")
-        log.info("screen capture started (pid %d, %s, %s, encoder %s, bitrate %s)", proc.pid, self.display,
-                 self.settings["quality"], self.settings["encoder"], self.settings["bitrate"] or "auto")
+        log.info("screen capture started (pid %d, %s, monitor %s, %s, encoder %s, bitrate %s)", proc.pid,
+                 self.display, self.settings["monitor"], self.settings["quality"], self.settings["encoder"],
+                 self.settings["bitrate"] or "auto")
         threading.Thread(target=self._reader, args=(proc,), name="screen-reader", daemon=True).start()
 
     def _stop_worker(self):
@@ -173,6 +210,10 @@ class ScreenService:
                     msg = json.loads(_exact(read, n))
                     if kind == b"C":
                         self.screen = msg.get("screen")
+                        self.region = msg.get("region")
+                        self.showing = msg.get("monitor")
+                        self.monitors = msg.get("monitors") or self.monitors
+                        self.desktop = msg.get("desktop")
                         self.stream = {k: msg.get(k) for k in ("width", "height", "fps", "bitrate", "quality", "encoder")}
                         self.preview.set_config(self.stream)
                         self._publish()
@@ -218,7 +259,9 @@ class ScreenService:
         return {"available": bool(self.display), "display": self.display, "state": self.state,
                 "viewers": self.preview.count, "screen": self.screen, "stream": self.stream,
                 "quality": self.settings["quality"], "encoder": self.settings["encoder"],
-                "bitrate": self.settings["bitrate"], "error": self.error, "path": "/ws/screen"}
+                "bitrate": self.settings["bitrate"], "monitor": self.settings["monitor"],
+                "monitors": self.monitors, "showing": self.showing, "region": self.region,
+                "desktop": self.desktop, "error": self.error, "path": "/ws/screen"}
 
     def _publish(self):
         self.hub.publish("screen", self.status())
@@ -236,11 +279,16 @@ class ScreenService:
     def op_screen_settings_set(self, session, msg):
         new = {k: v for k, v in (msg.get("settings") or msg).items() if k in DEFAULTS}
         if not new:
-            raise OpError("settings needs quality, encoder or bitrate")
+            raise OpError("settings needs quality, encoder, bitrate or monitor")
         try:
-            self.settings = validate(new, self.settings)
+            settings = validate(new, self.settings)
         except ValueError as e:
             raise OpError(str(e))
+        names = [m.get("name") for m in self.monitors]
+        if "monitor" in new and names and settings["monitor"] not in names + ["primary", "all"]:
+            raise OpError("no monitor named %s - this desktop has %s (or primary / all)"
+                          % (settings["monitor"], ", ".join(names)))
+        self.settings = settings
         os.makedirs(config_dir(), exist_ok=True)
         with open(_settings_path(), "w") as f:
             json.dump(self.settings, f)

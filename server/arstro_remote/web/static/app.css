@@ -851,6 +851,7 @@ body.term-fullscreen { overflow: hidden; }
 .screen-stage:fullscreen { max-height: none; }
 .screen-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
 .screen-bar .grow { min-width: 120px; }
+.screen-bar .monitor-sel { width: auto; max-width: 260px; }
 @media (max-width: 899px) { .screen-stage { max-height: calc(100vh - 230px - var(--tab-h)); } }
 
 /* ------------------------------------------------------- group sub-tabs (MOD-04) */

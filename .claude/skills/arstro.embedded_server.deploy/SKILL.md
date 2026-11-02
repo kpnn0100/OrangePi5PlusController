@@ -22,6 +22,15 @@ link and the plain `arstro-remote` command. An old, unslotted install (`arstro-r
 `~/.config/arstro-remote/`, port 8080, `~/.local/bin/arstro-remote-launcher`) counts as slot A
 until it is migrated.
 
+## The backup terminal is not a slot (ADM-09, ADM-10)
+
+`install.sh --backup` installs a terminal-only server on **port 8181** (`~/.local/share/arstro-backup/`,
+systemd user unit `arstro-backup.service`, its own device-manager identity `<host>-backup-…`). It is
+the machine's way in when a slot is broken or being updated, so **a deploy never touches it**: slot
+installs leave it alone by design, and a second `install.sh --backup` only checks it. Replace its code
+only when the user asks for it (`install.sh --backup --force`); never from a shell that runs inside
+it (the installer refuses: `--force-own-session`). Check it with `arstro-backup status`.
+
 ## Rule zero - ask which slot hosts THIS session, every time, before any deploy
 
 **Run this first, from the shell you will deploy from:**

@@ -10,7 +10,7 @@ Control an Orange Pi 5 Plus - or any Linux machine - from an **Android app**, a 
 | **Camera** | HDMI input, USB (V4L2) camera or test pattern: live H.264 preview, recording (H.265 MOV with PCM audio, or RAW), gallery with conversion and verified-lossless FFV1 - and an external recorder for film: time-of-day timecode in every file, slate names and markers, audio meters and an audio-interface input, zebras / false colour / waveform / LUTs, click-to-zoom focus check, disk speed check and time left, a GPIO record button and tally light, a CSV of the takes for the editor |
 | **Connection** | Wi-Fi, Ethernet and every NetworkManager profile (DHCP / static), Bluetooth devices |
 | **Terminal** | shared shells |
-| **Screen** | watch and control the desktop (like TeamViewer), remote keyboard and mouse |
+| **Screen** | watch and control the desktop (like TeamViewer) one monitor at a time, remote keyboard and mouse, Win+L to lock |
 | **IO Control** | GPIO (header view, edges), I2C scan / transfer / dump, SPI, UART consoles, PWM, LEDs, ADC - a bring-up and debugging bench |
 | **Files** | browse, upload, download, edit |
 | **Apps** | native programs (e.g. the Cosmo photo editor) with their own web UI, through the **NTWB** bridge: the core runs on the machine, the UI in the browser |
@@ -46,6 +46,13 @@ it the active one (`./install.sh --slot b --activate`: the plain `arstro-remote`
 app's Bluetooth link move to it). Commands per slot: `arstro-remote-a`, `arstro-remote-b`
 (or `arstro-remote --slot b`). Logs: `arstro-remote-b log -f`, or System › Logs in the web UI,
 or `~/.local/state/arstro-remote-b/`.
+
+**The backup terminal.** `./install.sh --backup` adds a terminal-only server on port 8181 with its own
+copy of the code, password (slot A's), start-at-boot service and device-manager identity
+(`<host> (backup terminal)` in the device list; its key: `arstro-backup key`). Installing or updating
+the slots never touches it, so a broken or updating main server still leaves a shell, on the network
+and from the internet. It changes only on purpose: `./install.sh --backup --force`;
+`arstro-backup status` shows it, `server/uninstall.sh --backup` removes it.
 
 ## Quick start from a dev PC (server + app)
 

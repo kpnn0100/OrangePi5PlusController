@@ -320,7 +320,13 @@ class RemoteClient extends ChangeNotifier {
     });
   }
 
+  /// Widget tests see the notifications here instead of a Pi.
+  @visibleForTesting
+  void Function(String op, Map<String, dynamic> params)? notifyOverride;
+
   void notify(String op, [Map<String, dynamic>? params]) {
+    final fake = notifyOverride;
+    if (fake != null) return fake(op, {...?params});
     if (!isConnected) return;
     _send(encodeJson({...?params, 'op': op}));
   }

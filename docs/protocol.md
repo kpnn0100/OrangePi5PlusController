@@ -63,7 +63,7 @@ Pushed to every session whenever they change (whoever changed them), newest valu
 | `pairing` | Bluetooth `{ready, alias, address, pairing_open, pairing_remaining, paired_devices}` |
 | `controllers` | connected controllers `[{session, controller, kind, peer, since}]` |
 | `web` | `{enabled, port, urls, auth: "password" \| "open"}` (never the password) |
-| `screen` | remote screen `{available, display, state: stopped\|starting\|live\|error, viewers, screen: [w, h], stream: {width, height, fps, bitrate, quality, encoder: vpu\|cpu}, quality, encoder: auto\|vpu\|cpu, bitrate (0 = auto), error}` |
+| `screen` | remote screen `{available, display, state: stopped\|starting\|live\|error, viewers, screen: [w, h], stream: {width, height, fps, bitrate, quality, encoder: vpu\|cpu}, quality, encoder: auto\|vpu\|cpu, bitrate (0 = auto), monitor: primary\|all\|<name> (the setting), showing (the monitor shown, or all), region: [x, y, w, h] (its place on the desktop), monitors: [{name, x, y, width, height, primary}], desktop: [w, h], error}` - `screen` is the size of the shown monitor; a point (x, y) of the picture is desktop pixel (region.x + x, region.y + y) for `in.move_to` (SCR-06) |
 | `net` | `{devices: [...net.devices], connections: [...net.connections]}` (polled every ~30 s and after every change) |
 | `io.gpio` | `{held: [{chip, line, pin, mode, bias, drive, active_low, edge, debounce_us, value, events}], events: [{chip, line, pin, edge: rising\|falling, t}]}` (latest 20 events) |
 | `io.pwm` | the `io.pwm.list` chips after a change |
@@ -126,7 +126,7 @@ Other events: `stats` `{data}` (after `stats.subscribe`), `term.exit` `{term, co
 | `gallery.delete_take` | `take` | |
 | `jobs.list` / `jobs.clear` / `jobs.cancel` | `job` (cancel: the job's number - never `id`, which is the request's own number) | `{jobs}` / job |
 | `screen.status` | | the `screen` topic |
-| `screen.settings.set` | `settings: {quality?, encoder?, bitrate?}` - quality low ≤ 960 px 15 fps, medium ≤ 1280 px 30 fps, high native 30 fps; encoder `auto` (VPU when present) / `vpu` / `cpu` (x264); bitrate bits/s, 0 = from the quality, else 200000 - 20000000 (SCR-05) | saved, shared; only the given keys change; a running capture restarts |
+| `screen.settings.set` | `settings: {quality?, encoder?, bitrate?, monitor?}` - monitor `primary` / `all` / a name from `monitors` (an unknown name is refused, listing them; SCR-06); quality low ≤ 960 px 15 fps, medium ≤ 1280 px 30 fps, high native 30 fps; encoder `auto` (VPU when present) / `vpu` / `cpu` (x264); bitrate bits/s, 0 = from the quality, else 200000 - 20000000 (SCR-05) | saved, shared; only the given keys change; a running capture restarts |
 | `admin.status` | | `{version, bluetooth, input, web, recorder, sessions}` |
 | `admin.pair` | `seconds` (0 closes) | status |
 | `admin.unpair` | `address` | |
@@ -199,7 +199,7 @@ Take ids are `REC_YYYYMMDD_HHMMSS`; its files are `<take>.arh` (RAW), `<take>_H2
 | `GET /ws` | WebSocket session (the protocol above) |
 | `GET /ws/preview` | live H.264 preview (below) |
 | `GET /api/play/<file>?mode=copy\|h264&t=S` | GAL-11: an H.265/H.264 recording as a fragmented MP4 stream from S s (keyframe before it, timestamps from 0), audio AAC; `copy` = the video as it is, `h264` = VPU conversion at 15 fps (one at a time: the same viewer's next request replaces its stream, others get 409 *busy*); no length (`Connection: close`) |
-| `GET /ws/screen` | the Pi's desktop, same messages as `/ws/preview`; control it with `in.move_to` (absolute desktop pixels), `in.btn`, `in.scroll`, `in.key`, `in.text` |
+| `GET /ws/screen` | one monitor of the Pi's desktop (the `screen` topic's `showing`, SCR-06), same messages as `/ws/preview`; control it with `in.move_to` (absolute desktop pixels: region + the point in the picture), `in.btn`, `in.scroll`, `in.key`, `in.text` |
 | `GET /api/media/<file>` | a recording, HTTP Range; `?download=1` |
 | `GET /api/thumb/<take>` | JPEG thumbnail |
 | `GET /ws` with `Authorization: Bearer <password>` | the control channel for programs (CLI `--url`, the app's link to another slot, TERM-06): binary messages carry exactly the Bluetooth frames |

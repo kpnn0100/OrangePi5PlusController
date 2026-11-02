@@ -655,6 +655,7 @@ class _KeyboardPanelState extends State<_KeyboardPanel> {
       shortcut('Switch window', 'Tab', ['alt'], Icons.tab),
       shortcut('Close window', 'F4', ['alt'], Icons.close),
       shortcut('App menu', 'Super_L', [], Icons.apps),
+      shortcut('Lock (Win+L)', 'l', ['super'], Icons.lock_outline),   // SCR-07
       shortcut('Terminal', 't', ['ctrl', 'alt'], Icons.terminal),
       shortcut('Vol −', 'XF86AudioLowerVolume', [], Icons.volume_down),
       shortcut('Vol +', 'XF86AudioRaiseVolume', [], Icons.volume_up),

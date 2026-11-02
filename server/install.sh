@@ -38,9 +38,18 @@
 #   --uninstall           stop and remove this slot (config and logs stay; --purge removes them)
 #   --force-own-session   install into the slot that hosts THIS shell anyway (it gets killed)
 #   -y, --yes             never ask (password defaults to "admin" for a new slot)
+#
+# The backup terminal (ADM-09): a terminal-only server on port 8181 that slot installs never touch -
+#   --backup [...]        install it instead of a slot; see: install.sh --backup --help
 set -euo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+for a in "$@"; do
+    if [ "$a" = --backup ]; then
+        [ -x "$SRC/scripts/install_backup.sh" ] || { echo "error: run install.sh --backup from an Arstro Remote checkout" >&2; exit 1; }
+        exec "$SRC/scripts/install_backup.sh" "$@"
+    fi
+done
 CODE="$SRC"                                   # the installed copy lives in <slot>/bin/
 [ -d "$CODE/arstro_remote" ] || [ ! -d "$SRC/../arstro_remote" ] || CODE="$(cd "$SRC/.." && pwd)"
 SLOT=a PORT="" PASSWORD="" MODULES="all" BT="" BOOT="" ACTIVATE=0
@@ -82,6 +91,9 @@ SLOT_UP=$(echo "$SLOT" | tr a-z A-Z)
 IDX=$(( $(printf '%d' "'$SLOT") - 97 ))
 PORT="${PORT:-$((8080 + IDX))}"
 [[ "$PORT" =~ ^[0-9]+$ ]] && [ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ] || die "bad --port"
+BACKUP_PORT=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("port", ""))' \
+              "${XDG_CONFIG_HOME:-$HOME/.config}/arstro-backup/config.json" 2>/dev/null || true)
+[ "$PORT" != "$BACKUP_PORT" ] || die "port $PORT is the backup terminal's (ADM-09) - give the slot another (--port)"
 [ -n "$BT" ] || { [ "$SLOT" = a ] && BT=on || BT=off; }
 [[ "$BT" =~ ^(on|off)$ ]] || die "--bluetooth on|off"
 

@@ -1,0 +1,36 @@
+/* The backup terminal (ADM-09): one shell at a time in tabs, dark, from 360 px phones up. */
+:root { --bg: #0b0c0f; --panel: #15181d; --line: #2a3038; --text: #e6e8ec; --dim: #8b93a1; --accent: #f0a04b;
+        --err: #ff7b72; }
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
+             font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+body { display: flex; flex-direction: column; }
+.dim { color: var(--dim); }
+.bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line);
+       background: var(--panel); min-height: 44px; }
+.brand { font-weight: 600; white-space: nowrap; display: flex; align-items: center; gap: 6px; }
+.brand .dim { font-weight: 400; overflow: hidden; text-overflow: ellipsis; max-width: 30vw; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); display: inline-block; }
+.tabs { display: flex; gap: 4px; overflow-x: auto; flex: 1; min-width: 0; scrollbar-width: none; }
+.tab { display: flex; align-items: center; gap: 4px; padding: 4px 4px 4px 10px; border: 1px solid var(--line);
+       border-radius: 8px; background: transparent; color: var(--dim); cursor: pointer; white-space: nowrap; }
+.tab.on { color: var(--text); border-color: var(--accent); }
+.tab .x { border: 0; background: none; color: inherit; cursor: pointer; padding: 0 6px; font-size: 15px; }
+.btn { border: 1px solid var(--line); background: #1f242b; color: var(--text); border-radius: 8px;
+       padding: 6px 12px; font: inherit; cursor: pointer; }
+.btn.ghost { background: transparent; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #1b1206; font-weight: 600; }
+main { flex: 1; min-height: 0; position: relative; display: flex; }
+.term { flex: 1; min-width: 0; padding: 4px 0 0 6px; }
+.login { margin: auto; width: min(360px, calc(100% - 32px)); display: flex; flex-direction: column; gap: 10px; }
+.login h1 { margin: 0; font-size: 22px; }
+.login input { padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel);
+               color: var(--text); font: inherit; }
+.err { color: var(--err); min-height: 1.4em; margin: 0; }
+.note { margin: auto; padding: 16px; text-align: center; }
+.keys { display: flex; gap: 4px; padding: 6px; border-top: 1px solid var(--line); background: var(--panel);
+        overflow-x: auto; }
+.keys button { flex: 1 0 auto; min-width: 44px; padding: 8px 6px; border: 1px solid var(--line); border-radius: 8px;
+               background: #1f242b; color: var(--text); font: inherit; }
+.keys button.on { border-color: var(--accent); color: var(--accent); }
+[hidden] { display: none !important; }

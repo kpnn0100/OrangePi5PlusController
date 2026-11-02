@@ -8,6 +8,7 @@ import 'package:arstro_remote/src/app_scope.dart';
 import 'package:arstro_remote/src/bt/bluetooth.dart';
 import 'package:arstro_remote/src/remote_client.dart';
 import 'package:arstro_remote/src/ui/connect_page.dart';
+import 'package:arstro_remote/src/ui/screen_view.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -395,5 +396,30 @@ void main() {
     log.check('settings');
     log.done();
     await tester.pump(const Duration(seconds: 70));
+  });
+
+  // covers: SCR-06, SCR-04
+  testWidgets('screen: the monitor menu, and a tap lands on the shown monitor', (tester) async {
+    await setSize(tester, sizes['phone portrait']!);
+    final log = ErrorLog();
+    final client = await connectedClient();
+    final sent = <(String, Map<String, dynamic>)>[];
+    client.notifyOverride = (op, params) => sent.add((op, params));
+    await tester.pumpWidget(MaterialApp(
+        theme: ThemeData.dark(useMaterial3: true),
+        home: Scaffold(body: SafeArea(child: ScreenView(client: client, active: false)))));
+    await tester.pump();
+    log.found(find.text('2 · DP-1'), 'the monitor menu showing DP-1 (the second of two)');
+    // the picture (1024x768 of DP-1, at x 1024 on a 2048x768 desktop): its middle is desktop (1536, 384)
+    final box = tester.getRect(find.byType(ColoredBox).last);
+    await tester.tapAt(box.center);
+    await tester.pump(const Duration(milliseconds: 500));     // after the double-tap window
+    final move = sent.where((e) => e.$1 == 'in.move_to').map((e) => e.$2).toList();
+    log.check('screen view');
+    log.done();
+    expect(move, isNotEmpty, reason: 'no in.move_to sent');
+    expect((move.last['x'] as num) - 1536, inInclusiveRange(-2, 2), reason: 'x ${move.last}');
+    expect((move.last['y'] as num) - 384, inInclusiveRange(-2, 2), reason: 'y ${move.last}');
+    expect(sent.any((e) => e.$1 == 'in.btn'), isTrue, reason: 'no click');
   });
 }

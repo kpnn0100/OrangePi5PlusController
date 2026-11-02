@@ -2,8 +2,12 @@
 # Remove Arstro Remote for the current user (config and logs are kept unless --purge).
 #
 #   uninstall.sh --slot b [--purge]    one slot (same as install.sh --slot b --uninstall)
+#   uninstall.sh --backup [--purge]    the backup terminal (same as install.sh --backup --uninstall)
 #   uninstall.sh --legacy [--purge]    an old, unslotted install (arstro-remote.desktop)
 set -u
+if [ "${1:-}" = "--backup" ]; then
+    exec "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts/install_backup.sh" --uninstall "$@"
+fi
 if [ "${1:-}" != "--legacy" ]; then
     exec "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/install.sh" --uninstall "$@"
 fi

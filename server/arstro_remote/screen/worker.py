@@ -1,18 +1,25 @@
-"""Screen capture worker (SCR-01): the X desktop -> H.264 access units on stdout.
+"""Screen capture worker (SCR-01, SCR-06): one monitor of the X desktop -> H.264 access units on stdout.
 
     python3 -m arstro_remote.screen.worker --quality medium [--encoder auto|vpu|cpu] [--bitrate BPS]
+                                           [--monitor primary|all|<name>]
 
 A separate process like the recorder worker (ARC-06): an X error or a GStreamer crash
 ends only this process. Output on stdout, one record after another:
 
     b"F" [key u8][pts_us u64][size u32] <Annex-B access unit>
-    b"C" [size u32] <JSON: {"width", "height", "fps", "bitrate", "quality", "encoder", "screen": [w, h]}>
+    b"C" [size u32] <JSON: {"width", "height", "fps", "bitrate", "quality", "encoder", "screen": [w, h],
+                             "region": [x, y, w, h], "monitor", "monitors": [...], "desktop": [w, h]}>
     b"E" [size u32] <JSON: {"error"}>                    (then the worker exits)
 
 stdin takes JSON lines: {"cmd": "keyframe"}.
 
 Encoders (SCR-05): "vpu" is the Rockchip hardware encoder (mpph264enc), "cpu" is x264, "auto" takes
-the VPU when GStreamer has it and falls back to x264 if it fails before the first frame. The VPU
+the VPU when GStreamer has it and falls back to x264 if it fails before the first frame.
+
+Monitors (SCR-06): the capture covers one monitor of the desktop (`--monitor`: the primary one, a
+monitor's RandR name, or `all` for the whole desktop); `screen` is the size of that area and `region`
+its place on the desktop, so a controller adds region's x, y to a point of the picture. A monitor
+that goes away gives the primary one; a change of the monitors restarts the capture. The VPU
 keeps up only when (1) it gets NV12 from a videoconvert behind a queue (its own copy then runs on
 another thread than the capture) and (2) zero-copy-pkt is on - without it each access unit costs a
 fixed copy and the encoder tops out near 19 fps even at 1024x768; with it, 140 fps from a test
@@ -21,8 +28,6 @@ otherwise re-encode frames that miss the rate.
 """
 
 import argparse
-import ctypes
-import ctypes.util
 import json
 import os
 import struct
@@ -34,6 +39,8 @@ import gi
 gi.require_version("Gst", "1.0")
 gi.require_version("GstVideo", "1.0")
 from gi.repository import GLib, Gst, GstVideo  # noqa: E402
+
+from .xdisplay import describe, pick  # noqa: E402
 
 # quality -> (max width, fps, bits/s at 1280x720; scaled by the picture area)
 QUALITIES = {"low": (960, 15, 800_000), "medium": (1280, 30, 2_500_000), "high": (0, 30, 5_000_000)}
@@ -52,27 +59,6 @@ def emit(kind, payload):
 
 def emit_json(kind, obj):
     emit(kind, json.dumps(obj).encode())
-
-
-def screen_size(display):
-    """(width, height) of the X screen, or None when there is no desktop."""
-    lib = ctypes.util.find_library("X11")
-    if not lib:
-        return None
-    x = ctypes.CDLL(lib)
-    x.XOpenDisplay.restype = ctypes.c_void_p
-    x.XOpenDisplay.argtypes = [ctypes.c_char_p]
-    x.XDefaultScreen.argtypes = [ctypes.c_void_p]
-    x.XDisplayWidth.argtypes = x.XDisplayHeight.argtypes = [ctypes.c_void_p, ctypes.c_int]
-    x.XCloseDisplay.argtypes = [ctypes.c_void_p]
-    dpy = x.XOpenDisplay(display.encode() if display else None)
-    if not dpy:
-        return None
-    try:
-        s = x.XDefaultScreen(dpy)
-        return x.XDisplayWidth(dpy, s), x.XDisplayHeight(dpy, s)
-    finally:
-        x.XCloseDisplay(dpy)
 
 
 def has_idr(au):
@@ -94,8 +80,9 @@ def fit(w, h, max_w):
 
 
 class Worker:
-    def __init__(self, display, quality, encoder="auto", bitrate=0):
+    def __init__(self, display, quality, encoder="auto", bitrate=0, monitor="primary"):
         self.display = display
+        self.monitor = monitor or "primary"
         self.quality = quality if quality in QUALITIES else "medium"
         self.encoder = encoder if encoder in ENCODERS else "auto"
         self.bitrate = min(max(bitrate, BITRATE_RANGE[0]), BITRATE_RANGE[1]) if bitrate else 0
@@ -105,9 +92,12 @@ class Worker:
         self.frames = 0
         self.loop = GLib.MainLoop()
         self.pipe = None
-        self.size = None
+        self.desc = None                                 # xdisplay.describe(): the desktop and its monitors
 
-    def build(self, size):
+    def build(self, desc):
+        area = pick(desc, self.monitor)
+        size = (area["width"], area["height"])
+        whole = (area["x"], area["y"]) == (0, 0) and list(size) == desc["screen"]
         max_w, fps, bps720 = QUALITIES[self.quality]
         w, h = fit(size[0], size[1], max_w)
         bps = self.bitrate or int(bps720 * max(0.35, (w * h) / (1280 * 720)))
@@ -122,25 +112,29 @@ class Worker:
                    f"x264enc name=enc tune=zerolatency speed-preset=ultrafast bitrate={bps // 1000} "
                    f"vbv-buf-capacity=400 key-int-max={key} byte-stream=true sliced-threads=false threads=2 ! "
                    "video/x-h264,stream-format=byte-stream,alignment=au,profile=main ! ")
-        desc = (f"ximagesrc name=src display-name={self.display} use-damage=false show-pointer=true ! "
-                f"video/x-raw,framerate={fps}/1 ! "
-                "queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! "
-                f"videoscale ! video/x-raw,width={w},height={h} ! " + enc +
-                "appsink name=sink emit-signals=true sync=false async=false max-buffers=4 drop=true")
-        pipe = Gst.parse_launch(desc)
+        crop = "" if whole else (f"startx={area['x']} starty={area['y']} "        # end* are inclusive
+                                 f"endx={area['x'] + size[0] - 1} endy={area['y'] + size[1] - 1} ")
+        launch = (f"ximagesrc name=src display-name={self.display} use-damage=false show-pointer=true {crop}! "
+                  f"video/x-raw,framerate={fps}/1 ! "
+                  "queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! "
+                  f"videoscale ! video/x-raw,width={w},height={h} ! " + enc +
+                  "appsink name=sink emit-signals=true sync=false async=false max-buffers=4 drop=true")
+        pipe = Gst.parse_launch(launch)
         pipe.get_by_name("sink").connect("new-sample", self._on_sample)
         bus = pipe.get_bus()
         bus.add_signal_watch()
         bus.connect("message::error", self._on_error)
         self.config = {"width": w, "height": h, "fps": fps, "bitrate": bps, "quality": self.quality,
-                       "encoder": self.use, "screen": list(size)}
+                       "encoder": self.use, "screen": list(size),
+                       "region": [area["x"], area["y"], size[0], size[1]], "monitor": area["name"],
+                       "monitors": desc["monitors"], "desktop": desc["screen"]}
         return pipe
 
-    def start(self, size):
+    def start(self, desc):
         self.stop()
-        self.size = size
+        self.desc = desc
         self.frames = 0
-        self.pipe = self.build(size)
+        self.pipe = self.build(desc)
         self.pipe.set_state(Gst.State.PLAYING)
         emit_json(b"C", self.config)
 
@@ -174,7 +168,7 @@ class Worker:
         if self.use == "vpu" and self.encoder == "auto" and not self.frames:
             print("screen: the VPU encoder failed (%s) - falling back to x264" % err.message, file=sys.stderr)
             self.use = "cpu"
-            GLib.idle_add(lambda: self.start(self.size) and False)
+            GLib.idle_add(lambda: self.start(self.desc) and False)
             return
         emit_json(b"E", {"error": "screen capture: %s" % err.message})
         self.loop.quit()
@@ -186,13 +180,13 @@ class Worker:
             enc.get_static_pad("src").send_event(ev)
 
     def _watch_size(self):
-        size = screen_size(self.display)
-        if size is None:
+        desc = describe(self.display)
+        if desc is None:
             emit_json(b"E", {"error": "the desktop (%s) went away" % self.display})
             self.loop.quit()
             return False
-        if size != self.size:                           # xrandr change: new picture size
-            self.start(size)
+        if desc != self.desc:                           # xrandr change: other size / monitors
+            self.start(desc)
         return True
 
     def _stdin(self):
@@ -206,11 +200,11 @@ class Worker:
         GLib.idle_add(self.loop.quit)                   # the daemon went away
 
     def run(self):
-        size = screen_size(self.display)
-        if size is None:
+        desc = describe(self.display)
+        if desc is None:
             emit_json(b"E", {"error": "no desktop on %s (is the Pi logged in to its desktop?)" % self.display})
             return 3
-        self.start(size)
+        self.start(desc)
         GLib.timeout_add(2000, self._watch_size)
         threading.Thread(target=self._stdin, daemon=True).start()
         try:
@@ -226,9 +220,10 @@ def main(argv=None):
     ap.add_argument("--encoder", default="auto", choices=list(ENCODERS))
     ap.add_argument("--bitrate", type=int, default=0, help="bits/s; 0 = from the quality")
     ap.add_argument("--display", default=os.environ.get("DISPLAY", ":0"))
+    ap.add_argument("--monitor", default="primary", help="primary, all, or a monitor's name (xrandr --listmonitors)")
     a = ap.parse_args(argv)
     Gst.init(None)
-    return Worker(a.display, a.quality, a.encoder, a.bitrate).run()
+    return Worker(a.display, a.quality, a.encoder, a.bitrate, a.monitor).run()
 
 
 if __name__ == "__main__":

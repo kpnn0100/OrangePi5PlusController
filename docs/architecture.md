@@ -122,6 +122,24 @@ Android app offered at `/app.apk` is shared (`~/.local/share/arstro-remote/app`)
 hardware is handled carefully: the HDMI EDID is re-written only when it changes (a write
 re-plugs the source), capture only runs while someone watches or records.
 
+## The backup terminal (ADM-09, ADM-10)
+
+```
+ backup   ~/.local/share/arstro-backup/  ~/.config/arstro-backup/  ~/.local/state/arstro-backup/
+          port 8181   systemd user unit arstro-backup.service (Restart=always)   $XDG_RUNTIME_DIR/arstro-backup.json
+          arstro_backup/            its own code: web.py (login, /api/terms, /ws/term), terms.py (PTYs), relay.py
+          arstro_backup/vendor/     COPIED at install: relay/agent.py, e2e.py, pipe.py, web/ws.py
+          arstro_backup/static/     its page + COPIED xterm.js, xterm.css, addon-fit.js
+```
+
+A separate, small, standard-library server (plus `cryptography` for the device manager) that the
+slots never touch: `install.sh --backup` assembles it in a temp folder (checking it imports nothing
+of `arstro_remote`) and swaps it in; a second run keeps its code (`--force` replaces it). It has its
+own password (slot A's at install), its own device-manager identity (`<host>-backup-…`, only its own
+port reachable) and a systemd unit that restarts it whenever it stops, so the machine keeps a shell
+on the network and from the internet while the main server is stopped, broken or being updated.
+A slot never takes its port and it never takes a slot's (both installers check).
+
 ## Logging (LOG-01..03)
 
 `<state>/arstro-remote.log` (rotating, 5 × 5 MB; format `time level component [thread]: msg`),
@@ -201,7 +219,8 @@ The app gets the web addresses and the password over Bluetooth (`web.info`), pro
 
 | Path | |
 |---|---|
-| `install.sh`, `server/install.sh` | the one installer (slots, modules, password, packages, permissions, boot) |
+| `install.sh`, `server/install.sh` | the one installer (slots, modules, password, packages, permissions, boot); `--backup` → `server/scripts/install_backup.sh` |
+| `server/arstro_backup/` | the backup terminal (ADM-09/10): its own small server, installed frozen next to the slots |
 | `server/arstro_remote/` | the daemon + CLI (`python3 -m arstro_remote`) |
 | `server/arstro_remote/modules.py`, `system.py`, `files.py`, `netconf.py` | module table, System/Logs, Files, Connection services |
 | `server/arstro_remote/hwio/` | IO Control: `gpio.py`, `i2c.py`, `spi.py`, `uart.py`, `sysfs.py` (PWM, LEDs, ADC), `dt.py`, `service.py` |

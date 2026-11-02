@@ -726,6 +726,22 @@
    1024,
    768
   ],
+  "monitor": "DP-1",
+  "showing": "DP-1",
+  "region": [
+   1024,
+   0,
+   1024,
+   768
+  ],
+  "desktop": [
+   2048,
+   768
+  ],
+  "monitors": [
+   {"name": "HDMI-1", "x": 0, "y": 0, "width": 1024, "height": 768, "primary": true},
+   {"name": "DP-1", "x": 1024, "y": 0, "width": 1024, "height": 768, "primary": false}
+  ],
   "stream": {
    "width": 1024,
    "height": 768,

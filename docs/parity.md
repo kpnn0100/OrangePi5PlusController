@@ -17,6 +17,8 @@ and all three are updated live by the same state events (ARC-03).
 | Shells of every A/B slot | TERM-06 | Terminal › *Slot A · Bluetooth* / *Slot B · Wi-Fi* | `arstro-remote-a term …` / `arstro-remote-b term …` (or `--slot a\|b`) | each slot's own page (`:8080`, `:8081`) |
 | Copy / paste in a shell | TERM-07 | long-press + drag, Copy / Paste keys, Ctrl+Shift+C / Ctrl+Shift+V | the terminal the CLI runs in | the browser's selection and clipboard |
 | Remote screen: watch the Pi desktop live, control it from the picture | SCR-01..04 | Remote › Screen (tap = click, long press = right click, drag, two-finger scroll; keyboard panel types) | `screen status`, `screen quality low\|medium\|high`, `screen save FILE [--seconds N]` ¹ | Screen tab (mouse, wheel, keyboard, Keys, Type text, full screen) |
+| Remote screen: one monitor at a time (which one, or all) | SCR-06 | Remote › Screen › the monitor menu (shown with 2+ monitors) | `screen monitor` (list), `screen monitor NAME\|primary\|all` | Screen tab › the monitor menu (shown with 2+ monitors) |
+| Lock the computer (Win+L) | SCR-07 | Remote › Keyboard › Lock (Win+L) | `input key l --mods super` | Screen tab › Keys › Win+L (lock) |
 | Remote screen: encoder (auto / VPU / CPU) and bitrate | SCR-05 | ³ | `screen encoder auto\|vpu\|cpu`, `screen bitrate 2.5M\|800k\|auto`, `screen status` | Screen tab › Stream (encoder, bitrate, what runs now) |
 | Mouse + keyboard | INP-01..04 | Remote tab (touchpad, buttons, drag lock, scroll strip, keys) | `input move X Y [--absolute] / click / down / up [BUTTON] / scroll DY [DX] / key K [--mods ctrl,alt] / type TEXT / pointer` | Remote (pad, buttons, keys, capture mode) |
 | Recorder status + signal diagnosis | REC-01 | Recorder › Live | `rec status`, `watch recorder` | Recorder |
@@ -69,6 +71,7 @@ and all three are updated live by the same state events (ARC-03).
 | Modules on / off | MOD-01/02 | ³ | `system modules [--set monitor,system,...]` | System › Modules |
 | Restart server, reboot, power off | ADM-05 | ³ | `system restart / reboot --yes / poweroff --yes` | System › Modules card |
 | Which slot, A/B side by side | ADM-06/07 | ³ | `--slot a\|b` or `arstro-remote-a` / `arstro-remote-b`; `system info` | host line shows the slot; own login per port |
+| Backup terminal: shells on port 8181 that slot installs never touch, with its own device-manager identity | ADM-09, ADM-10 | - (its own web page on `:8181`, also in the phone's browser) | `install.sh --backup [--force]`, `uninstall.sh --backup`, `arstro-backup status / key / password --set / relay` | `http://<pi>:8181/` (or from the device list: `<host> (backup terminal)`) |
 | Which slot hosts this session, which is idle | ADM-08 | - (a phone hosts no shell) | `slots [--current\|--idle]` | - (the browser is not a process on the board) |
 | Apps: list, start, stop, log, register | APP-01/02/05, APP-10 | Apps (top bar): list per slot, open ³ | `apps list / launch ID / stop ID / log ID / register PATH / unregister PATH` | Apps |
 | Use an app (its own web UI) | APP-03/04/06, APP-10 | Apps (top bar) › an app (in-app web view, per slot) | `apps call ID METHOD '{json}'`, `apps state ID [KEY]`, `apps api ID` | Apps › Open (inside the shell) or `/apps/<id>/` |

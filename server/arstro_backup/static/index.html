@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Backup terminal</title>
+<link rel="stylesheet" href="static/xterm.css">
+<link rel="stylesheet" href="static/backup.css">
+<script src="static/xterm.js"></script>
+<script src="static/addon-fit.js"></script>
+<script type="module" src="static/backup.js"></script>
+</head>
+<body>
+<header class="bar">
+  <span class="brand"><span class="dot"></span>Backup terminal <span id="host" class="dim"></span></span>
+  <nav id="tabs" class="tabs" aria-label="Shells"></nav>
+  <button id="new" class="btn" title="New shell" aria-label="New shell" hidden>+</button>
+  <button id="logout" class="btn ghost" hidden>Log out</button>
+</header>
+<main id="main">
+  <form id="login" class="login" hidden>
+    <h1>Backup terminal</h1>
+    <p class="dim">Arstro's way in that never changes: a shell on this machine, also while the main server is
+      stopped or being updated.</p>
+    <label for="pw">Password</label>
+    <input id="pw" type="password" autocomplete="current-password" required>
+    <button class="btn primary" type="submit">Log in</button>
+    <p id="login-err" class="err" role="alert"></p>
+  </form>
+  <div id="term" class="term" hidden></div>
+  <p id="note" class="note dim" hidden></p>
+</main>
+<footer id="keys" class="keys" hidden>
+  <button data-k="esc">Esc</button><button data-k="tab">Tab</button><button data-k="ctrl" id="ctrl">Ctrl</button>
+  <button data-k="^c">^C</button><button data-k="^d">^D</button><button data-k="up">↑</button>
+  <button data-k="down">↓</button><button data-k="left">←</button><button data-k="right">→</button>
+</footer>
+</body>
+</html>

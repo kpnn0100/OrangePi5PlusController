@@ -1,5 +1,7 @@
-// Remote screen (SCR-01..05): the Pi's desktop, live, controlled from the picture -
+// Remote screen (SCR-01..07): the Pi's desktop, live, controlled from the picture -
 // like TeamViewer / UltraViewer. Mouse and keyboard go through the normal input ops.
+// SCR-06: one monitor at a time - the picture is the monitor `showing`, at `region` on the desktop,
+// so a point of the picture + region's x, y is the desktop pixel for in.move_to.
 
 import { h, clear, icon, store, conn, run, seg, toggle, sheet, formBox, toast } from "../core.js";
 import { PreviewPlayer } from "../preview.js";
@@ -59,15 +61,33 @@ export default {
     const keysBtn = h("button.btn.sm", { onclick: () => openKeys() }, icon("keyboard"), "Keys");
     const typeBtn = h("button.btn.sm", { onclick: () => typeText() }, icon("send"), "Type text");
     const streamBtn = h("button.btn.sm", { onclick: () => openStream(), title: "Encoder and bitrate" }, icon("sliders"), "Stream");
+    // SCR-06: which monitor (shown only when the desktop has more than one)
+    const monitorSel = h("select.input.monitor-sel", { "aria-label": "Monitor", title: "Monitor",
+      onchange: (e) => run("screen.settings.set", { settings: { monitor: e.target.value } }) });
     root.append(
       h("div.view-head", null, h("div", null, h("h1", null, "Screen"), h("div.sub", null, "The Pi's desktop, live · click the picture to control it"))),
       h("div.screen-bar", null,
         h("label.row", { style: { gap: "10px", cursor: "pointer" } }, controlToggle, h("span.dim", null, "Control")),
-        h("div.grow"), keysBtn, typeBtn, streamBtn, quality),
+        h("div.grow"), monitorSel, keysBtn, typeBtn, streamBtn, quality),
       stage);
     stage.classList.toggle("control", control);
 
+    function renderMonitors() {
+      const mons = st.monitors || [];
+      monitorSel.classList.toggle("hidden", mons.length < 2);
+      if (mons.length < 2) return;
+      const now = st.showing || (st.monitor === "all" ? "all" : (mons.find((m) => m.name === st.monitor) ||
+        mons.find((m) => m.primary) || mons[0]).name);
+      const d = st.desktop || [];
+      clear(monitorSel, [
+        ...mons.map((m, i) => h("option", { value: m.name, selected: m.name === now },
+          `${i + 1} · ${m.name} (${m.width}×${m.height}${m.primary ? ", primary" : ""})`)),
+        h("option", { value: "all", selected: now === "all" }, "All monitors" + (d[0] ? ` (${d[0]}×${d[1]})` : "")),
+      ]);
+    }
+
     function render() {
+      renderMonitors();
       const scr = st.screen || [];
       const playing = player.playing;
       if (scr[0]) stage.style.aspectRatio = `${scr[0]} / ${scr[1]}`;
@@ -86,7 +106,8 @@ export default {
     }
 
     // ------------------------------------------------------ mouse → the Pi
-    /** Map a client point to screen pixels (the picture is letterboxed inside the stage). */
+    /** Map a client point to desktop pixels (the picture is letterboxed inside the stage; it shows
+     *  the monitor at `region`, SCR-06). */
     function toScreen(e) {
       const scr = st.screen;
       if (!scr || !scr[0]) return null;
@@ -96,7 +117,8 @@ export default {
       const x0 = r.left + (r.width - pw) / 2, y0 = r.top + (r.height - ph) / 2;
       const x = (e.clientX - x0) / k, y = (e.clientY - y0) / k;
       if (x < 0 || y < 0 || x >= scr[0] || y >= scr[1]) return null;
-      return [Math.round(x), Math.round(y)];
+      const reg = st.region || [0, 0];
+      return [Math.round(x) + reg[0], Math.round(y) + reg[1]];
     }
     let pendingMove = null, lastSent = null, raf = 0, scroll = { dx: 0, dy: 0 };
     const flush = () => {
@@ -187,7 +209,8 @@ export default {
         key("Esc", "Escape"), key("Tab", "Tab"), key("Enter", "Return"), key("Super", "Super_L"),
         key("Alt+Tab", "Tab", ["alt"]), key("Alt+F4", "F4", ["alt"]), key("Ctrl+Alt+T", "t", ["ctrl", "alt"]),
         key("Ctrl+C", "c", ["ctrl"]), key("Ctrl+V", "v", ["ctrl"]), key("Ctrl+Z", "z", ["ctrl"]),
-        key("PrtSc", "Print"), key("F11", "F11")) });
+        key("PrtSc", "Print"), key("F11", "F11"),
+        key("Win+L (lock)", "l", ["super"])) });                 // SCR-07: the desktop's lock shortcut
       void s;
     }
 

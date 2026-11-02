@@ -863,11 +863,12 @@ test("remote_screen_is_live_and_the_mouse_lands_on_the_same_spot", ["SCR-01", "S
     const st = await op("screen.status");
     check(st.state === "live" && st.viewers >= 1 && st.screen && st.screen[0] > 0, st);
     const [sw, sh] = st.screen;
+    const [rx, ry] = st.region || [0, 0];                 // SCR-06: the picture's place on the desktop
     // hover (no click: nothing on the Pi's desktop is touched) at 30 % / 60 % of the picture
     const box = await (await page.$(".screen-stage")).boundingBox();
     const k = Math.min(box.width / sw, box.height / sh);
     const x0 = box.x + (box.width - sw * k) / 2, y0 = box.y + (box.height - sh * k) / 2;
-    const want = [Math.round(sw * 0.3), Math.round(sh * 0.6)];
+    const want = [rx + Math.round(sw * 0.3), ry + Math.round(sh * 0.6)];
     await page.mouse.move(x0 + sw * k * 0.3, y0 + sh * k * 0.6, { steps: 4 });
     const got = await until(async () => {
       const p = await op("in.pointer");
@@ -884,6 +885,43 @@ test("remote_screen_is_live_and_the_mouse_lands_on_the_same_spot", ["SCR-01", "S
     check(/VPU/.test(txt) && /CPU/.test(txt) && /Now:/.test(txt), txt);
   } finally {
     await page.close();
+    if (p0) await op("in.move_to", { x: p0.x, y: p0.y }).catch(() => {});
+  }
+});
+
+test("screen_shows_one_monitor_picked_on_the_page_and_has_win_l", ["SCR-06", "SCR-07", "ARC-03"], async () => {
+  const st0 = await op("screen.status");
+  const p0 = await op("in.pointer").catch(() => null);
+  const page = await newPage();
+  try {
+    await go(page, "screen");
+    check(await until(() => page.$(".screen-stage.playing"), 20000), "no live picture");
+    const mons = (await op("screen.status")).monitors || [];
+    if (mons.length < 2) {
+      check(await page.$eval(".monitor-sel", (e) => e.classList.contains("hidden")), "a monitor menu with one monitor");
+      console.log("      (one monitor: the menu is hidden; the rest needs two)");
+    } else {
+      const opts = await page.$$eval(".monitor-sel option", (os) => os.map((o) => o.value));
+      check(mons.every((m) => opts.includes(m.name)) && opts.includes("all"), `menu ${opts}`);
+      const m = mons.find((x) => !x.primary) || mons[1];
+      await page.select(".monitor-sel", m.name);
+      const st = await until(async () => { const s = await op("screen.status"); return s.showing === m.name && s.state === "live" && s; }, 15000);
+      check(st && JSON.stringify(st.region) === JSON.stringify([m.x, m.y, m.width, m.height]), `not showing ${m.name}: ${JSON.stringify(st && st.region)}`);
+      check(await until(() => page.$(".screen-stage.playing"), 15000), "no picture of " + m.name);
+      // hover the middle of the picture: the pointer lands in the middle of that monitor
+      const box = await (await page.$(".screen-stage")).boundingBox();
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 4 });
+      const want = [m.x + m.width / 2, m.y + m.height / 2];
+      const got = await until(async () => { const q = await op("in.pointer"); return Math.abs(q.x - want[0]) <= 4 && Math.abs(q.y - want[1]) <= 4 && q; }, 3000);
+      check(got, `pointer should be near ${want} on ${m.name}, is ${JSON.stringify(await op("in.pointer"))}`);
+      await shot(page, "screen-monitor");
+    }
+    // SCR-07: Win+L is in the Keys sheet (not pressed: it would lock the machine)
+    check(await clickText(page, ".screen-bar .btn", "Keys"), "no Keys button");
+    check(await until(() => page.$$eval(".sheet.show .keys .btn", (bs) => bs.some((b) => b.textContent.includes("Win+L"))), 3000), "no Win+L key");
+  } finally {
+    await page.close();
+    await op("screen.settings.set", { settings: { monitor: st0.monitor || "primary" } }).catch(() => {});
     if (p0) await op("in.move_to", { x: p0.x, y: p0.y }).catch(() => {});
   }
 });
