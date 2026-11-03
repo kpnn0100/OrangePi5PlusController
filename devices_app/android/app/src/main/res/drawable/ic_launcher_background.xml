@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Arstro Devices: amber to orange, told apart from Arstro Remote (blue-violet) and Arstro Remote Client (teal) -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android">
+    <gradient android:angle="315" android:startColor="#FFF59F00" android:endColor="#FFE8590C"/>
+</shape>

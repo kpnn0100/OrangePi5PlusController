@@ -9,7 +9,8 @@ Tests name their requirements like this:
     server/tests/*.py        @test("REC-03", "ARC-03")  above the test function
     server/tests/web/*.mjs   test("name", ["REC-02", ...], async () => ...)
     relay/tests/*.py, relay/tests/**/*.mjs   the same two forms (the device manager)
-    app/test/*.dart          // covers: UX-03, REC-01      on the line(s) above test()/testWidgets()
+    app/test/*.dart, devices_app/test/*.dart   // covers: UX-03, REC-01   on the line(s) above test()/testWidgets()
+    devices_app/android/app/src/test/**/*.kt   // covers: MGR-03          on the line(s) above @Test fun
     scripts/*, *.sh          # covers: SET-01               anywhere in the file (whole file = one check)
 Requirements that can only be checked by hand list the procedure in MANUAL below.
 """
@@ -83,21 +84,37 @@ def scan():
             elif f.endswith((".mjs", ".js")):
                 for m in re.finditer(r'test\("([^"]+)",\s*\[([^\]]*)\]', src):
                     add(ids(m.group(2)), sub + "/" + f, m.group(1))
-    dart = os.path.join(ROOT, "app", "test")
-    for f in sorted(os.listdir(dart)) if os.path.isdir(dart) else []:
-        if not f.endswith(".dart"):
-            continue
-        lines = open(os.path.join(dart, f), encoding="utf-8").read().splitlines()
-        pending = []
-        for line in lines:
-            m = re.search(r"//\s*covers:\s*(.+)", line)
-            if m:
-                pending += ids(m.group(1))
+    for app in ("app", "devices_app"):                                       # Flutter widget / unit tests
+        dart = os.path.join(ROOT, app, "test")
+        for f in sorted(os.listdir(dart)) if os.path.isdir(dart) else []:
+            if not f.endswith(".dart"):
                 continue
-            t = re.search(r"\b(?:testWidgets|test)\(\s*'([^']+)'", line)
-            if t and pending:
-                add(pending, "app/test/" + f, t.group(1))
-                pending = []
+            lines = open(os.path.join(dart, f), encoding="utf-8").read().splitlines()
+            pending = []
+            for line in lines:
+                m = re.search(r"//\s*covers:\s*(.+)", line)
+                if m:
+                    pending += ids(m.group(1))
+                    continue
+                t = re.search(r"\b(?:testWidgets|test)\(\s*'([^']+)'", line)
+                if t and pending:
+                    add(pending, app + "/test/" + f, t.group(1))
+                    pending = []
+    jvm = os.path.join(ROOT, "devices_app", "android", "app", "src", "test")   # Arstro Devices' JVM tests
+    for base, _, files in sorted(os.walk(jvm)):
+        for f in sorted(files):
+            if not f.endswith(".kt"):
+                continue
+            pending = []
+            for line in open(os.path.join(base, f), encoding="utf-8").read().splitlines():
+                m = re.search(r"//\s*covers:\s*(.+)", line)
+                if m:
+                    pending += ids(m.group(1))
+                    continue
+                t = re.search(r"@Test\s+fun\s+(\w+)", line)
+                if t and pending:
+                    add(pending, os.path.relpath(os.path.join(base, f), ROOT), t.group(1))
+                    pending = []
     scripts = os.path.join(ROOT, "scripts")
     for f in sorted(os.listdir(scripts)):
         p = os.path.join(scripts, f)

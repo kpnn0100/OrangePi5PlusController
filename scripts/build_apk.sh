@@ -3,6 +3,7 @@
 #
 #   scripts/build_apk.sh                      check toolchain, pub get, analyze, test, build
 #   scripts/build_apk.sh --client             the same for Arstro Remote Client (client_app/, docs/phone/PHONE.md)
+#   scripts/build_apk.sh --devices            the same for Arstro Devices (devices_app/, docs/requirements.md MGR)
 #   scripts/build_apk.sh --no-test            skip analyze + tests
 #   scripts/build_apk.sh --install [SERIAL]   also adb-install it (SERIAL or $ANDROID_SERIAL)
 #   scripts/build_apk.sh --debug-sign         never create a release key (use the debug key)
@@ -10,7 +11,7 @@
 # Needs Flutter >= 3.38 (Dart 3.10), an Android SDK with platform 36 and JDK 17
 # (scripts/setup_android_dev.sh installs them, also on an ARM64 board).
 # Release signing uses app/android/key.properties + the keystore it names (both gitignored);
-# Arstro Remote Client is signed with the same key.
+# Arstro Remote Client and Arstro Devices are signed with the same key.
 # If they are missing a new key is created there (keep a backup: an APK signed with
 # another key cannot update an installed one - uninstall the old app first).
 set -euo pipefail
@@ -22,10 +23,11 @@ TEST=1 INSTALL=0 SERIAL="${ANDROID_SERIAL:-}" DEBUG_SIGN=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --client) APP="$ROOT/client_app" NAME="arstro-remote-client"; shift ;;
+        --devices) APP="$ROOT/devices_app" NAME="arstro-devices"; shift ;;
         --no-test) TEST=0; shift ;;
         --install) INSTALL=1; shift; if [ $# -gt 0 ] && [[ "$1" != -* ]]; then SERIAL="$1"; shift; fi ;;
         --debug-sign) DEBUG_SIGN=1; shift ;;
-        -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
         *) echo "unknown option $1 (see --help)" >&2; exit 2 ;;
     esac
 done
@@ -94,10 +96,10 @@ if [ "$TEST" = 1 ]; then
         rm -f "$log"
         die "tests failed (fix them, or build anyway with --no-test)"
     fi
-    if [ "$NAME" = arstro-remote-client ]; then
-        step "JVM tests (relay protocol, router, features)"
+    if [ "$NAME" != arstro-remote ]; then
+        step "JVM tests (relay protocol, $([ "$NAME" = arstro-devices ] && echo 'viewer channel, local gateway' || echo 'router, features'))"
         [ -x android/gradlew ] || flutter build apk --config-only >/dev/null     # a fresh clone: make the Gradle wrapper
-        (cd android && ./gradlew -q :app:testDebugUnitTest) || die "JVM tests failed (client_app/build/app/reports/tests/)"
+        (cd android && ./gradlew -q :app:testDebugUnitTest) || die "JVM tests failed (${APP#$ROOT/}/build/app/reports/tests/)"
         echo ok
     fi
 fi

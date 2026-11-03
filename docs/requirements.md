@@ -294,6 +294,21 @@ Arstro Remote Client, an Android app of its own (`client_app/`, apart from the P
 | PHN-18 | **For agents.** Every feature is an op or a route (`PHONE.md`), reachable with the relay client (`http`, `forward`). |
 | PHN-19 | **Security and privacy.** Reachable only through the encrypted channel with the phone's access key; the access key can be shown and replaced in the app; Android's own indicators (screen sharing, camera, microphone) stay visible; logs never hold keys, message, notification or clipboard texts. |
 
+## MGR – Arstro Devices (every device in one Android app)
+
+Arstro Devices, an Android app of its own (`devices_app/`), is a viewer of the device manager for a
+phone: the device list and the device pages are native, each device's own pages (its web UI, any
+port) open inside the app. It needs nothing new on the machines or the device manager.
+
+| ID | Requirement |
+|---|---|
+| MGR-01 | **Device managers.** The user types the device manager's address - the domain is enough: the app tries `https://<domain>/arstro/internal/devices`, then the domain itself, then plain `http` (first for LAN addresses); a pasted viewer link works too - and keeps the URL that answers as a device manager. A viewer password is asked only when the device manager has one. Several device managers can be saved, switched from the title, edited and removed (removing one also removes its keys). |
+| MGR-02 | **Device list and device page (native).** The devices of the current device manager: online first, each with its kind (computer, backup terminal, phone), name, host, slot, version, online since / last seen, viewers and whether the app has its key; refreshed every 10 s while shown and on pull. A device page shows the same details, the access key (add, replace, check against the device, forget), the ports that answered (MGR-05), any port to open, and the ports the device listens on. A key that the device rejects right after it is typed is not kept. |
+| MGR-03 | **End-to-end, like the browser viewer.** The app is a viewer of relay protocol v1 (`docs/relay/PROTOCOL.md` section 4): it checks the device's proof before it sends anything derived from the key, uses a WebSocket and falls back to HTTP pipes by itself (a proxy without WebSockets works), keeps one channel per device (closed after 2 min unused) and sends the openers of parallel streams in the order of their ids. Access keys and viewer passwords stay on the phone, encrypted with AES-GCM under a key in the Android Keystore; the device manager never sees a key; app backups are off. |
+| MGR-04 | **A device's pages in the app.** Opening a port shows it in an in-app WebView through a local gateway on `127.0.0.1`, reached as `http://<secret label>.localhost:<port>/` - a secure context, so the remote screen's video decoding works. The gateway refuses requests with any other host name (other apps on the phone cannot use the channel); every device and port is its own origin (its own cookies and storage, kept across restarts). Logins, WebSockets, uploads (the file chooser), downloads (into Downloads, also files a page builds itself) and full screen work; links to other sites open in the browser. A wrong key, an offline device or a port where nothing listens is explained (with *Replace key* for a wrong key). |
+| MGR-05 | **Recent ports.** When a port answers (any HTTP response), the app remembers it as a recent port of that device: newest first, with the page title, when, and how often. A port that does not answer is not remembered. The recent ports show on the home page (one tap opens one, a long press removes it) and on the device page; they are kept per device manager across restarts. |
+| MGR-06 | **Build.** `scripts/build_apk.sh --devices` runs the checks (analyze, widget tests, the JVM tests against the real device manager and a real device) and builds `release/arstro-devices-v<version>.apk`, signed with the same key as the other apps. The app's copies of the protocol code (`E2e.kt`, `Transport.kt`) are client_app's, word for word (a JVM test compares them). |
+
 ## UX – Look and feel
 
 | ID | Requirement |

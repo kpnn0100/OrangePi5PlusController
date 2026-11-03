@@ -105,6 +105,17 @@ protocol and vectors as the Python agent) and hands every http / ws stream to an
 `Router` (no local port) that serves the phone's web UI (`assets/phone/`) and the features
 (`features/`). The contract is `core/Api.kt` + [phone/PHONE.md](phone/PHONE.md).
 
+## Arstro Devices (MGR-01..06)
+
+A third app, Arstro Devices (`devices_app/`), is a *viewer*: the device list and the device pages are
+Flutter (`lib/src/`), everything else Kotlin (`android/.../core/`) behind one method channel
+(`MainActivity`, `"arstro/devices"`). `Hub` keeps the device managers (`Store`: plain JSON, keys and
+passwords AES-GCM under an Android Keystore key, recent ports, per-port origins), one `Channel`
+(`Viewer.kt`, the viewer side of PROTOCOL.md 4 over client_app's `Transport.kt`) per device, and a
+`Gateway` per open port: an HTTP/1.1 + WebSocket server on 127.0.0.1 that the `WebActivity`'s
+WebView reaches as `http://<secret>.localhost:<port>/`, so a device's pages run with a real origin
+(PROTOCOL.md 5b).
+
 ## Slots A/B (ADM-06)
 
 ```
@@ -232,6 +243,8 @@ The app gets the web addresses and the password over Bluetooth (`web.info`), pro
 | `server/arstro_remote/web/` | HTTP/WebSocket server and the web UI (`static/`, no build step) |
 | `server/tests/` | requirement-tagged tests (`harness.py`; `test_modules.py` starts its own throwaway instance), browser tests in `tests/web/` |
 | `app/` | Flutter Android app (`lib/src/ui/recorder/` = Recorder tab, native code in `android/.../kotlin`) |
+| `client_app/` | Arstro Remote Client: share this phone as a device (PHN, `docs/phone/PHONE.md`) |
+| `devices_app/` | Arstro Devices: every device of a device manager on a phone (MGR); `tool/fake_device.py` = a test device |
 | `scripts/` | `setup_all.sh`, `setup_pi.sh`, `build_apk.sh`, `setup_android_dev.sh` (Flutter + Android SDK, also on the ARM64 board), `dev_tunnel.sh`, `req_coverage.py` |
 | `docs/` | requirements, parity, protocol, architecture, traceability |
 | `legacy/hdmi-recorder/` | the original standalone recorder, kept for reference |

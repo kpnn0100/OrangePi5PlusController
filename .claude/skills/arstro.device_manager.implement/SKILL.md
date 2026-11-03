@@ -90,6 +90,27 @@ the provisioning without the wizard. Release builds shrink code (R8): test the r
 Gotchas: Android refuses accessibility for APK installs until "Allow restricted settings"; Force
 stop turns the accessibility service off; ops run on relay threads - views only on the main thread.
 
+## Arstro Devices (the Android viewer)
+
+Arstro Devices (`devices_app/`, its own app - MGR-01..06) is a viewer of the device manager for a
+phone: native device list / device page (Flutter, `lib/src/`), a device's pages in a WebView
+through a local gateway (Kotlin, `android/.../core/`). It needs no change on machines or the relay.
+
+| Thing | Where | Checked by |
+|---|---|---|
+| Viewer side of section 4 (handshake, streams, flow control, ports, probe) | `core/Viewer.kt` | `GatewayTest` (JVM, real relay + `tool/fake_device.py`, ws and pipes) |
+| The local door: HTTP/1.1 + WebSocket server on 127.0.0.1, `<secret>.localhost` host check | `core/Gateway.kt` (PROTOCOL.md 5b) | `GatewayTest` |
+| Crypto + transport | `core/E2e.kt`, `core/Transport.kt` = client_app's files (only the package line differs) | `GatewayTest.copiesOfTheSharedCodeAreTheSame`, `E2eTest` (vectors) |
+| Device managers, encrypted keys, recents, origins | `core/Store.kt`, `core/Hub.kt` | widget tests (fake Kotlin side), the emulator |
+
+Rules: change `E2e.kt` / `Transport.kt` in both apps at once. Stream openers from several threads
+must go out in id order (the device drops a lower id as a late frame) - take the id and send under
+the send lock; `GatewayTest.manyRequestsAtOnce` catches it, a page with parallel scripts showed it.
+Test the app on the emulator only (`adb -s emulator-5554`); `adb shell input text` garbles text in a
+WebView terminal (the IME) - tap the soft keyboard instead. A backup terminal's page attaches to an
+existing shell: open a new one (+) before typing anything. Opt-in `LiveTest` serves a gateway to a
+real device (env `ARSTRO_LIVE_*`) for a headless-Chrome check.
+
 ## Workflow
 
 1. **Requirement** in § RLY (new ID or edited text), as in the embedded-server skill.

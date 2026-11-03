@@ -1,0 +1,21 @@
+name: arstro_devices
+description: "Arstro Devices - every device of your Arstro device managers in one app (docs/requirements.md MGR)."
+publish_to: 'none'
+
+# versionName+versionCode of the APK (scripts/build_apk.sh --devices names the file after it)
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.10.4
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true

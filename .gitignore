@@ -11,6 +11,12 @@ client_app/.flutter-plugins-dependencies
 client_app/android/.gradle/
 client_app/android/.kotlin/
 client_app/android/local.properties
+devices_app/build/
+devices_app/.dart_tool/
+devices_app/.flutter-plugins-dependencies
+devices_app/android/.gradle/
+devices_app/android/.kotlin/
+devices_app/android/local.properties
 **/__pycache__/
 *.pyc
 dist/

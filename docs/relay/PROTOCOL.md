@@ -149,7 +149,10 @@ A frame that does not decrypt ends the channel. DATA payloads are at most `CHUNK
 ### 4.3 Streams
 
 Stream 0 is the channel itself (`ready`, `ping` / `pong`). Every other stream is opened by
-the viewer with a JSON frame on a new id (1, 2, 3, ... increasing, never reused in a channel):
+the viewer with a JSON frame on a new id (1, 2, 3, ... increasing, never reused in a channel).
+The device takes an opener only when its id is above the last one it saw (a lower id counts as a
+late frame of a finished stream and is dropped), so a viewer that opens streams from several
+threads takes the id and sends the opener in one step (under its send lock):
 
 | Opened with | Device answers | Then |
 |---|---|---|
@@ -254,6 +257,21 @@ needed by other viewers, but every browser behaviour that matters for apps is li
   page of one device could use the keys this browser holds for other devices (it cannot read
   them: they are non-extractable). Apps that need their own service worker or real cookies
   readable by JavaScript do not work through the browser viewer - use the client (port forward).
+
+## 5b. The Android app (Arstro Devices, MGR-03/04)
+
+The app is a viewer too (`devices_app/android/.../core/`: `Viewer.kt` the channel, `Gateway.kt` the
+local door, `E2e.kt` / `Transport.kt` client_app's copies). Instead of a service worker it runs a
+small HTTP/1.1 server on `127.0.0.1` per open device port; its WebView loads
+`http://<label>.localhost:<local port>/` (Chromium resolves `*.localhost` to the loopback address and
+treats it as a secure context). `<label>` is 96 random bits per device manager, device and port,
+kept with the local port so the page's origin stays the same. Every request becomes an `http`
+stream (a chunked request body is collected first and sent with its length), every WebSocket
+upgrade a `ws` stream (frames split or joined at `CHUNK`, ping answered locally); a response without
+a length goes back chunked. Requests whose `Host` is not exactly `<label>.localhost:<local port>`
+get 403: other apps on the phone can connect to the loopback address, but not use the channel.
+Downloads the WebView hands over are fetched again as an `http` stream with the page's cookies;
+`blob:` / `data:` downloads come from a script the app adds to the gateway's pages only.
 
 ## 6. HTTP transport (when WebSockets cannot pass)
 

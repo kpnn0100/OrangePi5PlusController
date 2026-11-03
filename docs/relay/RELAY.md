@@ -85,6 +85,10 @@ viewer. If that matters: run the device manager yourself from this repo's image,
 Python client from your own checkout of this repo (it loads no code from the server), and
 replace a key you think was exposed.
 
+**The Android app (Arstro Devices)** carries its own viewer code, so it does not depend on the
+files the device manager serves; its keys are encrypted under an Android Keystore key, and every
+machine and port gets its own origin behind a secret host name on the phone's loopback address.
+
 Other limits of the browser viewer: every machine's pages share the device manager's origin,
 so a page of one machine could *use* (not read) the keys this browser holds for other
 machines; apps that need their own service worker, or cookies readable by JavaScript, do not
@@ -111,8 +115,9 @@ work through it - use `forward` for those.
 | Standalone client (agents, `arstro-remote relay devices/ports/http/forward`) | `server/arstro_remote/relay/client.py` (+ `e2e.py`, `web/ws.py`) |
 | Device manager server, admin CLI | `relay/arstro_relay/` |
 | Browser viewer: list, key, port (`index.html`, `app.js`, `style.css`), boot page (`boot.html`, `boot.js`), service worker (`sw.js`), WebSocket and link shim (`shim.js`), routing / cookie jar / key store shared by all of them (`viewer.js`), WebCrypto twin of `e2e.py` (`e2e.js`) | `relay/arstro_relay/static/` |
+| Android viewer: Arstro Devices (device list, keys, recent ports, a port in a WebView through a local gateway; PROTOCOL.md 5b) | `devices_app/` (`android/app/src/main/kotlin/com/arstro/arstro_devices/core/`) |
 | Docker image, compose with Caddy, operator guide | `relay/Dockerfile`, `relay/docker-compose.yml`, `relay/Caddyfile`, `relay/README.md` |
-| Tests | `server/tests/test_relay.py`, `server/tests/test_relay_docs.py`, `relay/tests/` |
+| Tests | `server/tests/test_relay.py`, `server/tests/test_relay_docs.py`, `relay/tests/`, the app's JVM tests (`devices_app/android/app/src/test/`, with `devices_app/tool/fake_device.py`) |
 
 Changing any of it: the `arstro.device_manager.implement` skill (keeps code, protocol,
 vectors and every document in sync).

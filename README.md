@@ -146,6 +146,14 @@ notifications and more), asks for exactly their permissions, and starts sharing;
 its own switch in the app. Open the phone from the device list like any machine. Build it with
 `scripts/build_apk.sh --client`. [docs/phone/PHONE.md](docs/phone/PHONE.md).
 
+**Every device on your phone (Android): Arstro Devices.** A third app (`devices_app/`) is the device
+manager on a phone: type its address (the domain is enough), and the native list shows every
+machine, backup terminal and phone with its state. Give a device's access key once (kept encrypted
+on the phone), then *Open* shows the device's own pages - this web UI with its screen, terminal and
+files, or any other port - inside the app, end-to-end encrypted, over the HTTP fallback too. Ports
+that answered stay under *Recent* for one tap. Build it with `scripts/build_apk.sh --devices`
+(requirements MGR-01..06).
+
 ## Development
 
 | | |

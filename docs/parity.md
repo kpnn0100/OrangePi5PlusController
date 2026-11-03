@@ -82,6 +82,7 @@ and all three are updated live by the same state events (ARC-03).
 | Who is connected through the device manager, disconnect them | RLY-05 | ³ | `relay status`, `relay kick` | Internet access › Viewers |
 | Reach another machine through a device manager (list, ports, HTTP, port forward) | RLY-06, RLY-26 | - (the device manager's page works in the phone's browser) | `relay devices / check / ports / http / forward` (or the standalone client) | the device manager's page `https://<server>/arstro/internal/devices/` |
 | Share this phone: the phone as a device (screen, camera, calls, find, messages, files, notifications, clipboard, apps, tools, shell) | PHN-01..19 | Arstro Remote Client (its own app): first-run wizard + its page - switches, permissions, access key, device manager | `relay http <phone> 8080 /api/op/...` (AGENT_API.md, phones) | the phone's own web UI from the device manager (`B/d/<phone>/8080/`) |
+| Every device of a device manager on a phone: list, keys, recent ports, any port in the app | MGR-01..06 | Arstro Devices (its own app): device list, device page, a port opens in an in-app WebView | `relay devices / check / ports / forward` | the device manager's page |
 | Any op (tools, scripts) | ARC-02 | - | `call OP '{json}'` | `POST /api/op/OP` |
 
 ¹ A terminal cannot show video: the CLI saves the live H.264 stream to a file (play it with
