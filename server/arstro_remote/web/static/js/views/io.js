@@ -68,7 +68,7 @@ function gpioSheet(p, onDone) {
       toggle(activeLow, (v) => { activeLow = v; })));
   const renderValue = (v) => clear(valueBox,
     h("div.grow", null, h("div.label", null, "Level"),
-      h("div", { style: { fontSize: "26px", fontWeight: 700, fontFamily: "var(--mono)", color: v ? "var(--ok)" : "var(--muted)" } },
+      h("div", { style: { fontSize: "26px", fontWeight: 600, fontFamily: "var(--mono)", color: v ? "var(--ok)" : "var(--muted)" } },
         v === null || v === undefined ? "–" : v ? "1 HIGH" : "0 LOW")),
     mode === "output" ? [h("button.btn", { onclick: (e) => apply(0, e.currentTarget) }, "Set 0"),
                          h("button.btn.primary", { onclick: (e) => apply(1, e.currentTarget) }, "Set 1")] : null);
@@ -155,7 +155,7 @@ export const pins = {
           h("div.grow", null, h("div.title.mono", null, (l.pin ? `pin ${l.pin} · ` : "") + `${l.chip.replace("/dev/", "")}:${l.line}`),
             h("div.meta", null, [l.mode, l.bias !== "as-is" ? l.bias : null, l.mode === "output" ? l.drive : l.edge !== "none" ? l.edge + " edges" : null,
                                  l.active_low ? "active low" : null, l.events ? l.events + " events" : null].filter(Boolean).join(" · "))),
-          h("span.lv.mono", { class: l.value ? "hi" : "lo", style: { fontWeight: 700 } }, l.value === null ? "?" : String(l.value)),
+          h("span.lv.mono", { class: l.value ? "hi" : "lo", style: { fontWeight: 600 } }, l.value === null ? "?" : String(l.value)),
           l.mode === "output" ? h("button.btn.sm", { onclick: (e) => { e.stopPropagation(); run("io.gpio.set", { chip: l.chip, line: l.line, value: l.value ? 0 : 1 }); } }, "Toggle") : null)))
           : h("div.muted", { style: { fontSize: "13px" } }, "None. Requested lines stay set until released."));
     }
@@ -232,7 +232,7 @@ export const i2c = {
         h("div.card", null, h("div.io-form", null,
           field("Address", addr), field("Write bytes (hex)", wr, "Register address first, then data"), field("Read count", rd),
           h("div.row", null,
-            h("button.btn.primary", { onclick: (e) => transfer(e.currentTarget) }, "Run"),
+            h("button.btn", { onclick: (e) => transfer(e.currentTarget) }, "Run"),
             h("button.btn", { onclick: (e) => dump(e.currentTarget) }, "Dump 256"))),
           out)),
       h("div.section", null, h("div.section-title", null, "History"), h("div.card", null, logBox)));
@@ -404,7 +404,7 @@ export const uart = {
       const t = current();
       clearInterval(modemTimer);
       if (!t) return clear(ctl, h("div.row", null, h("div.grow.muted", null, "No port open."),
-        h("button.btn.sm.primary", { onclick: openPort }, icon("plus"), "Open a port")));
+        h("button.btn.sm", { onclick: openPort }, icon("plus"), "Open a port")));
       active = t.term;
       const st = t.settings || {};
       const hexIn = input({ placeholder: "hex bytes, e.g. 55 aa 01", style: { fontFamily: "var(--mono)" } });

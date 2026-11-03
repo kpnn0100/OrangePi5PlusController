@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
 import 'api.dart';
+import 'theme.dart';
+import 'widgets.dart';
 
 /// Add or edit a device manager (MGR-01): the user types its address (just the domain is enough),
 /// the app finds the device manager there and asks for its viewer password only when it has one.
@@ -76,30 +78,35 @@ class _ServerPageState extends State<ServerPage> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final editing = widget.server != null;
     return Scaffold(
       appBar: AppBar(
         title: Text(editing ? 'Device manager' : 'Add a device manager'),
         automaticallyImplyLeading: !widget.firstRun,
         actions: [
-          if (editing) IconButton(tooltip: 'Remove', icon: const Icon(Icons.delete_outline), onPressed: _busy ? null : _remove),
+          if (editing)
+            IconButton(
+              tooltip: 'Remove',
+              icon: const Icon(Icons.delete_outline),
+              color: Arstro.err,
+              onPressed: _busy ? null : _remove,
+            ),
+          const SizedBox(width: 4),
         ],
       ),
       body: SafeArea(
-        child: ListView(padding: const EdgeInsets.fromLTRB(20, 8, 20, 24), children: [
+        child: ListView(padding: const EdgeInsets.fromLTRB(16, 28, 16, 24), children: [
           if (widget.firstRun) ...[
-            Row(children: [
-              Icon(Icons.devices_other, size: 40, color: theme.colorScheme.primary),
-              const SizedBox(width: 14),
-              Expanded(child: Text('Arstro Devices', style: theme.textTheme.headlineSmall)),
-            ]),
-            const SizedBox(height: 12),
-            Text('Every machine and phone that connects to your device manager shows up here. '
+            const Align(alignment: Alignment.centerLeft, child: ArstroMark(size: 40)),
+            const SizedBox(height: 20),
+            Text('Arstro Devices', style: Theme.of(context).textTheme.headlineMedium),
+            const SizedBox(height: 8),
+            const Text('Every machine and phone that connects to your device manager shows up here. '
                 'Open one and you get its own pages - screen, terminal, files - end-to-end encrypted.',
-                style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
-            const SizedBox(height: 24),
+                style: TextStyle(fontSize: 14.5, color: Arstro.text2, height: 1.55)),
+            const SizedBox(height: 32),
           ],
+          const FieldLabel('Device manager address'),
           TextField(
             key: const Key('address'),
             controller: _address,
@@ -110,15 +117,13 @@ class _ServerPageState extends State<ServerPage> {
             textInputAction: _needPassword ? TextInputAction.next : TextInputAction.go,
             onSubmitted: (_) => _needPassword ? null : _connect(),
             decoration: const InputDecoration(
-              labelText: 'Device manager address',
               hintText: 'arstro.example.com',
               helperText: 'The domain is enough; a full link works too.',
-              border: OutlineInputBorder(),
-              prefixIcon: Icon(Icons.dns_outlined),
             ),
           ),
           if (_needPassword) ...[
-            const SizedBox(height: 16),
+            const SizedBox(height: 18),
+            const FieldLabel('Viewer password'),
             TextField(
               key: const Key('password'),
               controller: _password,
@@ -128,25 +133,22 @@ class _ServerPageState extends State<ServerPage> {
               textInputAction: TextInputAction.go,
               onSubmitted: (_) => _connect(),
               decoration: InputDecoration(
-                labelText: 'Viewer password',
                 helperText: editing && widget.server!.hasPassword ? 'Leave it empty to keep the saved one.' : null,
-                border: const OutlineInputBorder(),
-                prefixIcon: const Icon(Icons.lock_outline),
               ),
             ),
           ],
           if (_error != null) ...[
             const SizedBox(height: 14),
-            Text(_error!, key: const Key('server-error'), style: TextStyle(color: theme.colorScheme.error)),
+            Text(_error!, key: const Key('server-error'), style: const TextStyle(color: Arstro.err, fontSize: 13.5)),
           ],
-          const SizedBox(height: 20),
-          FilledButton.icon(
+          const SizedBox(height: 24),
+          FilledButton(
             key: const Key('connect'),
+            style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(48)),
             onPressed: _busy ? null : _connect,
-            icon: _busy
+            child: _busy
                 ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                : const Icon(Icons.link),
-            label: Text(editing ? 'Save' : 'Connect'),
+                : Text(editing ? 'Save' : 'Connect'),
           ),
         ]),
       ),
@@ -158,42 +160,68 @@ class _ServerPageState extends State<ServerPage> {
 Future<bool> showServersSheet(BuildContext context, DevicesApi api, ServerList list) async {
   final changed = await showModalBottomSheet<bool>(
     context: context,
-    showDragHandle: true,
     builder: (c) => SafeArea(
-      child: ListView(shrinkWrap: true, children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
-          child: Text('Device managers', style: Theme.of(c).textTheme.titleMedium),
+      child: ListView(shrinkWrap: true, padding: const EdgeInsets.fromLTRB(16, 0, 16, 16), children: [
+        const Padding(
+          padding: EdgeInsets.fromLTRB(2, 0, 2, 14),
+          child: Text('Device managers', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600, letterSpacing: -0.2)),
         ),
-        for (final s in list.servers)
-          ListTile(
-            leading: Icon(s.id == list.active?.id ? Icons.radio_button_checked : Icons.radio_button_unchecked,
-                color: s.id == list.active?.id ? Theme.of(c).colorScheme.primary : null),
-            title: Text(s.label),
-            subtitle: Text([if (s.name.isNotEmpty) s.name, if (s.version.isNotEmpty) 'v${s.version}', if (s.hasPassword) 'password']
-                .join(' · ')),
-            trailing: IconButton(
-              tooltip: 'Edit',
-              icon: const Icon(Icons.edit_outlined),
-              onPressed: () async {
-                final r = await Navigator.of(c).push<bool>(MaterialPageRoute(builder: (_) => ServerPage(api: api, server: s)));
-                if (r == true && c.mounted) Navigator.pop(c, true);
+        RowGroup(children: [
+          for (final s in list.servers)
+            InkWell(
+              onTap: () async {
+                await api.select(s.id);
+                if (c.mounted) Navigator.pop(c, true);
               },
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(14, 10, 4, 10),
+                child: Row(children: [
+                  SizedBox(
+                    width: 20,
+                    child: s.id == list.active?.id ? const Icon(Icons.check, size: 18, color: Arstro.text) : null,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text(s.label, maxLines: 1, overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500, height: 1.35)),
+                      Text.rich(
+                        TextSpan(children: [
+                          if (s.name.isNotEmpty) TextSpan(text: s.name),
+                          if (s.version.isNotEmpty) ...[
+                            if (s.name.isNotEmpty) const TextSpan(text: ' · '),
+                            TextSpan(text: 'v${s.version}', style: Arstro.monoStyle(size: 11.5, color: Arstro.muted)),
+                          ],
+                          if (s.hasPassword) TextSpan(text: '${s.name.isEmpty && s.version.isEmpty ? '' : ' · '}password'),
+                        ]),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Arstro.meta,
+                      ),
+                    ]),
+                  ),
+                  IconButton(
+                    tooltip: 'Edit',
+                    icon: const Icon(Icons.edit_outlined, size: 18),
+                    onPressed: () async {
+                      final r = await Navigator.of(c).push<bool>(MaterialPageRoute(builder: (_) => ServerPage(api: api, server: s)));
+                      if (r == true && c.mounted) Navigator.pop(c, true);
+                    },
+                  ),
+                ]),
+              ),
             ),
-            onTap: () async {
-              await api.select(s.id);
-              if (c.mounted) Navigator.pop(c, true);
-            },
-          ),
-        ListTile(
-          leading: const Icon(Icons.add),
-          title: const Text('Add a device manager'),
-          onTap: () async {
+        ]),
+        const SizedBox(height: 12),
+        OutlinedButton.icon(
+          style: OutlinedButton.styleFrom(minimumSize: const Size.fromHeight(44)),
+          icon: const Icon(Icons.add),
+          label: const Text('Add a device manager'),
+          onPressed: () async {
             final r = await Navigator.of(c).push<bool>(MaterialPageRoute(builder: (_) => ServerPage(api: api)));
             if (r == true && c.mounted) Navigator.pop(c, true);
           },
         ),
-        const SizedBox(height: 8),
       ]),
     ),
   );

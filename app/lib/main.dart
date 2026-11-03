@@ -3,11 +3,13 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'src/app_scope.dart';
 import 'src/remote_client.dart';
+import 'src/theme.dart';
 import 'src/ui/connect_page.dart';
 import 'src/ui/home_page.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  Arstro.registerFontLicence();
   final prefs = await SharedPreferences.getInstance();
   runApp(ArstroApp(client: RemoteClient(prefs), settings: Settings(prefs)));
 }
@@ -18,40 +20,6 @@ class ArstroApp extends StatelessWidget {
   final RemoteClient client;
   final Settings settings;
 
-  // One accent colour, the same as the web UI (UX-01).
-  static const _seed = Color(0xFF7C9CFF);
-
-  ThemeData _theme(Brightness b) {
-    var scheme = ColorScheme.fromSeed(seedColor: _seed, brightness: b);
-    if (b == Brightness.dark) {
-      scheme = scheme.copyWith(
-        primary: _seed,
-        onPrimary: const Color(0xFF0B0E18),
-        surface: const Color(0xFF0B0C0F),
-        surfaceContainerLowest: const Color(0xFF0A0B0D),
-        surfaceContainerLow: const Color(0xFF15181D),
-        surfaceContainer: const Color(0xFF1B1F25),
-        surfaceContainerHigh: const Color(0xFF22272E),
-        surfaceContainerHighest: const Color(0xFF2A3038),
-        outlineVariant: const Color(0xFF30363F),
-      );
-    }
-    return ThemeData(
-      colorScheme: scheme,
-      useMaterial3: true,
-      visualDensity: VisualDensity.standard,
-      cardTheme: CardThemeData(
-        elevation: 0,
-        color: b == Brightness.dark ? scheme.surfaceContainerLow : scheme.surfaceContainerLowest,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(18),
-          side: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.5)),
-        ),
-      ),
-      snackBarTheme: const SnackBarThemeData(behavior: SnackBarBehavior.floating),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return AppScope(
@@ -60,9 +28,7 @@ class ArstroApp extends StatelessWidget {
       child: MaterialApp(
         title: 'Arstro Remote',
         debugShowCheckedModeBanner: false,
-        theme: _theme(Brightness.light),
-        darkTheme: _theme(Brightness.dark),
-        themeMode: ThemeMode.dark,
+        theme: Arstro.theme(),              // dark only, the same tokens as the web UIs (docs/design.md)
         home: const _Root(),
       ),
     );

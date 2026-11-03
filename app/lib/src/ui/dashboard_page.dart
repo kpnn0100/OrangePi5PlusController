@@ -166,7 +166,7 @@ class _HistoryCard extends StatelessWidget {
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text('CPU  ${cpu.isEmpty ? '' : fmtPct(cpu.last)}', style: theme.textTheme.labelLarge),
         const SizedBox(height: 6),
-        Sparkline(values: cpu, color: const Color(0xFF42A5F5)),
+        Sparkline(values: cpu, color: const Color(0xFFEDEDEA)),
         const SizedBox(height: 14),
         Text('Temperature  ${temp.isEmpty ? '' : fmtTemp(temp.last)}', style: theme.textTheme.labelLarge),
         const SizedBox(height: 6),
@@ -308,7 +308,7 @@ class _AcceleratorsCard extends StatelessWidget {
         bar('gpu', 'GPU'),
         bar('npu', 'NPU'),
         bar('dmc', 'DDR'),
-        if (fan != null) LabeledBar(label: 'Fan', value: fan / 100, text: fmtPct(fan), color: const Color(0xFF26A69A)),
+        if (fan != null) LabeledBar(label: 'Fan', value: fan / 100, text: fmtPct(fan), color: const Color(0xFF8FB3E0)),
         if ((swap['total'] as num? ?? 0) > 0)
           LabeledBar(
             label: 'Swap',

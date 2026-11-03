@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'api.dart';
+import 'theme.dart';
 
 /// Where the owner finds a device's access key (MGR-02), by kind.
 String keyHint(Device d) => switch (d.kind) {
@@ -17,7 +18,6 @@ Future<bool> showKeySheet(BuildContext context, DevicesApi api, String server, D
   final saved = await showModalBottomSheet<bool>(
     context: context,
     isScrollControlled: true,
-    showDragHandle: true,
     builder: (c) => Padding(
       padding: EdgeInsets.only(bottom: MediaQuery.of(c).viewInsets.bottom),
       child: _KeySheet(api: api, server: server, device: device),
@@ -81,15 +81,15 @@ class _KeySheetState extends State<_KeySheet> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     return SafeArea(
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
         child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          Text('Access key of ${widget.device.name}', style: theme.textTheme.titleMedium),
+          Text('Access key of ${widget.device.name}',
+              style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600, letterSpacing: -0.2, height: 1.3)),
           const SizedBox(height: 6),
-          Text(keyHint(widget.device), style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
-          const SizedBox(height: 16),
+          Text(keyHint(widget.device), style: const TextStyle(fontSize: 13.5, color: Arstro.text2, height: 1.5)),
+          const SizedBox(height: 18),
           TextField(
             key: const Key('key'),
             controller: _key,
@@ -97,31 +97,31 @@ class _KeySheetState extends State<_KeySheet> {
             obscureText: !_show,
             autocorrect: false,
             enableSuggestions: false,
-            style: const TextStyle(fontFamily: 'monospace'),
+            style: Arstro.monoStyle(size: 14),
             onSubmitted: (_) => _save(),
             decoration: InputDecoration(
-              labelText: 'ak1_…',
-              border: const OutlineInputBorder(),
+              hintText: 'ak1_…',
+              hintStyle: Arstro.monoStyle(size: 14, color: Arstro.muted),
               suffixIcon: Row(mainAxisSize: MainAxisSize.min, children: [
                 IconButton(
                   tooltip: _show ? 'Hide' : 'Show',
-                  icon: Icon(_show ? Icons.visibility_off_outlined : Icons.visibility_outlined),
+                  icon: Icon(_show ? Icons.visibility_off_outlined : Icons.visibility_outlined, size: 20),
                   onPressed: () => setState(() => _show = !_show),
                 ),
-                IconButton(tooltip: 'Paste', icon: const Icon(Icons.content_paste), onPressed: _paste),
+                IconButton(tooltip: 'Paste', icon: const Icon(Icons.content_paste_outlined, size: 20), onPressed: _paste),
               ]),
             ),
           ),
           if (_error != null) ...[
             const SizedBox(height: 10),
-            Text(_error!, key: const Key('key-error'), style: TextStyle(color: theme.colorScheme.error)),
+            Text(_error!, key: const Key('key-error'), style: const TextStyle(color: Arstro.err, fontSize: 13.5)),
           ],
-          const SizedBox(height: 8),
-          Text('It stays on this phone, encrypted; the device manager never sees it.',
-              style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
-          const SizedBox(height: 16),
+          const SizedBox(height: 10),
+          const Text('It stays on this phone, encrypted; the device manager never sees it.', style: Arstro.meta),
+          const SizedBox(height: 18),
           FilledButton(
             key: const Key('save-key'),
+            style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(48)),
             onPressed: _busy ? null : _save,
             child: _busy
                 ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
@@ -151,9 +151,12 @@ Future<bool> openPort(BuildContext context, DevicesApi api, String server, Devic
       canPop: false,
       child: AlertDialog(
         content: Row(children: [
-          const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2.4)),
-          const SizedBox(width: 18),
-          Expanded(child: Text('Opening ${device.name}, port $port…')),
+          const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Text('Opening ${device.name}, port $port…',
+                style: const TextStyle(fontSize: 14.5, color: Arstro.text, height: 1.45)),
+          ),
         ]),
       ),
     ),

@@ -20,6 +20,7 @@
   let devices = [];
   let pollTimer = null;
   let current = null;           // the open device view: {id, els..., busy}
+  let animated = false;         // the list's rows animate in once, not on every refresh
 
   // ------------------------------------------------------------------ DOM helper
   function h(tag, attrs) {
@@ -46,6 +47,31 @@
     children.forEach((c) => add(el, c));
   }
 
+  const ICONS = {
+    computer: "M3.5 5.5h17v11h-17zM9 20h6M12 16.5V20",
+    phone: "M7.5 3h9v18h-9zM11 18h2",
+    terminal: "M3.5 4.5h17v15h-17zM7.5 9.5l3 2.5-3 2.5M12.5 15h4",
+    chevron: "M9.5 6l6 6-6 6",
+    back: "M14.5 6l-6 6 6 6",
+  };
+  function icon(name, cls) {
+    const ns = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("class", "i" + (cls ? " " + cls : ""));
+    svg.setAttribute("aria-hidden", "true");
+    const p = document.createElementNS(ns, "path");
+    p.setAttribute("d", ICONS[name]);
+    svg.append(p);
+    return svg;
+  }
+  /** What kind of device it is, for its icon: the backup terminal, a phone, or a computer. */
+  function kindOf(d) {
+    if (d.slot === "backup") return "terminal";
+    if (d.slot === "phone" || /android/i.test(d.platform || "")) return "phone";
+    return "computer";
+  }
+
   // ------------------------------------------------------------------ formatting
   function toMs(t) {
     if (t === null || t === undefined || t === "") return null;
@@ -68,6 +94,12 @@
     return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   }
   function plural(n, one, many) { return n + " " + (n === 1 ? one : many); }
+  /** Items with " · " between them; the dot stays with the item before it, so no line starts with one. */
+  function dotted(items) {
+    const out = [];
+    items.forEach((x, i) => { if (i) out.push("\u00a0· "); out.push(x); });
+    return out;
+  }
 
   // ------------------------------------------------------------------ server
   async function api(path, opts) {
@@ -105,7 +137,7 @@
       clear(main, h("div.empty", { text: "The device manager is not reachable: " + e.message }));
       return;
     }
-    const name = info.name && info.name !== "Devices" ? info.name : "Arstro device manager";
+    const name = info.name && info.name !== "Devices" ? info.name : "Device manager";
     $("relay-name").textContent = [name, info.version ? "v" + info.version : ""].filter(Boolean).join(" · ");
     $("logout").hidden = info.auth !== "password" || !info.authorized;
     if (info.auth === "password" && !info.authorized) return showLogin();
@@ -145,7 +177,7 @@
   function route() {
     const id = decodeURIComponent(location.hash.replace(/^#\/?/, ""));
     if (id && V.ID_RE.test(id)) showDevice(id);
-    else { current = null; renderList(); }
+    else { current = null; animated = false; renderList(); }
   }
 
   // ------------------------------------------------------------------ login
@@ -185,7 +217,9 @@
     const bits = [];
     if (d.hostname) bits.push(d.hostname);
     if (d.platform) bits.push(d.platform);
-    if (d.version) bits.push("v" + d.version + (d.slot ? " · slot " + d.slot : ""));
+    const version = (d.version || "").replace(/^backup-/, "");
+    const slot = d.slot && kindOf(d) === "computer" ? "slot " + d.slot.toUpperCase() : "";
+    if (version) bits.push("v" + version + (slot ? " · " + slot : ""));
     bits.push(d.online ? (d.since ? "online for " + ago(d.since).replace(/ ago$/, "").replace("just now", "a moment") : "online")
                        : "last seen " + ago(d.last_seen));
     if (d.viewers) bits.push(plural(d.viewers, "viewer", "viewers"));
@@ -203,16 +237,21 @@
       return;
     }
     const online = devices.filter((d) => d.online).length;
+    const sorted = devices.slice().sort((a, b) => (b.online ? 1 : 0) - (a.online ? 1 : 0));
     clear(main,
       h("div.section-head", {}, h("h2", { text: "Devices" }),
         h("span.count", { text: online + " of " + devices.length + " online" })),
-      h("div.devices", { id: "devices" }, devices.map((d) =>
+      h("div.devices", { id: "devices" }, sorted.map((d, i) =>
         h("button.device" + (d.online ? "" : ".offline"), {
           type: "button", "data-id": d.id, "aria-label": "Open " + d.name,
+          style: animated ? "animation: none" : "--i: " + i,
           onclick: () => { location.hash = "#" + encodeURIComponent(d.id); },
         },
+        h("span.kind", {}, icon(kindOf(d))),
         h("span.name", { text: d.name || d.id }), statusPill(d),
-        h("span.meta", {}, metaBits(d).map((b) => h("span", { text: b })))))));
+        h("span.meta", {}, dotted(metaBits(d).map((b) => h("span", { text: b })))),
+        icon("chevron", "chev")))));
+    animated = true;
   }
 
   // ------------------------------------------------------------------ one device
@@ -243,12 +282,13 @@
     els.portInput.addEventListener("keydown", (e) => { if (e.key === "Enter") openPort(c); });
 
     clear(main,
-      h("button.btn.ghost.sm.back", { type: "button", text: "‹ All devices", onclick: () => { location.hash = ""; } }),
+      h("button.btn.ghost.sm.back", { type: "button", onclick: () => { location.hash = ""; } }, icon("back"), "All devices"),
       els.head, els.meta,
-      h("section.card", { "aria-labelledby": "key-h" }, h("h3", { id: "key-h", text: "Access key" }), els.keyBody),
-      h("section.card", { "aria-labelledby": "port-h" }, h("h3", { id: "port-h", text: "Port" }),
-        h("div.row", {}, els.portInput, els.open, els.check),
-        els.link, els.portsNote, els.ports, els.err, els.ok));
+      h("div.panels", {},
+        h("section.card", { "aria-labelledby": "key-h" }, h("h3", { id: "key-h", text: "Access key" }), els.keyBody),
+        h("section.card", { "aria-labelledby": "port-h" }, h("h3", { id: "port-h", text: "Open a port" }),
+          h("div.row", {}, els.portInput, els.open, els.check),
+          els.link, els.portsNote, els.ports, els.err, els.ok)));
     updateDeviceHead();
     updateLink(c);
     if (!SECURE) {
@@ -263,7 +303,7 @@
     if (!current) return;
     const d = deviceById(current.id) || { id: current.id, name: current.id, online: false };
     clear(current.els.head, h("h2", { text: d.name || d.id }), statusPill(d));
-    clear(current.els.meta, h("span.mono", { text: d.id }), metaBits(d).map((b) => h("span", { text: b })));
+    clear(current.els.meta, dotted([h("span.mono", { text: d.id })].concat(metaBits(d).map((b) => h("span", { text: b })))));
     if (!current.els.portInput.value && d.web) { current.els.portInput.value = String(d.web); updateLink(current); }
   }
 
@@ -359,12 +399,13 @@
     const list = (ports || []).slice().sort((a, b) => a.port - b.port);
     const seen = new Set();
     const uniq = list.filter((p) => !seen.has(p.port) && seen.add(p.port));
-    c.els.portsNote.textContent = uniq.length ? "Listening ports (pick one):" : "Nothing listens on a TCP port the device lets you reach.";
+    c.els.portsNote.textContent = uniq.length ? "Listening ports - pick one:" : "Nothing listens on a TCP port the device lets you reach.";
     if (Array.isArray(allowed)) c.els.portsNote.textContent += " Allowed on this device: " + (allowed.join(", ") || "none") + ".";
     clear(c.els.ports, uniq.map((p) => h("button.btn.sm.port-btn", {
       type: "button", "data-port": String(p.port), title: [p.addr, p.proc].filter(Boolean).join(" · "),
       onclick: () => { c.els.portInput.value = String(p.port); updateLink(c); markPort(c); },
-    }, String(p.port), p.proc ? h("span.proc", { text: p.proc }) : null)));
+    }, h("span.num", { text: String(p.port) }), h("span.proc", { text: p.proc || p.addr || "" }),
+       icon("chevron", "chev"))));
     markPort(c);
   }
 

@@ -405,7 +405,7 @@ export function jobRow(j) {
   return h("div.job", null,
     h("div.top", null,
       h("div.grow", null,
-        h("div.ellipsis", { style: { fontWeight: 550, fontSize: "14px" } }, j.output),
+        h("div.ellipsis", { style: { fontWeight: 500, fontSize: "14px" } }, j.output),
         h("div.muted.ellipsis", { style: { fontSize: "12.5px" } },
           j.codec === "verify" ? `${j.title} · against ${j.source}` : `${j.title} · from ${j.source}`)),
       stateTag,
@@ -488,7 +488,7 @@ export function openTake(takeId, { onAnnotate } = {}) {
                          oninput: () => { dirty = true; }, ...attrs }));
     const notes = h("textarea.input.notes", { rows: "3", placeholder: "Notes for the editor", "data-k": "notes",
                                               oninput: () => { dirty = true; } }, m.notes || "");
-    const save = h("button.btn.sm.primary", { onclick: (e) => {
+    const save = h("button.btn.sm", { onclick: (e) => {
       const v = (k) => edit.querySelector(`[data-k="${k}"]`).value;
       const args = {};
       if (v("scene").trim() !== (m.scene || "")) args.scene = v("scene").trim();

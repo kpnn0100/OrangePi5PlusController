@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Arstro Devices is dark only (the same surfaces as the web UI, UX-01): no white flash on start. -->
+<!-- Arstro Devices is dark only (the Arstro tokens, docs/design.md): no white flash on start. -->
 <resources>
-    <color name="arstro_bg">#FF0B0C0F</color>
+    <color name="arstro_bg">#FF0C0C0B</color>
     <style name="LaunchTheme" parent="@android:style/Theme.Black.NoTitleBar">
         <item name="android:windowBackground">@drawable/launch_background</item>
     </style>
@@ -11,7 +11,16 @@
     <!-- WebActivity: the device's page under a slim bar (MGR-04) -->
     <style name="WebTheme" parent="@android:style/Theme.Material.NoActionBar">
         <item name="android:windowBackground">@color/arstro_bg</item>
-        <item name="android:colorAccent">#FF7C9CFF</item>
-        <item name="android:colorPrimary">#FF15181D</item>
+        <item name="android:colorAccent">#FFEDEDEA</item>
+        <item name="android:colorPrimary">#FF0C0C0B</item>
+        <item name="android:colorPrimaryDark">#FF0C0C0B</item>
+        <item name="android:colorControlHighlight">#1FEDEDEA</item>
+        <item name="android:textColorPrimary">#FFEDEDEA</item>
+        <item name="android:textColorSecondary">#FFB2B0A9</item>
+        <item name="android:popupMenuStyle">@style/WebPopupMenu</item>
+    </style>
+    <style name="WebPopupMenu" parent="@android:style/Widget.Material.PopupMenu">
+        <item name="android:popupBackground">@drawable/menu_bg</item>
+        <item name="android:popupElevation">8dp</item>
     </style>
 </resources>

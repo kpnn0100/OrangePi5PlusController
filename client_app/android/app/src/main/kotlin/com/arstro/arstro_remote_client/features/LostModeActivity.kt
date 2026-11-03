@@ -35,8 +35,8 @@ class LostModeActivity : Activity() {
             a.runOnUiThread { a.render() }
         }
 
-        private val BG = Color.parseColor("#101418")
-        private val MUTED = Color.parseColor("#9AA4AE")
+        private val BG = Color.parseColor("#0C0C0B")
+        private val MUTED = Color.parseColor("#B2B0A9")
         private val ACCENT = Color.parseColor("#3A7BD5")
         private val RED = Color.parseColor("#D93A3A")
     }

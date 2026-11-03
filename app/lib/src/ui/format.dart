@@ -35,17 +35,17 @@ String fmtTemp(num? v) => v == null ? '–' : '${v.toStringAsFixed(1)}°C';
 /// Green → amber → red for temperatures (RK3588 throttles around 85°C).
 Color tempColor(num? t) {
   if (t == null) return Colors.grey;
-  if (t < 55) return const Color(0xFF26C6DA);
-  if (t < 70) return const Color(0xFF66BB6A);
-  if (t < 80) return const Color(0xFFFFB300);
-  return const Color(0xFFEF5350);
+  if (t < 55) return const Color(0xFF8FB3E0);
+  if (t < 70) return const Color(0xFF7CC495);
+  if (t < 80) return const Color(0xFFDDB764);
+  return const Color(0xFFEC7E76);
 }
 
 Color loadColor(num? pct) {
   if (pct == null) return Colors.grey;
-  if (pct < 50) return const Color(0xFF42A5F5);
-  if (pct < 80) return const Color(0xFFFFB300);
-  return const Color(0xFFEF5350);
+  if (pct < 50) return const Color(0xFF8FB3E0);
+  if (pct < 80) return const Color(0xFFDDB764);
+  return const Color(0xFFEC7E76);
 }
 
 IconData signalIcon(int? signal) {

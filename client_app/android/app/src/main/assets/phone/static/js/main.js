@@ -37,7 +37,7 @@ function applyTheme() {
   if (t === "auto") document.documentElement.removeAttribute("data-theme");
   else document.documentElement.setAttribute("data-theme", t);
   const dark = t === "dark" || (t === "auto" && window.matchMedia("(prefers-color-scheme: dark)").matches);
-  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", dark ? "#0a0b0d" : "#f6f7f9");
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", dark ? "#0c0c0b" : "#f7f7f5");
   return t;
 }
 

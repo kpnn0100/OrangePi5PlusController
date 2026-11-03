@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.graphics.Color
+import android.graphics.Typeface
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -62,11 +63,13 @@ class WebActivity : ComponentActivity() {
             Intent(ctx, WebActivity::class.java).putExtra("sid", sid).putExtra("device", device).putExtra("name", name)
                 .putExtra("port", port).putExtra("url", url).putExtra("host", host)
 
-        private const val BG = 0xFF0B0C0F.toInt()
-        private const val BAR = 0xFF15181D.toInt()
-        private const val TEXT = 0xFFE6E8EC.toInt()
-        private const val DIM = 0xFF8B93A1.toInt()
-        private const val ACCENT = 0xFF7C9CFF.toInt()
+        // the Arstro tokens (docs/design.md): bg, line, surface-3, text, muted, primary
+        private const val BG = 0xFF0C0C0B.toInt()
+        private const val LINE = 0xFF242422.toInt()
+        private const val TOAST = 0xFF222220.toInt()
+        private const val TEXT = 0xFFEDEDEA.toInt()
+        private const val DIM = 0xFF868379.toInt()
+        private const val PRIMARY = 0xFFEDEDEA.toInt()
 
         /** Runs first in every page of the gateway's origin: <a download> of blob:/data: URLs (the web
          *  UI's log and CSV exports) go to the app, which a WebView cannot save by itself. */
@@ -126,6 +129,10 @@ class WebActivity : ComponentActivity() {
 
     private fun dp(v: Int) = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), resources.displayMetrics).toInt()
 
+    /** Geist from the Flutter assets (the app's own type), else the system font. */
+    private fun geist(weight: String): Typeface? =
+        try { Typeface.createFromAsset(assets, "flutter_assets/fonts/Geist-$weight.ttf") } catch (_: Exception) { null }
+
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -141,17 +148,19 @@ class WebActivity : ComponentActivity() {
         WindowInsetsControllerCompat(window, window.decorView).isAppearanceLightStatusBars = false
 
         val root = FrameLayout(this).apply { setBackgroundColor(BG) }
-        column = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(BAR) }
+        column = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(BG) }
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setBackgroundColor(BAR)
+            setBackgroundColor(BG)
             minimumHeight = dp(52)
+            setPadding(dp(4), 0, dp(4), 0)
         }
+        val ripple = TypedValue().also { theme.resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, it, true) }.resourceId
         fun iconButton(res: Int, label: String, onClick: (View) -> Unit) = ImageButton(this).apply {
             setImageResource(res)
             contentDescription = label
-            setBackgroundResource(android.R.drawable.list_selector_background)
+            setBackgroundResource(ripple)
             setOnClickListener(onClick)
             layoutParams = LinearLayout.LayoutParams(dp(48), dp(48))
         }
@@ -163,7 +172,8 @@ class WebActivity : ComponentActivity() {
         titles.addView(TextView(this).apply {
             text = name
             setTextColor(TEXT)
-            textSize = 16f
+            textSize = 15f
+            geist("SemiBold")?.let { typeface = it }
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
         })
@@ -171,6 +181,7 @@ class WebActivity : ComponentActivity() {
             text = "Port $port"
             setTextColor(DIM)
             textSize = 12f
+            geist("Regular")?.let { typeface = it }
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
         }
@@ -179,10 +190,13 @@ class WebActivity : ComponentActivity() {
         bar.addView(iconButton(R.drawable.ic_refresh, "Reload") { web.reload() })
         bar.addView(iconButton(R.drawable.ic_more, "More") { menu(it) })
         column.addView(bar)
+        column.addView(View(this).apply { setBackgroundColor(LINE) },
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)))
         progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 100
-            progressTintList = android.content.res.ColorStateList.valueOf(ACCENT)
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(3))
+            progressTintList = android.content.res.ColorStateList.valueOf(PRIMARY)
+            progressBackgroundTintList = android.content.res.ColorStateList.valueOf(BG)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(2))
         }
         column.addView(progress)
         web = WebView(this).apply {
@@ -192,9 +206,10 @@ class WebActivity : ComponentActivity() {
         column.addView(web)
         status = TextView(this).apply {
             setTextColor(TEXT)
-            setBackgroundColor(0xFF22272E.toInt())
+            setBackgroundColor(TOAST)
             setPadding(dp(16), dp(10), dp(16), dp(10))
             textSize = 13f
+            geist("Regular")?.let { typeface = it }
             visibility = View.GONE
         }
         column.addView(status)

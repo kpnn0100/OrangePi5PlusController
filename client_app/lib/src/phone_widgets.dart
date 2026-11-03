@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'phone_api.dart';
+import 'theme.dart';
+import 'widgets.dart';
 
 /// Asks Android for everything [f] still needs (or only [need]), explaining the steps Android
 /// makes hard first, then tells what is still missing.
@@ -69,7 +71,7 @@ class _RestrictedDialog extends StatelessWidget {
   }
 }
 
-/// Green when online, amber while connecting, red / grey otherwise.
+/// Online `ok` (with its soft ring), connecting `warn`, an error `err`, not sharing `muted`.
 class PhoneDot extends StatelessWidget {
   const PhoneDot({super.key, required this.state});
   final PhoneState? state;
@@ -77,19 +79,21 @@ class PhoneDot extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final s = state;
-    final color = s == null || !s.running
-        ? Theme.of(context).colorScheme.outline
+    final (color, soft) = s == null || !s.running
+        ? (Arstro.muted, null)
         : switch (s.relayState) {
-            'online' => const Color(0xFF4CAF50),
-            'connecting' => const Color(0xFFFFB300),
-            _ => const Color(0xFFEF5350),
+            'online' => (Arstro.ok, Arstro.okSoft),
+            'connecting' => (Arstro.warn, Arstro.warnSoft),
+            _ => (Arstro.err, Arstro.errSoft),
           };
     return Container(
-      width: 10,
-      height: 10,
-      decoration: BoxDecoration(color: color, shape: BoxShape.circle, boxShadow: [
-        BoxShadow(color: color.withValues(alpha: 0.6), blurRadius: 6),
-      ]),
+      width: 8,
+      height: 8,
+      decoration: BoxDecoration(
+        color: color,
+        shape: BoxShape.circle,
+        boxShadow: soft == null ? null : [BoxShadow(color: soft, spreadRadius: 3)],
+      ),
     );
   }
 }
@@ -103,41 +107,39 @@ class FeatureTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final f = feature;
-    final theme = Theme.of(context);
     final info = featureInfo[f.id];
     final needs = f.on && f.missing.isNotEmpty;
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        SwitchListTile(
-          contentPadding: EdgeInsets.zero,
-          title: Row(children: [
-            Flexible(child: Text(f.title)),
-            if (f.on) ...[
-              const SizedBox(width: 8),
-              Icon(f.ready ? Icons.check_circle : Icons.error_outline,
-                  size: 16, color: f.ready ? const Color(0xFF4CAF50) : theme.colorScheme.tertiary),
-            ],
-          ]),
-          subtitle: info == null ? null : Text(info),
-          value: f.on,
-          onChanged: onChanged,
-        ),
-        if (needs)
-          Row(children: [
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      SwitchRow(
+        title: Row(children: [
+          Flexible(child: Text(f.title)),
+          if (f.on) ...[
+            const SizedBox(width: 8),
+            Icon(f.ready ? Icons.check_circle_outline : Icons.error_outline,
+                size: 16, color: f.ready ? Arstro.ok : Arstro.warn),
+          ],
+        ]),
+        subtitle: info == null ? null : Text(info),
+        value: f.on,
+        onChanged: onChanged,
+      ),
+      if (needs)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: Row(children: [
             Expanded(
               child: Text('Needs ${f.missing.map((n) => n.title).join(', ')}',
-                  style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.tertiary)),
+                  style: const TextStyle(fontSize: 13, color: Arstro.warn, height: 1.45)),
             ),
-            const SizedBox(width: 8),
-            FilledButton.tonal(onPressed: () => allowFor(context, f: f), child: const Text('Allow')),
+            const SizedBox(width: 12),
+            OutlinedButton(style: Arstro.small, onPressed: () => allowFor(context, f: f), child: const Text('Allow')),
           ]),
-        if (f.on && f.note != null)
-          Padding(
-            padding: const EdgeInsets.only(top: 2),
-            child: Text(f.note!, style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
-          ),
-      ]),
-    );
+        ),
+      if (f.on && f.note != null)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: Text(f.note!, style: const TextStyle(fontSize: 13, color: Arstro.muted, height: 1.45)),
+        ),
+    ]);
   }
 }

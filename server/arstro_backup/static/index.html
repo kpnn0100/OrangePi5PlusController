@@ -4,7 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#131312">
 <title>Backup terminal</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23ededea'/%3E%3Cpath d='M9 22 16 8l7 14M11.5 17h9' fill='none' stroke='%230c0c0b' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="static/xterm.css">
 <link rel="stylesheet" href="static/backup.css">
 <script src="static/xterm.js"></script>
@@ -13,7 +15,7 @@
 </head>
 <body>
 <header class="bar">
-  <span class="brand"><span class="dot"></span>Backup terminal <span id="host" class="dim"></span></span>
+  <span class="brand"><span class="logo" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M9 22 16 8l7 14M11.5 17h9" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="label">Backup terminal</span> <span id="host" class="dim"></span></span>
   <nav id="tabs" class="tabs" aria-label="Shells"></nav>
   <button id="new" class="btn" title="New shell" aria-label="New shell" hidden>+</button>
   <button id="logout" class="btn ghost" hidden>Log out</button>

@@ -2,7 +2,8 @@
 a device manager by the real relay agent (server/arstro_remote/relay/agent.py).
 
     python3 devices_app/tool/fake_device.py --relay URL --token TOKEN [--id ID] [--name NAME]
-                                            [--key-file FILE] [--web-port N]
+                                            [--key-file FILE] [--web-port N] [--hostname H]
+                                            [--platform P] [--version V] [--slot S]
 
 Prints one JSON line {"id", "key", "port", "closed_port"} once it is online at the device manager
 (the key is the access key: tests read it from there - or pass --key-file to keep it out of the
@@ -149,6 +150,10 @@ def main():
     p.add_argument("--name", default="Fake device")
     p.add_argument("--key-file", help="write the access key here (0600) instead of printing it")
     p.add_argument("--web-port", type=int, default=0)
+    p.add_argument("--hostname", default="fake-host")
+    p.add_argument("--platform", default="Linux test")
+    p.add_argument("--version", default="test")
+    p.add_argument("--slot", default="t", help="a, b, ..., backup or phone (what the list shows)")
     a = p.parse_args()
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", a.web_port), Handler)
     srv.daemon_threads = True
@@ -157,8 +162,8 @@ def main():
     key = e2e.new_key()
     agent = ag.Agent()
     agent.configure({"enabled": True, "url": a.relay, "token": a.token, "id": a.id, "name": a.name,
-                     "secret": e2e.b64e(os.urandom(32)), "key_raw": e2e.parse_key(key), "hostname": "fake-host",
-                     "version": "test", "platform": "Linux test", "slot": "t", "web": port, "ports": None})
+                     "secret": e2e.b64e(os.urandom(32)), "key_raw": e2e.parse_key(key), "hostname": a.hostname,
+                     "version": a.version, "platform": a.platform, "slot": a.slot, "web": port, "ports": None})
     agent.start()
     until = time.time() + 20
     while agent.state != "online":

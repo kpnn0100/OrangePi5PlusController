@@ -110,6 +110,10 @@ attribute) and `SLOW_PREFIXES` if it can block (I/O, subprocess).
 into a board module; generate them from the board's device tree where possible (the OPi 5 Plus
 header table was generated from its pinctrl groups - don't hand-type roles).
 
+**Look** - every screen follows `docs/design.md` (tokens, Geist fonts, one primary action, no gradients);
+a new colour goes into design.md first (`server/tests/test_design.py` checks the copies). See it with
+`scripts/preview.sh` (localhost, touches no slot).
+
 **Web UI** - DOM with `h()` (never `innerHTML` with server data - XSS), a view is
 `{id, title, icon, mount(el, opts) -> cleanup}`, add it to a group in `main.js`; ops with
 `conn.call` / `run`, state with `store.on` (unsubscribe in cleanup). Must work from 360 px wide

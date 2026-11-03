@@ -29,7 +29,7 @@ export default {
                            { label: "Wi-Fi radio" });
       clear(statusCard,
         h("div.row", null,
-          h("div.ico", { style: { width: "44px", height: "44px", borderRadius: "13px", display: "grid", placeItems: "center",
+          h("div.ico", { style: { width: "44px", height: "44px", borderRadius: "var(--r)", display: "grid", placeItems: "center",
                                   background: w.connected ? "var(--ok-soft)" : "var(--card-3)",
                                   color: w.connected ? "var(--ok)" : "var(--muted)" } }, icon(w.enabled ? "wifi" : "wifi-off")),
           h("div.grow", null,

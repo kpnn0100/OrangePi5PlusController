@@ -277,19 +277,16 @@ class _Hero extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(20),
-        gradient: LinearGradient(
-          colors: [scheme.primaryContainer, scheme.tertiaryContainer],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
+        borderRadius: BorderRadius.circular(10),
+        color: scheme.surfaceContainer,
+        border: Border.all(color: scheme.outlineVariant),
       ),
       child: Row(children: [
         Container(
           width: 56,
           height: 56,
-          decoration: BoxDecoration(color: scheme.primary, borderRadius: BorderRadius.circular(16)),
-          child: Icon(Icons.settings_remote, color: scheme.onPrimary, size: 32),
+          decoration: BoxDecoration(color: scheme.primary, borderRadius: BorderRadius.circular(12)),
+          child: Icon(Icons.settings_remote, color: scheme.onPrimary, size: 30),
         ),
         const SizedBox(width: 16),
         Expanded(

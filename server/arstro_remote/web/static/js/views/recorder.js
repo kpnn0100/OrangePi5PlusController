@@ -253,7 +253,7 @@ export default {
           h("div.card-title", null, "Last recording"),
           h("div.row", null,
             h("div.grow", null,
-              h("div.ellipsis", { style: { fontWeight: 550 } }, last.file || "–"),
+              h("div.ellipsis", { style: { fontWeight: 500 } }, last.file || "–"),
               h("div.muted", { style: { fontSize: "12.5px" } },
                 [last.duration ? fmtDur(last.duration) : null, last.size ? fmtBytes(last.size) : null, last.reason]
                   .filter(Boolean).join(" · "))),

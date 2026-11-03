@@ -114,7 +114,7 @@ work through it - use `forward` for those.
 | Machine side: ops `relay.*`, topic `relay`, identity, settings | `server/arstro_remote/relay/service.py` |
 | Standalone client (agents, `arstro-remote relay devices/ports/http/forward`) | `server/arstro_remote/relay/client.py` (+ `e2e.py`, `web/ws.py`) |
 | Device manager server, admin CLI | `relay/arstro_relay/` |
-| Browser viewer: list, key, port (`index.html`, `app.js`, `style.css`), boot page (`boot.html`, `boot.js`), service worker (`sw.js`), WebSocket and link shim (`shim.js`), routing / cookie jar / key store shared by all of them (`viewer.js`), WebCrypto twin of `e2e.py` (`e2e.js`) | `relay/arstro_relay/static/` |
+| Browser viewer: list, key, port (`index.html`, `app.js`, `style.css` - the look of docs/design.md, its fonts in `fonts/`), boot page (`boot.html`, `boot.js`), service worker (`sw.js`), WebSocket and link shim (`shim.js`), routing / cookie jar / key store shared by all of them (`viewer.js`), WebCrypto twin of `e2e.py` (`e2e.js`) | `relay/arstro_relay/static/` |
 | Android viewer: Arstro Devices (device list, keys, recent ports, a port in a WebView through a local gateway; PROTOCOL.md 5b) | `devices_app/` (`android/app/src/main/kotlin/com/arstro/arstro_devices/core/`) |
 | Docker image, compose with Caddy, operator guide | `relay/Dockerfile`, `relay/docker-compose.yml`, `relay/Caddyfile`, `relay/README.md` |
 | Tests | `server/tests/test_relay.py`, `server/tests/test_relay_docs.py`, `relay/tests/`, the app's JVM tests (`devices_app/android/app/src/test/`, with `devices_app/tool/fake_device.py`) |

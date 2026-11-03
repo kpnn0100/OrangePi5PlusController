@@ -576,7 +576,7 @@ export class OnSet {
           const v = d.wave[i * ww + c];
           if (!v) continue;
           const o = ((wl - 1 - i) * ww + c) * 4;
-          img.data[o] = 150; img.data[o + 1] = 255; img.data[o + 2] = 170; img.data[o + 3] = Math.min(255, v * 1.4);
+          img.data[o] = 124; img.data[o + 1] = 196; img.data[o + 2] = 149; img.data[o + 3] = Math.min(255, v * 1.4);   // ok, a scope trace
         }
       }
       const t = this.waveCanvas || (this.waveCanvas = document.createElement("canvas"));
@@ -585,7 +585,7 @@ export class OnSet {
       ctx.imageSmoothingEnabled = true;
       ctx.drawImage(t, padL, 0, pw, ph);
     } else if (d) {
-      ctx.fillStyle = "rgba(236,238,241,.7)";
+      ctx.fillStyle = "rgba(237,237,234,.7)";
       ctx.beginPath();
       ctx.moveTo(padL, ph);
       for (let b = 0; b < Math.min(128, max); b++) {
@@ -600,7 +600,7 @@ export class OnSet {
     ctx.font = `${Math.round(9.5 * dpr)}px ui-monospace, monospace`;
     ctx.lineWidth = 1;
     for (const ire of [0, 50, 100]) {
-      ctx.strokeStyle = ire === 100 ? "rgba(255,107,107,.55)" : "rgba(255,255,255,.22)";
+      ctx.strokeStyle = ire === 100 ? "rgba(236,126,118,.55)" : "rgba(255,255,255,.22)";
       ctx.fillStyle = "rgba(255,255,255,.55)";
       ctx.beginPath();
       if (kind === "waveform") {

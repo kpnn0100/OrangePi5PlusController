@@ -444,7 +444,7 @@
     const SAMPLE = 500;                      // ms between speed samples
     const KEEP_DONE = 60000;                 // a finished row stays this long (failed ones until Clear)
     const BTN = "all:unset;box-sizing:border-box;cursor:pointer;padding:2px 8px;border-radius:6px;" +
-                "color:#e5e7eb;background:#374151;font:12px/1.4 system-ui,sans-serif";
+                "color:#ededea;background:#222220;font:12px/1.4 system-ui,sans-serif";
 
     function node(tag, style, text) {
       const e = document.createElement(tag);
@@ -469,11 +469,11 @@
       if (narrow && narrow.addEventListener) narrow.addEventListener("change", place);
       const shadow = host.attachShadow({ mode: "open" });   // the page's CSS cannot reach inside
       const box = node("div", "box-sizing:border-box;width:min(360px,calc(100vw - 24px));max-height:min(60vh,420px);" +
-        "display:flex;flex-direction:column;overflow:hidden;border-radius:10px;background:#111827;color:#f9fafb;" +
-        "box-shadow:0 8px 28px rgba(0,0,0,.35);font:13px/1.35 system-ui,-apple-system,sans-serif");
+        "display:flex;flex-direction:column;overflow:hidden;border-radius:10px;background:#131312;color:#ededea;" +
+        "border:1px solid #32322f;box-shadow:0 8px 24px rgba(0,0,0,.4);font:13px/1.35 system-ui,-apple-system,sans-serif");
       box.setAttribute("role", "region");
       box.setAttribute("aria-label", "Transfers");
-      const head = node("div", "display:flex;align-items:center;gap:8px;padding:8px 10px;background:#1f2937;cursor:pointer;user-select:none");
+      const head = node("div", "display:flex;align-items:center;gap:8px;padding:8px 10px;background:#1a1a18;cursor:pointer;user-select:none");
       title = node("div", "flex:1;font-weight:600");
       const clear = node("button", BTN, "Clear");
       clear.title = "Remove the finished transfers";
@@ -501,12 +501,12 @@
       panel();
       const now = Date.now();
       const r = { id, kind, name, total: total || 0, done: 0, speed: 0, t0: now, at: now, atDone: 0, final: false, cancel };
-      r.el = node("div", "padding:7px 10px;border-top:1px solid #374151");
+      r.el = node("div", "padding:7px 10px;border-top:1px solid #242422");
       r.el.setAttribute("data-transfer", kind);
       r.el.setAttribute("data-state", "running");
       const top = node("div", "display:flex;align-items:center;gap:6px");
       const arrow = node("span", "flex:none;width:14px;text-align:center;font-weight:700;color:" +
-                         (kind === "upload" ? "#93c5fd" : "#86efac"), kind === "upload" ? "↑" : "↓");
+                         (kind === "upload" ? "#8fb3e0" : "#7cc495"), kind === "upload" ? "↑" : "↓");
       arrow.title = kind;
       const label = r.label = node("span", "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap", name);
       label.title = name;
@@ -515,10 +515,10 @@
       r.stop.onclick = () => { if (!r.final && r.cancel) r.cancel(); };
       if (!cancel) r.stop.style.display = "none";
       top.append(arrow, label, r.stop);
-      const bar = node("div", "height:4px;margin:6px 0 4px;border-radius:2px;background:#374151;overflow:hidden");
-      r.fill = node("div", "height:100%;width:0;background:#60a5fa;transition:width .25s");
+      const bar = node("div", "height:4px;margin:6px 0 4px;border-radius:2px;background:#242422;overflow:hidden");
+      r.fill = node("div", "height:100%;width:0;background:#ededea;transition:width .25s");
       bar.append(r.fill);
-      r.info = node("div", "font-size:12px;color:#9ca3af;font-variant-numeric:tabular-nums");
+      r.info = node("div", "font-size:12px;color:#868379;font-variant-numeric:tabular-nums");
       r.el.append(top, bar, r.info);
       list.prepend(r.el);
       rows.set(id, r);
@@ -562,14 +562,14 @@
       r.fill.style.opacity = "1";
       if (state === "done") {
         r.fill.style.width = "100%";
-        r.fill.style.background = "#22c55e";
+        r.fill.style.background = "#7cc495";
         r.info.textContent = (r.kind === "upload" ? "Uploaded " : "Saved ") + fmtBytes(r.done) + " in " + fmtEta(secs) +
                              " · " + fmtRate(r.done / secs);
         setTimeout(() => drop(id), KEEP_DONE);
       } else {
-        r.fill.style.background = state === "failed" ? "#ef4444" : "#6b7280";
+        r.fill.style.background = state === "failed" ? "#ec7e76" : "#868379";
         r.info.textContent = state === "failed" ? "Failed: " + (error || "unknown error") : "Canceled";
-        r.info.style.color = state === "failed" ? "#fca5a5" : "#9ca3af";
+        r.info.style.color = state === "failed" ? "#ec7e76" : "#868379";
       }
       heading();
     }

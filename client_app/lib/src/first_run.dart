@@ -3,6 +3,8 @@ import 'package:flutter/services.dart';
 
 import 'phone_api.dart';
 import 'phone_widgets.dart';
+import 'theme.dart';
+import 'widgets.dart';
 
 /// The first-run wizard of "Share this phone" (PHN-02): welcome → pick features → allow what they
 /// need → device manager → start sharing → the access key. Skippable: everything can be changed
@@ -117,15 +119,15 @@ class _FirstRunWizardState extends State<FirstRunWizard> {
               child: Column(children: [
                 LinearProgressIndicator(value: (_step + 1) / _steps),
                 Expanded(
-                  child: ListView(padding: const EdgeInsets.fromLTRB(20, 20, 20, 20), children: [
-                    Text('Step ${_step + 1} of $_steps',
-                        style: theme.textTheme.labelMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
-                    const SizedBox(height: 6),
+                  child: ListView(padding: const EdgeInsets.fromLTRB(16, 24, 16, 24), children: [
+                    Overline('Step ${_step + 1} of $_steps'),
+                    const SizedBox(height: 10),
                     ..._page(theme),
                   ]),
                 ),
+                const Divider(),
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
                   child: Row(children: [
                     if (_step > 0)
                       TextButton(onPressed: _busy ? null : () => setState(() => _step--), child: const Text('Back')),
@@ -150,7 +152,7 @@ class _FirstRunWizardState extends State<FirstRunWizard> {
 
   List<Widget> _page(ThemeData theme) {
     final s = api.state;
-    final muted = theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant);
+    const muted = TextStyle(fontSize: 14, color: Arstro.text2, height: 1.5);
     switch (_step) {
       case 0:
         return [
@@ -158,7 +160,8 @@ class _FirstRunWizardState extends State<FirstRunWizard> {
           const SizedBox(height: 12),
           const Text('Arstro Remote Client can make this phone a device of your own Arstro device manager. '
               'From any browser you pick the phone, give its access key, and see its screen, camera, '
-              'messages, files and more - only the features you turn on.'),
+              'messages, files and more - only the features you turn on.',
+              style: TextStyle(fontSize: 15, height: 1.55)),
           const SizedBox(height: 12),
           Text('Everything goes through an end-to-end encrypted channel: the server in between sees '
               'nothing. Android shows its own camera, microphone and screen-sharing signs while they are used.',
@@ -208,25 +211,22 @@ class _FirstRunWizardState extends State<FirstRunWizard> {
           Text('Its address and its join token (the device manager prints it when it starts, or shows '
               'it with "python3 -m arstro_relay admin token").', style: muted),
           const SizedBox(height: 12),
-          TextField(
-            controller: _url,
-            keyboardType: TextInputType.url,
-            autocorrect: false,
-            decoration: const InputDecoration(labelText: 'Address'),
-          ),
-          const SizedBox(height: 8),
+          const FieldLabel('Address'),
+          TextField(controller: _url, keyboardType: TextInputType.url, autocorrect: false),
+          const SizedBox(height: 16),
+          const FieldLabel('Join token'),
           TextField(
             controller: _token,
             obscureText: true,
             autocorrect: false,
             enableSuggestions: false,
             decoration: InputDecoration(
-              labelText: 'Join token',
               helperText: (s?.tokenSet ?? false) ? 'Set. Type a new one to replace it.' : null,
             ),
           ),
-          const SizedBox(height: 8),
-          TextField(controller: _name, decoration: const InputDecoration(labelText: 'Name in the device list')),
+          const SizedBox(height: 16),
+          const FieldLabel('Name in the device list'),
+          TextField(controller: _name),
         ];
       case 4:
         return [
@@ -242,11 +242,11 @@ class _FirstRunWizardState extends State<FirstRunWizard> {
           ]),
           if (s?.running == true && s?.error != null) ...[
             const SizedBox(height: 6),
-            Text(s!.error!, style: TextStyle(color: theme.colorScheme.error)),
+            Text(s!.error!, style: const TextStyle(color: Arstro.err)),
           ],
           const SizedBox(height: 16),
           if (s?.running != true)
-            FilledButton.icon(
+            OutlinedButton.icon(
               onPressed: _busy
                   ? null
                   : () async {
@@ -270,17 +270,19 @@ class _FirstRunWizardState extends State<FirstRunWizard> {
               'password; you can see, copy or replace it any time on the app\'s main page.', style: muted),
           const SizedBox(height: 12),
           Container(
-            padding: const EdgeInsets.all(12),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
             decoration: BoxDecoration(
-              color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
-              borderRadius: BorderRadius.circular(10),
+              color: Arstro.surface2,
+              border: Border.all(color: Arstro.line2),
+              borderRadius: BorderRadius.circular(Arstro.rButton),
             ),
-            child: SelectableText(_key?.key ?? '', style: const TextStyle(fontFamily: 'monospace')),
+            child: SelectableText(_key?.key ?? '', style: Arstro.monoStyle(size: 13)),
           ),
           const SizedBox(height: 8),
           Align(
             alignment: Alignment.centerLeft,
             child: OutlinedButton.icon(
+              style: Arstro.small,
               onPressed: () async {
                 final k = _key?.key;
                 if (k == null) return;
@@ -289,7 +291,7 @@ class _FirstRunWizardState extends State<FirstRunWizard> {
                   ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Access key copied')));
                 }
               },
-              icon: const Icon(Icons.copy),
+              icon: const Icon(Icons.copy_outlined, size: 16),
               label: const Text('Copy'),
             ),
           ),
@@ -299,19 +301,18 @@ class _FirstRunWizardState extends State<FirstRunWizard> {
 
   Widget _needRow(ThemeData theme, String title, bool ok, VoidCallback onAllow, {String? detail}) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
+      padding: const EdgeInsets.symmetric(vertical: 8),
       child: Row(children: [
-        Icon(ok ? Icons.check_circle : Icons.radio_button_unchecked,
-            color: ok ? const Color(0xFF4CAF50) : theme.colorScheme.outline),
+        Icon(ok ? Icons.check_circle_outline : Icons.radio_button_unchecked, size: 20, color: ok ? Arstro.ok : Arstro.line2),
         const SizedBox(width: 12),
         Expanded(
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(title),
+            Text(title, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500, height: 1.35)),
             if (detail != null && detail.isNotEmpty)
-              Text(detail, style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+              Text(detail, style: const TextStyle(fontSize: 13, color: Arstro.muted, height: 1.45)),
           ]),
         ),
-        if (!ok) FilledButton.tonal(onPressed: onAllow, child: const Text('Allow')),
+        if (!ok) OutlinedButton(style: Arstro.small, onPressed: onAllow, child: const Text('Allow')),
       ]),
     );
   }

@@ -13,7 +13,8 @@ for s in setup_all.sh build_apk.sh install.sh scripts/setup_all.sh scripts/setup
          scripts/setup_android_dev.sh \
          scripts/dev_tunnel.sh server/install.sh server/uninstall.sh server/scripts/arstro-remote-launcher \
          server/scripts/install_deps.sh server/scripts/setup_io_perms.sh \
-         server/scripts/setup_hdmirx.sh server/scripts/setup_gpu.sh relay/package.sh relay/kit/run.sh; do
+         server/scripts/setup_hdmirx.sh server/scripts/setup_gpu.sh relay/package.sh relay/kit/run.sh \
+         scripts/preview.sh scripts/bundle.sh; do
     [ -f "$ROOT/$s" ] || { bad "$s missing"; continue; }
     [ -x "$ROOT/$s" ] || bad "$s is not executable"
     bash -n "$ROOT/$s" && ok "$s syntax" || bad "$s syntax"
@@ -24,6 +25,8 @@ done
 # setup_all without any work to do only checks the tools and prints the summary
 "$ROOT/relay/package.sh" --help | grep -q arm64-host && ok "relay/package.sh --help" || bad "relay/package.sh --help"
 "$ROOT/relay/kit/run.sh" --help | grep -q token && ok "relay/kit/run.sh --help" || bad "relay/kit/run.sh --help"
+"$ROOT/scripts/bundle.sh" --help | grep -q device-manager && ok "scripts/bundle.sh --help" || bad "scripts/bundle.sh --help"
+"$ROOT/scripts/preview.sh" --help | grep -q 'stop' && ok "scripts/preview.sh --help" || bad "scripts/preview.sh --help"
 # covers: RLY-20
 "$ROOT/scripts/setup_all.sh" --no-pi --no-apk >/dev/null 2>&1 && ok "setup_all.sh --no-pi --no-apk" || bad "setup_all.sh --no-pi --no-apk"
 # the scripts find their files from any working directory

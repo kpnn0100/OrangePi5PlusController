@@ -14,7 +14,11 @@ class PhoneApi extends ChangeNotifier {
   static const _events = EventChannel('arstro/phone/events');
 
   /// Only Android phones can be shared.
-  static bool get supported => !kIsWeb && Platform.isAndroid;
+  static bool get supported => debugSupported ?? (!kIsWeb && Platform.isAndroid);
+
+  /// Tests: pretend to run on Android (with a mocked `arstro/phone` channel).
+  @visibleForTesting
+  static bool? debugSupported;
 
   PhoneState? state;
   StreamSubscription<dynamic>? _sub;

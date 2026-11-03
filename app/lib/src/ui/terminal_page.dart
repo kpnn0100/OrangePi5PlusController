@@ -219,8 +219,8 @@ class _SlotBar extends StatelessWidget {
     Color dot(SlotEntry e) {
       final c = e.client;
       if (c == null) return scheme.outline;
-      if (c.isConnected) return const Color(0xFF4CAF50);
-      return c.state == LinkState.failed ? const Color(0xFFEF5350) : const Color(0xFFFFB300);
+      if (c.isConnected) return const Color(0xFF7CC495);
+      return c.state == LinkState.failed ? const Color(0xFFEC7E76) : const Color(0xFFDDB764);
     }
 
     return Material(
@@ -340,9 +340,9 @@ class _TabsBar extends StatelessWidget {
       };
 
   Color _statusColor(TermStatus s) => switch (s) {
-        TermStatus.live => const Color(0xFF4CAF50),
-        TermStatus.opening || TermStatus.detached => const Color(0xFFFFB300),
-        TermStatus.ended => const Color(0xFF9E9E9E),
+        TermStatus.live => const Color(0xFF7CC495),
+        TermStatus.opening || TermStatus.detached => const Color(0xFFDDB764),
+        TermStatus.ended => const Color(0xFF868379),
       };
 }
 

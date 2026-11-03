@@ -151,6 +151,16 @@ port reachable) and a systemd unit that restarts it whenever it stops, so the ma
 on the network and from the internet while the main server is stopped, broken or being updated.
 A slot never takes its port and it never takes a slot's (both installers check).
 
+## Look and feel (UX-01)
+
+One definition, [design.md](design.md): the colour tokens, type, shapes and components every screen
+uses. Each UI carries its own copy of the tokens (`:root` of `relay/arstro_relay/static/style.css`,
+`server/arstro_remote/web/static/app.css`, `server/arstro_backup/static/backup.css`; the theme in each
+app's `lib/main.dart`) and its own copy of the Geist fonts - the pages never load anything from the
+internet. `server/tests/test_design.py` checks every copy against design.md. `scripts/preview.sh`
+shows all of them on localhost; `scripts/bundle.sh` packs the device manager kit, the client (server
++ installer, phone APK) and the apps for a new server.
+
 ## Logging (LOG-01..03)
 
 `<state>/arstro-remote.log` (rotating, 5 × 5 MB; format `time level component [thread]: msg`),

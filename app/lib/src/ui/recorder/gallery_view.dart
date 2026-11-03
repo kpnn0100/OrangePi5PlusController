@@ -711,8 +711,8 @@ class _JobRow extends StatelessWidget {
             ? '${v['detail']}${v['ok'] == true ? (v['raw_deleted'] == true ? ' · the FFV1 is now the original' : '') : ' · the RAW is kept'}'
             : (job['error'] as String? ?? '');
     final tag = switch (state) {
-      'running' => Tag('$pct%', color: const Color(0xFF9DB4FF)),
-      'verifying' => Tag('Checking $pct%', color: const Color(0xFF9DB4FF)),
+      'running' => Tag('$pct%', color: const Color(0xFF8FB3E0)),
+      'verifying' => Tag('Checking $pct%', color: const Color(0xFF8FB3E0)),
       'done' => verdict ?? const Tag('Done', color: kOk),
       'failed' => verdict ?? const Tag('Failed', color: kRec),
       'cancelled' => const Tag('Cancelled'),
@@ -1046,7 +1046,7 @@ class _TakeSheetState extends State<_TakeSheet> {
             Text(meta, style: theme.textTheme.bodySmall),
             if (i['recording'] == true) const Padding(padding: EdgeInsets.only(top: 4), child: Tag('Recording', color: kRec, dot: true)),
             if (i['busy'] == true && i['recording'] != true)
-              const Padding(padding: EdgeInsets.only(top: 4), child: Tag('In use', color: Color(0xFF9DB4FF))),
+              const Padding(padding: EdgeInsets.only(top: 4), child: Tag('In use', color: Color(0xFF8FB3E0))),
             if (i['verified'] != null)
               const Padding(padding: EdgeInsets.only(top: 4), child: Tag('Verified lossless', color: kOk)),
             if (i['problem'] != null)

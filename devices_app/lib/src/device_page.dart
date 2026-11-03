@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'api.dart';
 import 'devices_page.dart' show kindIcon;
 import 'open.dart';
+import 'theme.dart';
 import 'widgets.dart';
 
 /// One device (MGR-02, MGR-05): what the device manager knows about it, its access key, the ports
@@ -144,186 +145,266 @@ class _DevicePageState extends State<DevicePage> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final d = _d;
-    final dim = theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant);
+    const dim = TextStyle(fontSize: 13.5, color: Arstro.muted, height: 1.5);
     final kindName = switch (d.kind) {
       DeviceKind.phone => 'phone',
       DeviceKind.backup => 'backup terminal',
       DeviceKind.computer => 'web UI',
     };
+    // next to the status pill: for how long, and who is watching (the pill says online / offline)
+    final status = d.online
+        ? [if (d.since != null) 'for ${span(d.since!)}', if (d.viewers > 0) '${d.viewers} viewer${d.viewers == 1 ? '' : 's'}']
+            .join(' · ')
+        : 'last seen ${d.lastSeen != null ? ago(d.lastSeen!) : 'never'}';
+    final about = [
+      if (d.platform.isNotEmpty) d.platform,
+      if (d.kind == DeviceKind.backup) 'backup terminal',
+      if (d.slotLabel != null) 'slot ${d.slotLabel}',
+    ];
     return Scaffold(
       appBar: AppBar(title: Text(d.name)),
-      body: ListView(padding: const EdgeInsets.fromLTRB(12, 4, 12, 32), children: [
-        Card(
-          margin: EdgeInsets.zero,
-          child: Padding(
-            padding: const EdgeInsets.all(16),
+      body: ListView(padding: const EdgeInsets.fromLTRB(16, 20, 16, 32), children: [
+        Row(children: [
+          KindBox(icon: kindIcon(d.kind), online: d.online, size: 44),
+          const SizedBox(width: 14),
+          Expanded(
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Row(children: [
-                Icon(kindIcon(d.kind), size: 30, color: d.online ? theme.colorScheme.primary : theme.colorScheme.onSurfaceVariant),
-                const SizedBox(width: 12),
-                Expanded(child: Text(d.name, style: theme.textTheme.titleLarge)),
-                StatusDot(online: d.online, size: 12),
-                const SizedBox(width: 6),
-                Text(d.online ? 'online' : 'offline', style: dim),
+                StatusPill(online: d.online),
+                const SizedBox(width: 10),
+                Flexible(child: Text(status, maxLines: 1, overflow: TextOverflow.ellipsis, style: Arstro.meta)),
               ]),
-              const SizedBox(height: 12),
-              KeyValueRow('Device id', d.id, mono: true, selectable: true),
-              if (d.hostname.isNotEmpty) KeyValueRow('Host name', d.hostname),
-              if (d.platform.isNotEmpty) KeyValueRow('System', d.platform),
-              if (d.shortVersion.isNotEmpty) KeyValueRow('Version', d.shortVersion),
-              if (d.slotLabel != null) KeyValueRow('Slot', d.slotLabel!),
-              KeyValueRow(d.online ? 'Online for' : 'Last seen',
-                  d.online ? (d.since != null ? span(d.since!) : '-') : (d.lastSeen != null ? ago(d.lastSeen!) : 'never')),
-              if (d.online) KeyValueRow('Viewers', '${d.viewers}'),
+              const SizedBox(height: 5),
+              Text.rich(
+                TextSpan(children: [
+                  if (d.shortVersion.isNotEmpty)
+                    TextSpan(text: 'v${d.shortVersion}', style: Arstro.monoStyle(size: 12, color: Arstro.text2)),
+                  for (final a in about) TextSpan(text: '${d.shortVersion.isEmpty && a == about.first ? '' : ' · '}$a'),
+                ]),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Arstro.meta,
+              ),
             ]),
           ),
-        ),
+        ]),
         if (d.web != null) ...[
-          const SizedBox(height: 12),
+          const SizedBox(height: 20),
           FilledButton.icon(
             key: const Key('open-web'),
-            style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(52)),
+            style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(48)),
             onPressed: () => _open(d.web!),
             icon: const Icon(Icons.open_in_new),
             label: Text('Open the $kindName (port ${d.web})'),
           ),
         ],
-        const SizedBox(height: 12),
+        const SizedBox(height: 20),
         SectionCard(
           title: 'Access key',
-          icon: Icons.key,
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(d.hasKey ? 'Saved on this phone (fingerprint ${d.keyId ?? '?'}).' : 'No key yet. ${keyHint(d)}',
-                key: const Key('key-state')),
+            Text.rich(
+              key: const Key('key-state'),
+              d.hasKey
+                  ? TextSpan(children: [
+                      const TextSpan(text: 'Saved on this phone (fingerprint '),
+                      TextSpan(text: d.keyId ?? '?', style: Arstro.monoStyle(size: 13, color: Arstro.text)),
+                      const TextSpan(text: ').'),
+                    ])
+                  : TextSpan(text: 'No key yet. ${keyHint(d)}'),
+              style: const TextStyle(fontSize: 14, color: Arstro.text2, height: 1.5),
+            ),
             if (_check != null) ...[
-              const SizedBox(height: 8),
-              Row(children: [
-                const Icon(Icons.verified, size: 18, color: Color(0xFF3FB950)),
-                const SizedBox(width: 6),
+              const SizedBox(height: 10),
+              Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Padding(
+                  padding: EdgeInsets.only(top: 2),
+                  child: Icon(Icons.check_circle_outline, size: 17, color: Arstro.ok),
+                ),
+                const SizedBox(width: 8),
                 Expanded(
                   child: Text(
                       'The key works: ${_check!.name}${_check!.version.isNotEmpty ? ' v${_check!.version}' : ''}'
                       '${_check!.transport == 'http' ? ' (over HTTP)' : ''}.',
-                      key: const Key('check-ok')),
+                      key: const Key('check-ok'),
+                      style: const TextStyle(fontSize: 14, color: Arstro.text, height: 1.45)),
                 ),
               ]),
               if (_check!.ports != null) ...[
+                const SizedBox(height: 10),
+                const Text('This device allows only these ports:', style: dim),
                 const SizedBox(height: 6),
-                Text('This device allows only these ports:', style: dim),
-                const SizedBox(height: 4),
-                Wrap(spacing: 6, children: [
-                  for (final p in _check!.ports!) ActionChip(label: Text('$p'), onPressed: () => _open(p)),
+                Wrap(spacing: 6, runSpacing: 6, children: [
+                  for (final p in _check!.ports!)
+                    ActionChip(label: Text('$p', style: Arstro.monoStyle(size: 12.5)), onPressed: () => _open(p)),
                 ]),
               ],
             ],
             if (_checkError != null) ...[
-              const SizedBox(height: 8),
-              Text(_checkError!, key: const Key('check-error'), style: TextStyle(color: theme.colorScheme.error)),
+              const SizedBox(height: 10),
+              Text(_checkError!, key: const Key('check-error'), style: const TextStyle(color: Arstro.err, fontSize: 13.5)),
             ],
-            const SizedBox(height: 12),
+            const SizedBox(height: 14),
             Wrap(spacing: 8, runSpacing: 8, children: [
-              FilledButton.tonal(key: const Key('set-key'), onPressed: _setKey, child: Text(d.hasKey ? 'Replace' : 'Add key')),
+              OutlinedButton(
+                  key: const Key('set-key'), style: Arstro.small, onPressed: _setKey, child: Text(d.hasKey ? 'Replace' : 'Add key')),
               if (d.hasKey)
                 OutlinedButton(
                   key: const Key('check'),
+                  style: Arstro.small,
                   onPressed: _checking || !d.online ? null : _runCheck,
                   child: _checking
-                      ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                      ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 1.75))
                       : const Text('Check'),
                 ),
-              if (d.hasKey) TextButton(onPressed: _forgetKey, child: const Text('Forget')),
+              if (d.hasKey)
+                TextButton(
+                  style: Arstro.small.copyWith(foregroundColor: const WidgetStatePropertyAll(Arstro.err)),
+                  onPressed: _forgetKey,
+                  child: const Text('Forget'),
+                ),
             ]),
           ]),
         ),
         const SizedBox(height: 12),
         SectionCard(
           title: 'Recent ports',
-          icon: Icons.history,
-          padding: const EdgeInsets.fromLTRB(16, 14, 8, 8),
           child: _recents.isEmpty
-              ? Padding(
-                  padding: const EdgeInsets.only(bottom: 8, right: 8),
-                  child: Text('Ports that answered show up here, newest first.', style: dim),
-                )
-              : Column(children: [
+              ? const Text('Ports that answered show up here, newest first.', style: dim)
+              : RowGroup(radius: Arstro.rButton, color: Colors.transparent, children: [
                   for (final r in _recents)
-                    ListTile(
+                    _PortRow(
                       key: Key('device-recent-${r.port}'),
-                      contentPadding: EdgeInsets.zero,
-                      leading: SizedBox(
-                        width: 56,
-                        child: Text('${r.port}', style: theme.textTheme.titleMedium?.copyWith(fontFamily: 'monospace')),
-                      ),
-                      title: Text(r.title.isEmpty ? 'Port ${r.port}' : r.title, maxLines: 1, overflow: TextOverflow.ellipsis),
-                      subtitle: Text('${ago(r.at)} · opened ${r.count}×'),
+                      port: r.port,
+                      title: r.title.isEmpty ? 'Port ${r.port}' : r.title,
+                      meta: '${ago(r.at)} · opened ${r.count}×',
+                      onTap: () => _open(r.port),
                       trailing: IconButton(
                         tooltip: 'Remove from Recent',
-                        icon: const Icon(Icons.close, size: 18),
+                        visualDensity: VisualDensity.compact,
+                        icon: const Icon(Icons.close, size: 16),
                         onPressed: () async {
                           await api.removeRecent(widget.server, d.id, r.port);
                           _refresh();
                         },
                       ),
-                      onTap: () => _open(r.port),
                     ),
                 ]),
         ),
         const SizedBox(height: 12),
         SectionCard(
           title: 'Open a port',
-          icon: Icons.input,
           child: Row(children: [
             Expanded(
               child: TextField(
                 key: const Key('port'),
                 controller: _port,
                 keyboardType: TextInputType.number,
+                style: Arstro.monoStyle(size: 14),
                 inputFormatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(5)],
                 textInputAction: TextInputAction.go,
                 onSubmitted: (_) => _openTyped(),
-                decoration: const InputDecoration(hintText: 'e.g. 8080', border: OutlineInputBorder(), isDense: true),
+                decoration: const InputDecoration(hintText: 'e.g. 8080', isDense: true),
               ),
             ),
-            const SizedBox(width: 10),
-            FilledButton(key: const Key('open-port'), onPressed: _openTyped, child: const Text('Open')),
+            const SizedBox(width: 8),
+            OutlinedButton(
+              key: const Key('open-port'),
+              style: OutlinedButton.styleFrom(minimumSize: const Size(72, 44)),
+              onPressed: _openTyped,
+              child: const Text('Open'),
+            ),
           ]),
         ),
         const SizedBox(height: 12),
         SectionCard(
           title: 'Listening ports',
-          icon: Icons.lan_outlined,
           trailing: TextButton(
             key: const Key('load-ports'),
+            style: Arstro.small,
             onPressed: _loadingPorts || !d.online || !d.hasKey ? null : _loadPorts,
             child: Text(_ports == null ? 'Show' : 'Refresh'),
           ),
           child: _loadingPorts
-              ? const Padding(padding: EdgeInsets.all(12), child: Center(child: CircularProgressIndicator()))
+              ? const Padding(
+                  padding: EdgeInsets.all(12),
+                  child: Center(child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))),
+                )
               : _portsError != null
-                  ? Text(_portsError!, style: TextStyle(color: theme.colorScheme.error))
+                  ? Text(_portsError!, style: const TextStyle(color: Arstro.err, fontSize: 13.5))
                   : _ports == null
                       ? Text(d.online ? 'The TCP ports this device listens on.' : 'The device is offline.', style: dim)
                       : _ports!.isEmpty
-                          ? Text('Nothing listens (or the device allows none of them).', style: dim)
-                          : Column(children: [
+                          ? const Text('Nothing listens (or the device allows none of them).', style: dim)
+                          : RowGroup(radius: Arstro.rButton, color: Colors.transparent, children: [
                               for (final p in _ports!)
-                                ListTile(
-                                  dense: true,
-                                  contentPadding: EdgeInsets.zero,
-                                  leading: SizedBox(
-                                    width: 56,
-                                    child: Text('${p.port}', style: theme.textTheme.titleSmall?.copyWith(fontFamily: 'monospace')),
-                                  ),
-                                  title: Text(p.proc.isEmpty ? '-' : p.proc),
-                                  subtitle: Text(p.addr),
-                                  trailing: const Icon(Icons.chevron_right),
+                                _PortRow(
+                                  port: p.port,
+                                  title: p.proc.isEmpty ? '-' : p.proc,
+                                  meta: p.addr,
+                                  monoMeta: true,
                                   onTap: () => _open(p.port),
+                                  trailing: const Padding(
+                                    padding: EdgeInsets.only(right: 8),
+                                    child: Icon(Icons.chevron_right, size: 18, color: Arstro.muted),
+                                  ),
                                 ),
                             ]),
         ),
+        const SizedBox(height: 12),
+        SectionCard(
+          title: 'Details',
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 7),
+          child: Column(children: [
+            for (final (i, row) in [
+              KeyValueRow('Device id', d.id, mono: true, selectable: true),
+              if (d.hostname.isNotEmpty) KeyValueRow('Host name', d.hostname),
+              if (d.platform.isNotEmpty) KeyValueRow('System', d.platform),
+              if (d.shortVersion.isNotEmpty) KeyValueRow('Version', d.shortVersion, mono: true),
+              if (d.slotLabel != null) KeyValueRow('Slot', d.slotLabel!),
+              KeyValueRow(d.online ? 'Online for' : 'Last seen',
+                  d.online ? (d.since != null ? span(d.since!) : '-') : (d.lastSeen != null ? ago(d.lastSeen!) : 'never')),
+              if (d.online) KeyValueRow('Viewers', '${d.viewers}'),
+            ].indexed) ...[if (i > 0) const Divider(), row],
+          ]),
+        ),
       ]),
+    );
+  }
+}
+
+/// A port in a list: the number in mono, what answers there, and an action on the right.
+class _PortRow extends StatelessWidget {
+  const _PortRow({super.key, required this.port, required this.title, required this.meta, required this.onTap,
+      this.trailing, this.monoMeta = false});
+  final int port;
+  final String title;
+  final String meta;
+  final bool monoMeta;
+  final VoidCallback onTap;
+  final Widget? trailing;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 52),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
+          child: Row(children: [
+            SizedBox(width: 58, child: Text('$port', style: Arstro.monoStyle(size: 13.5, weight: FontWeight.w500))),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14, height: 1.35)),
+                Text(meta, maxLines: 1, overflow: TextOverflow.ellipsis,
+                    style: monoMeta ? Arstro.monoStyle(size: 11.5, color: Arstro.muted) : Arstro.meta),
+              ]),
+            ),
+            ?trailing,
+          ]),
+        ),
+      ),
     );
   }
 }

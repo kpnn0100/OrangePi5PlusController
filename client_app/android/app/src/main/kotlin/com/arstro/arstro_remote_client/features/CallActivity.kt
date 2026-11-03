@@ -169,11 +169,11 @@ class CallActivity : Activity() {
     }
 
     companion object {
-        private val BG = Color.parseColor("#101418")
-        private val MUTED = Color.parseColor("#9AA4AE")
+        private val BG = Color.parseColor("#0C0C0B")
+        private val MUTED = Color.parseColor("#B2B0A9")
         private val GREEN = Color.parseColor("#1E9E5A")
         private val RED = Color.parseColor("#D93A3A")
-        private val GREY = Color.parseColor("#2A3138")
+        private val GREY = Color.parseColor("#222220")
         private val ACCENT = Color.parseColor("#3A7BD5")
     }
 }

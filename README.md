@@ -154,6 +154,19 @@ files, or any other port - inside the app, end-to-end encrypted, over the HTTP f
 that answered stay under *Recent* for one tap. Build it with `scripts/build_apk.sh --devices`
 (requirements MGR-01..06).
 
+**One look everywhere.** The device manager, this web UI, the backup terminal and the three apps
+share one dark, minimal design defined in [docs/design.md](docs/design.md) (warm near-black,
+off-white text, one primary action per view, colour only for status, the bundled Geist fonts).
+`scripts/preview.sh` runs all of it on this computer to look at - a device manager on
+`http://localhost:8099/arstro/internal/devices/` with this repository's Arstro Remote, backup
+terminal and a few demo devices (`scripts/preview.sh keys` for their keys, `stop` to clean up);
+nothing installed is touched.
+
+**Everything for a new server in one folder.** `scripts/bundle.sh [--arm64-host user@host]` writes
+`release/arstro-bundle-<date>/` with `device-manager/` (the Docker kit), `client/` (Arstro Remote and
+its installer for computers, the Arstro Remote Client APK for phones) and `app/` (Arstro Devices,
+the Pi remote).
+
 ## Development
 
 | | |
@@ -162,6 +175,7 @@ that answered stay under *Recent* for one tap. Build it with `scripts/build_apk.
 | How each feature is reached | `docs/parity.md` |
 | Wire protocol | `docs/protocol.md` |
 | Architecture | `docs/architecture.md` |
+| Look and feel (every screen) | `docs/design.md` |
 | Requirement → test map | `docs/traceability.md` (`scripts/req_coverage.py --check`) |
 
 Tests (all tagged with the requirements they prove):

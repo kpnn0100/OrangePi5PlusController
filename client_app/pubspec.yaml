@@ -3,7 +3,7 @@ description: "Arstro Remote Client - share this Android phone through your own A
 publish_to: 'none'
 
 # versionName+versionCode of the APK (scripts/build_apk.sh --client names the file after it)
-version: 1.1.0+2
+version: 1.2.0+3
 
 environment:
   sdk: ^3.10.4
@@ -19,3 +19,22 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+
+  # Geist and Geist Mono, the Arstro type (docs/design.md): SIL OFL 1.1, fonts/LICENSE.Geist.txt
+  assets:
+    - fonts/LICENSE.Geist.txt
+  fonts:
+    - family: Geist
+      fonts:
+        - asset: fonts/Geist-Regular.ttf
+          weight: 400
+        - asset: fonts/Geist-Medium.ttf
+          weight: 500
+        - asset: fonts/Geist-SemiBold.ttf
+          weight: 600
+    - family: GeistMono
+      fonts:
+        - asset: fonts/GeistMono-Regular.ttf
+          weight: 400
+        - asset: fonts/GeistMono-Medium.ttf
+          weight: 500

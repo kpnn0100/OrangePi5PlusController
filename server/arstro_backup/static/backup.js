@@ -6,6 +6,14 @@ const $ = (id) => document.getElementById(id);
 const enc = new TextEncoder();
 const KEYS = { esc: "\x1b", tab: "\t", "^c": "\x03", "^d": "\x04", up: "\x1b[A", down: "\x1b[B", right: "\x1b[C", left: "\x1b[D" };
 let term = null, fit = null, sock = null, current = null, shells = [], ctrl = false, timer = 0;
+// the Arstro palette (docs/design.md), on the page background (the shell fills the page)
+const THEME = {
+  background: "#0c0c0b", foreground: "#ededea", cursor: "#ededea", cursorAccent: "#0c0c0b",
+  selectionBackground: "rgba(237,237,234,.22)",
+  black: "#34342f", red: "#ec7e76", green: "#7cc495", yellow: "#ddb764", blue: "#8fb3e0", magenta: "#c9a2d9",
+  cyan: "#7fc4c4", white: "#d6d4cd", brightBlack: "#868379", brightRed: "#f29d96", brightGreen: "#9ed6b1",
+  brightYellow: "#e8cc8e", brightBlue: "#b1cbea", brightMagenta: "#dcbfe7", brightCyan: "#a6d9d8", brightWhite: "#f7f7f4",
+};
 
 async function api(path, body) {
   const init = body === undefined ? { credentials: "same-origin" }
@@ -57,7 +65,7 @@ $("logout").addEventListener("click", async () => {
 function setup() {
   if (term) return;
   term = new window.Terminal({ cursorBlink: true, scrollback: 5000, fontSize: 14,
-    fontFamily: "ui-monospace, 'DejaVu Sans Mono', Menlo, Consolas, monospace", theme: { background: "#0b0c0f" } });
+    fontFamily: "ui-monospace, 'DejaVu Sans Mono', Menlo, Consolas, monospace", theme: THEME });
   fit = new window.FitAddon.FitAddon();
   term.loadAddon(fit);
   term.open($("term"));

@@ -2,9 +2,9 @@ import 'package:flutter/material.dart';
 
 import '../../remote_client.dart';
 
-const kRec = Color(0xFFFF4D5E);
-const kOk = Color(0xFF3DDC97);
-const kWarn = Color(0xFFF5B841);
+const kRec = Color(0xFFF0645A);
+const kOk = Color(0xFF7CC495);
+const kWarn = Color(0xFFDDB764);
 
 /// Runs an op; a failure (or `ok`) becomes a snack bar. Returns the data or null.
 Future<dynamic> runOp(BuildContext context, RemoteClient client, String op,
@@ -15,7 +15,7 @@ Future<dynamic> runOp(BuildContext context, RemoteClient client, String op,
     if (ok != null) messenger?.showSnackBar(SnackBar(content: Text(ok), duration: const Duration(seconds: 2)));
     return r ?? const {};
   } catch (e) {
-    messenger?.showSnackBar(SnackBar(content: Text(e.toString()), backgroundColor: const Color(0xFF5A2330)));
+    messenger?.showSnackBar(SnackBar(content: Text(e.toString()), backgroundColor: const Color(0xFF3A2321)));
     return null;
   }
 }
@@ -112,7 +112,7 @@ class Tag extends StatelessWidget {
 }
 
 Color? kindColor(String kind) => switch (kind) {
-      'H.265' => const Color(0xFF9DB4FF),
+      'H.265' => const Color(0xFF8FB3E0),
       'H.264' => kOk,
       'FFV1' => kWarn,
       _ => null,

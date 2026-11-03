@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import 'widgets.dart';
 import 'first_run.dart';
 import 'phone_api.dart';
 import 'phone_widgets.dart';
+import 'theme.dart';
+import 'widgets.dart';
 
 /// The app's page (PHN-01, PHN-02, PHN-19): share the phone with your device manager - the service
 /// switch and state, the device's name and id, the access key, the server settings and every
@@ -138,16 +139,28 @@ class _PhonePageState extends State<PhonePage> {
   Widget build(BuildContext context) {
     final s = api.state;
     return Scaffold(
-      appBar: AppBar(title: const Text('Arstro Remote Client')),
+      appBar: AppBar(
+        title: const Row(children: [
+          ArstroMark(size: 28),
+          SizedBox(width: 12),
+          Flexible(child: Text('Arstro Remote Client', overflow: TextOverflow.ellipsis)),
+        ]),
+      ),
       body: !PhoneApi.supported
-          ? const EmptyState(icon: Icons.phone_android, text: 'Only an Android phone can be shared.')
+          ? const Padding(
+              padding: EdgeInsets.all(16),
+              child: Align(
+                alignment: Alignment.topCenter,
+                child: EmptyState(icon: Icons.phone_android_outlined, text: 'Only an Android phone can be shared.'),
+              ),
+            )
           : s == null
-              ? const Center(child: CircularProgressIndicator())
+              ? const Center(child: SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2)))
               : Center(
                   child: ConstrainedBox(
                     constraints: const BoxConstraints(maxWidth: 720),
                     child: ListView(
-                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+                      padding: const EdgeInsets.fromLTRB(16, 20, 16, 32),
                       children: [
                         _sharing(s),
                         const SizedBox(height: 12),
@@ -156,7 +169,7 @@ class _PhonePageState extends State<PhonePage> {
                         _server(s),
                         const SizedBox(height: 12),
                         _features(s),
-                        const SizedBox(height: 12),
+                        const SizedBox(height: 16),
                         Center(
                           child: TextButton.icon(
                             onPressed: () => Navigator.of(context)
@@ -172,97 +185,94 @@ class _PhonePageState extends State<PhonePage> {
     );
   }
 
+  static const _body = TextStyle(fontSize: 14, color: Arstro.text2, height: 1.5);
+  static const _small = TextStyle(fontSize: 13, color: Arstro.muted, height: 1.45);
+
+  /// A hint with its button on the right (what the service still needs, the phone maker's battery rules).
+  Widget _hint(String text, String label, VoidCallback onPressed, {Color color = Arstro.muted}) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Row(children: [
+          Expanded(child: Text(text, style: _small.copyWith(color: color))),
+          const SizedBox(width: 12),
+          OutlinedButton(style: Arstro.small, onPressed: onPressed, child: Text(label)),
+        ]),
+      );
+
   Widget _sharing(PhoneState s) {
-    final theme = Theme.of(context);
     return SectionCard(
       title: 'Share this phone',
-      icon: Icons.phone_android,
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text('Open this phone from any browser through your Arstro device manager, '
+        const Text('Open this phone from any browser through your Arstro device manager, '
             'end-to-end encrypted with its access key.',
-            style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
-        SwitchListTile(
-          contentPadding: EdgeInsets.zero,
+            style: _body),
+        const SizedBox(height: 6),
+        SwitchRow(
           title: Row(children: [
             PhoneDot(state: s),
             const SizedBox(width: 10),
             Flexible(child: Text(s.summary)),
           ]),
-          subtitle: s.running && s.error != null
-              ? Text(s.error!, style: TextStyle(color: theme.colorScheme.error))
-              : null,
+          subtitle: s.running && s.error != null ? Text(s.error!, style: const TextStyle(color: Arstro.err)) : null,
           value: s.enabled || s.running,
           onChanged: _busy ? null : _toggleService,
         ),
         for (final n in s.serviceMissing)
-          Row(children: [
-            Expanded(
-              child: Text(
-                  n.name == 'BATTERY_UNRESTRICTED'
-                      ? 'Unrestricted battery use keeps the phone reachable while the screen is off.'
-                      : 'Allow notifications to see that the phone is shared (and stop it from there).',
-                  style: theme.textTheme.bodySmall),
-            ),
-            const SizedBox(width: 8),
-            FilledButton.tonal(onPressed: () => allowFor(context, need: n), child: const Text('Allow')),
-          ]),
-        SwitchListTile(
-          contentPadding: EdgeInsets.zero,
+          _hint(
+              n.name == 'BATTERY_UNRESTRICTED'
+                  ? 'Unrestricted battery use keeps the phone reachable while the screen is off.'
+                  : 'Allow notifications to see that the phone is shared (and stop it from there).',
+              'Allow',
+              () => allowFor(context, need: n),
+              color: Arstro.warn),
+        const Divider(),
+        SwitchRow(
           title: const Text('Stay reachable when the screen is off'),
-          subtitle: Text(
-              s.awake
-                  ? 'The phone stays online while it sleeps. Uses some more battery.'
-                  : 'Off: the phone saves battery but can go offline while it sleeps.',
-              style: theme.textTheme.bodySmall),
+          subtitle: Text(s.awake
+              ? 'The phone stays online while it sleeps. Uses some more battery.'
+              : 'Off: the phone saves battery but can go offline while it sleeps.'),
           value: s.awake,
           onChanged: _busy ? null : (on) => _guard(() => api.setAwake(on)),
         ),
-        if (s.makerHint != null)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 4),
-            child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Expanded(child: Text(s.makerHint!, style: theme.textTheme.bodySmall)),
-              const SizedBox(width: 8),
-              FilledButton.tonal(onPressed: () => api.openAppInfo(), child: const Text('App info')),
-            ]),
-          ),
-        const SizedBox(height: 8),
+        if (s.makerHint != null) _hint(s.makerHint!, 'App info', () => api.openAppInfo()),
+        const Divider(),
         KeyValueRow('Name', s.name),
+        const Divider(),
         KeyValueRow('Device id', s.id, mono: true, selectable: true),
       ]),
     );
   }
 
   Widget _keyCard(PhoneState s) {
-    final theme = Theme.of(context);
     return SectionCard(
       title: 'Access key',
-      icon: Icons.key_outlined,
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text('Whoever has this key can use the features you turned on. Keep it like a password.',
-            style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
-        const SizedBox(height: 10),
+        const Text('Whoever has this key can use the features you turned on. Keep it like a password.', style: _body),
+        const SizedBox(height: 12),
         Container(
           width: double.infinity,
-          padding: const EdgeInsets.all(12),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
           decoration: BoxDecoration(
-            color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
-            borderRadius: BorderRadius.circular(10),
+            color: Arstro.surface2,
+            border: Border.all(color: Arstro.line2),
+            borderRadius: BorderRadius.circular(Arstro.rButton),
           ),
           child: SelectableText(
             _key ?? 'ak1_••••••••••••••••••••  (id ${s.keyId})',
-            style: theme.textTheme.bodyMedium?.copyWith(fontFamily: 'monospace'),
+            style: Arstro.monoStyle(size: 13, color: _key == null ? Arstro.text2 : Arstro.text),
           ),
         ),
-        const SizedBox(height: 8),
-        Wrap(spacing: 8, runSpacing: 4, children: [
+        const SizedBox(height: 12),
+        Wrap(spacing: 8, runSpacing: 8, children: [
           OutlinedButton.icon(
+            style: Arstro.small,
             onPressed: _showKey,
-            icon: Icon(_key == null ? Icons.visibility_outlined : Icons.visibility_off_outlined),
+            icon: Icon(_key == null ? Icons.visibility_outlined : Icons.visibility_off_outlined, size: 16),
             label: Text(_key == null ? 'Show' : 'Hide'),
           ),
-          OutlinedButton.icon(onPressed: _copyKey, icon: const Icon(Icons.copy), label: const Text('Copy')),
-          OutlinedButton.icon(onPressed: _replaceKey, icon: const Icon(Icons.autorenew), label: const Text('Replace')),
+          OutlinedButton.icon(
+              style: Arstro.small, onPressed: _copyKey, icon: const Icon(Icons.copy_outlined, size: 16), label: const Text('Copy')),
+          OutlinedButton.icon(
+              style: Arstro.small, onPressed: _replaceKey, icon: const Icon(Icons.autorenew, size: 16), label: const Text('Replace')),
         ]),
       ]),
     );
@@ -271,31 +281,29 @@ class _PhonePageState extends State<PhonePage> {
   Widget _server(PhoneState s) {
     return SectionCard(
       title: 'Device manager',
-      icon: Icons.dns_outlined,
-      child: Column(children: [
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        const FieldLabel('Address'),
         TextField(
           controller: _url,
           keyboardType: TextInputType.url,
           autocorrect: false,
-          decoration: const InputDecoration(labelText: 'Address', hintText: 'https://server/arstro/internal/devices'),
+          decoration: const InputDecoration(hintText: 'https://server/arstro/internal/devices'),
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 16),
+        const FieldLabel('Join token'),
         TextField(
           controller: _token,
           obscureText: true,
           autocorrect: false,
           enableSuggestions: false,
           decoration: InputDecoration(
-            labelText: 'Join token',
             helperText: s.tokenSet ? 'Set. Type a new one to replace it.' : 'Not set: the phone cannot join yet.',
           ),
         ),
-        const SizedBox(height: 8),
-        TextField(
-          controller: _name,
-          decoration: const InputDecoration(labelText: 'Name in the device list'),
-        ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 16),
+        const FieldLabel('Name in the device list'),
+        TextField(controller: _name),
+        const SizedBox(height: 16),
         Align(
           alignment: Alignment.centerRight,
           child: FilledButton(onPressed: _busy ? null : _saveRelay, child: const Text('Save')),
@@ -307,11 +315,13 @@ class _PhonePageState extends State<PhonePage> {
   Widget _features(PhoneState s) {
     return SectionCard(
       title: 'Features',
-      icon: Icons.tune,
       child: s.features.isEmpty
-          ? const Text('No features in this version of the app.')
+          ? const Text('No features in this version of the app.', style: _body)
           : Column(children: [
-              for (final f in s.features) FeatureTile(feature: f, onChanged: (on) => _toggleFeature(f, on)),
+              for (final (i, f) in s.features.indexed) ...[
+                if (i > 0) const Divider(),
+                FeatureTile(feature: f, onChanged: (on) => _toggleFeature(f, on)),
+              ],
             ]),
     );
   }

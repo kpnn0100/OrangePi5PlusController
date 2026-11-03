@@ -1,7 +1,7 @@
 """The backup terminal's web server (ADM-09): a login page and shells, nothing else.
 
     GET  /                      the page (static/index.html)
-    GET  /static/<file>         its script, styles and xterm
+    GET  /static/<file>         its script, styles and xterm (fonts in static/fonts/)
     GET  /api/ping              {"ok", "server": "arstro-backup", "version", "host"} - no password
     GET  /api/me                200 when logged in, else 401
     POST /api/login             {"password"} -> the login cookie
@@ -37,7 +37,7 @@ log = logging.getLogger("arstro.backup.web")
 
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
-         ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml"}
+         ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".woff2": "font/woff2"}
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
        "connect-src 'self' ws: wss:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
 COOKIE = "arstro_backup"
@@ -167,7 +167,7 @@ class Handler(BaseHTTPRequestHandler):
         p = url.path
         if p in ("/", "/index.html"):
             return self._static("index.html")
-        if p.startswith("/static/") and re.match(r"^/static/[\w.-]+$", p):
+        if p.startswith("/static/") and re.match(r"^/static/(?:fonts/)?[\w.-]+$", p):
             return self._static(p[len("/static/"):])
         if p == "/api/ping":
             return self._json({"ok": True, "server": "arstro-backup", "version": VERSION, "host": self.server.host_name})

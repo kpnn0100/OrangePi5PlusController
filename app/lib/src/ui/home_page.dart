@@ -188,9 +188,9 @@ class _LinkDot extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = switch (state) {
-      LinkState.connected => const Color(0xFF4CAF50),
-      LinkState.connecting || LinkState.reconnecting => const Color(0xFFFFB300),
-      _ => const Color(0xFFEF5350),
+      LinkState.connected => const Color(0xFF7CC495),
+      LinkState.connecting || LinkState.reconnecting => const Color(0xFFDDB764),
+      _ => const Color(0xFFEC7E76),
     };
     return Container(
       width: 10,

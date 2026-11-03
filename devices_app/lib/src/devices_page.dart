@@ -6,12 +6,13 @@ import 'api.dart';
 import 'device_page.dart';
 import 'open.dart';
 import 'servers_page.dart';
+import 'theme.dart';
 import 'widgets.dart';
 
 IconData kindIcon(DeviceKind k) => switch (k) {
       DeviceKind.phone => Icons.smartphone,
       DeviceKind.backup => Icons.terminal,
-      DeviceKind.computer => Icons.computer,
+      DeviceKind.computer => Icons.computer_outlined,
     };
 
 /// The home page (MGR-02): the devices of the current device manager, online first, and the ports
@@ -124,7 +125,6 @@ class _DevicesPageState extends State<DevicesPage> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final s = server;
     final devices = _devices ?? const <Device>[];
     final online = devices.where((d) => d.online).toList();
@@ -135,38 +135,43 @@ class _DevicesPageState extends State<DevicesPage> with WidgetsBindingObserver {
         titleSpacing: 8,
         title: InkWell(
           key: const Key('server-switch'),
-          borderRadius: BorderRadius.circular(10),
+          borderRadius: BorderRadius.circular(Arstro.rButton),
           onTap: _switchServer,
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
             child: Row(mainAxisSize: MainAxisSize.min, children: [
+              const ArstroMark(size: 28),
+              const SizedBox(width: 12),
               Flexible(
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
                   const Text('Devices'),
                   if (s != null)
-                    Text(s.label, overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+                    Text(s.label, overflow: TextOverflow.ellipsis, style: Arstro.meta.copyWith(height: 1.3)),
                 ]),
               ),
-              const Icon(Icons.arrow_drop_down),
+              const SizedBox(width: 2),
+              const Icon(Icons.expand_more, size: 18, color: Arstro.muted),
             ]),
           ),
         ),
         actions: [
           IconButton(tooltip: 'Refresh', icon: const Icon(Icons.refresh), onPressed: () => _load()),
+          const SizedBox(width: 4),
         ],
       ),
       body: RefreshIndicator(
+        color: Arstro.text,
+        backgroundColor: Arstro.surface2,
         onRefresh: () => _load(),
-        child: ListView(padding: const EdgeInsets.fromLTRB(12, 4, 12, 24), children: [
+        child: ListView(padding: const EdgeInsets.fromLTRB(16, 4, 16, 32), children: [
           if (_error != null)
-            Card(
-              key: const Key('list-error'),
-              color: theme.colorScheme.errorContainer,
-              child: ListTile(
-                leading: Icon(Icons.cloud_off, color: theme.colorScheme.onErrorContainer),
-                title: Text(_error!.message, style: TextStyle(color: theme.colorScheme.onErrorContainer)),
-                trailing: _error!.code == 'password'
+            Padding(
+              padding: const EdgeInsets.only(top: 16),
+              child: ErrorBanner(
+                key: const Key('list-error'),
+                icon: Icons.cloud_off_outlined,
+                text: _error!.message,
+                action: _error!.code == 'password'
                     ? TextButton(onPressed: _switchServer, child: const Text('Password'))
                     : TextButton(onPressed: () => _load(), child: const Text('Retry')),
               ),
@@ -174,9 +179,10 @@ class _DevicesPageState extends State<DevicesPage> with WidgetsBindingObserver {
           if (_recents.isNotEmpty) ...[
             _Header('Recent'),
             SizedBox(
-              height: 84,
+              height: 82,
               child: ListView.separated(
                 scrollDirection: Axis.horizontal,
+                clipBehavior: Clip.none,
                 itemCount: _recents.length.clamp(0, 12),
                 separatorBuilder: (_, _) => const SizedBox(width: 8),
                 itemBuilder: (_, i) {
@@ -196,20 +202,30 @@ class _DevicesPageState extends State<DevicesPage> with WidgetsBindingObserver {
             ),
           ],
           if (_devices == null && _error == null)
-            const Padding(padding: EdgeInsets.all(48), child: Center(child: CircularProgressIndicator())),
+            const Padding(
+              padding: EdgeInsets.all(48),
+              child: Center(child: SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2))),
+            ),
           if (_devices != null && devices.isEmpty)
             const Padding(
-              padding: EdgeInsets.only(top: 48),
+              padding: EdgeInsets.only(top: 24),
               child: EmptyState(
-                icon: Icons.devices_other,
+                icon: Icons.devices_other_outlined,
                 text: 'No devices yet.\nA machine shows up here once its Internet access is on '
                     '(install.sh --relay, or its web page › Internet access).',
               ),
             ),
-          if (online.isNotEmpty) _Header('Online · ${online.length}'),
-          for (final d in online) _DeviceTile(device: d, onTap: () => _details(d), onOpen: d.web != null ? () => _open(d, d.web!) : null),
-          if (offline.isNotEmpty) _Header('Offline · ${offline.length}'),
-          for (final d in offline) _DeviceTile(device: d, onTap: () => _details(d)),
+          if (online.isNotEmpty) ...[
+            _Header('Online · ${online.length}'),
+            RowGroup(children: [
+              for (final d in online)
+                _DeviceTile(device: d, onTap: () => _details(d), onOpen: d.web != null ? () => _open(d, d.web!) : null),
+            ]),
+          ],
+          if (offline.isNotEmpty) ...[
+            _Header('Offline · ${offline.length}'),
+            RowGroup(children: [for (final d in offline) _DeviceTile(device: d, onTap: () => _details(d))]),
+          ],
         ]),
       ),
     );
@@ -221,15 +237,7 @@ class _Header extends StatelessWidget {
   final String text;
 
   @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(6, 16, 6, 8),
-      child: Text(text.toUpperCase(),
-          style: theme.textTheme.labelMedium?.copyWith(
-              letterSpacing: 1.1, color: theme.colorScheme.onSurfaceVariant, fontWeight: FontWeight.w600)),
-    );
-  }
+  Widget build(BuildContext context) => Overline(text, padding: const EdgeInsets.fromLTRB(2, 24, 2, 10));
 }
 
 class _RecentChip extends StatelessWidget {
@@ -242,11 +250,12 @@ class _RecentChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     return SizedBox(
-      width: 170,
-      child: Card(
-        margin: EdgeInsets.zero,
+      width: 168,
+      child: Material(
+        color: Arstro.surface,
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(Arstro.rCard), side: const BorderSide(color: Arstro.line)),
         clipBehavior: Clip.antiAlias,
         child: InkWell(
           key: Key('recent-${recent.device}-${recent.port}'),
@@ -268,14 +277,28 @@ class _RecentChip extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, children: [
               Row(children: [
-                StatusDot(online: online, size: 9),
-                const SizedBox(width: 6),
-                Expanded(child: Text(deviceName, maxLines: 1, overflow: TextOverflow.ellipsis, style: theme.textTheme.titleSmall)),
+                StatusDot(online: online, size: 6),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(deviceName, maxLines: 1, overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500, height: 1.3)),
+                ),
               ]),
-              const SizedBox(height: 4),
-              Text(recent.title.isEmpty ? 'Port ${recent.port}' : ':${recent.port} · ${recent.title}',
-                  maxLines: 1, overflow: TextOverflow.ellipsis, style: theme.textTheme.bodySmall),
-              Text(ago(recent.at), style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+              const SizedBox(height: 5),
+              Text.rich(
+                TextSpan(children: [
+                  if (recent.title.isEmpty)
+                    TextSpan(text: 'Port ${recent.port}')
+                  else ...[
+                    TextSpan(text: ':${recent.port}', style: Arstro.monoStyle(size: 12, color: Arstro.text2)),
+                    TextSpan(text: ' · ${recent.title}'),
+                  ],
+                ]),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 12.5, color: Arstro.text2, height: 1.35),
+              ),
+              Text(ago(recent.at), style: Arstro.meta.copyWith(fontSize: 12, height: 1.35)),
             ]),
           ),
         ),
@@ -284,6 +307,8 @@ class _RecentChip extends StatelessWidget {
   }
 }
 
+/// One device in the list, like a row of the web list: the kind icon in a box, the name, what it
+/// runs, how long it has been on (or when it was last seen), and Open for its own web page.
 class _DeviceTile extends StatelessWidget {
   const _DeviceTile({required this.device, required this.onTap, this.onOpen});
   final Device device;
@@ -292,64 +317,60 @@ class _DeviceTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final d = device;
-    final line1 = [if (d.hostname.isNotEmpty && d.hostname != d.name) d.hostname, if (d.slotLabel != null) 'slot ${d.slotLabel}',
-      if (d.kind == DeviceKind.backup) 'backup terminal', if (d.shortVersion.isNotEmpty) 'v${d.shortVersion}'].join(' · ');
+    final bits = <InlineSpan>[];
+    void add(InlineSpan b) {
+      if (bits.isNotEmpty) bits.add(const TextSpan(text: ' · '));
+      bits.add(b);
+    }
+
+    if (d.hostname.isNotEmpty && d.hostname != d.name) add(TextSpan(text: d.hostname));
+    if (d.slotLabel != null) add(TextSpan(text: 'slot ${d.slotLabel}'));
+    if (d.kind == DeviceKind.backup) add(const TextSpan(text: 'backup terminal'));
+    if (d.shortVersion.isNotEmpty) add(TextSpan(text: 'v${d.shortVersion}', style: Arstro.monoStyle(size: 11.5, color: Arstro.muted)));
     final line2 = d.online
         ? ['online${d.since != null ? ' for ${span(d.since!)}' : ''}', if (d.viewers > 0) '${d.viewers} viewer${d.viewers == 1 ? '' : 's'}']
             .join(' · ')
         : 'last seen ${d.lastSeen != null ? ago(d.lastSeen!) : 'never'}';
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Card(
-        margin: EdgeInsets.zero,
-        clipBehavior: Clip.antiAlias,
-        child: InkWell(
-          key: Key('device-${d.id}'),
-          onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 12, 8, 12),
-            child: Row(children: [
-              Stack(clipBehavior: Clip.none, children: [
-                Container(
-                  width: 44,
-                  height: 44,
-                  decoration: BoxDecoration(
-                    color: theme.colorScheme.surfaceContainerHigh,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Icon(kindIcon(d.kind), color: d.online ? theme.colorScheme.primary : theme.colorScheme.onSurfaceVariant),
-                ),
-                Positioned(right: -2, bottom: -2, child: StatusDot(online: d.online, size: 13)),
+    return InkWell(
+      key: Key('device-${d.id}'),
+      onTap: onTap,
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(14, 12, onOpen != null ? 12 : 10, 12),
+        child: Row(children: [
+          KindBox(icon: kindIcon(d.kind), online: d.online),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(d.name, maxLines: 1, overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      fontSize: 15, fontWeight: FontWeight.w500, height: 1.35, color: d.online ? Arstro.text : Arstro.text2)),
+              if (bits.isNotEmpty)
+                Text.rich(TextSpan(children: bits), maxLines: 1, overflow: TextOverflow.ellipsis, style: Arstro.meta),
+              const SizedBox(height: 1),
+              Row(children: [
+                StatusDot(online: d.online, size: 6),
+                const SizedBox(width: 7),
+                Flexible(child: Text(line2, maxLines: 1, overflow: TextOverflow.ellipsis, style: Arstro.meta)),
+                if (!d.hasKey) ...[
+                  const SizedBox(width: 10),
+                  const Icon(Icons.key_off_outlined, size: 13, color: Arstro.muted),
+                  const Text(' no key', style: Arstro.meta),
+                ],
               ]),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text(d.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: theme.textTheme.titleMedium),
-                  if (line1.isNotEmpty)
-                    Text(line1, maxLines: 1, overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
-                  Row(children: [
-                    Flexible(
-                      child: Text(line2, maxLines: 1, overflow: TextOverflow.ellipsis,
-                          style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
-                    ),
-                    if (!d.hasKey) ...[
-                      const SizedBox(width: 6),
-                      Icon(Icons.key_off_outlined, size: 14, color: theme.colorScheme.onSurfaceVariant),
-                      Text(' no key', style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
-                    ],
-                  ]),
-                ]),
-              ),
-              if (onOpen != null)
-                FilledButton.tonal(key: Key('open-${d.id}'), onPressed: onOpen, child: const Text('Open'))
-              else
-                Icon(Icons.chevron_right, color: theme.colorScheme.onSurfaceVariant),
             ]),
           ),
-        ),
+          const SizedBox(width: 8),
+          if (onOpen != null)
+            OutlinedButton(
+              key: Key('open-${d.id}'),
+              style: Arstro.small,
+              onPressed: onOpen,
+              child: const Text('Open'),
+            )
+          else
+            const Icon(Icons.chevron_right, size: 18, color: Arstro.muted),
+        ]),
       ),
     );
   }

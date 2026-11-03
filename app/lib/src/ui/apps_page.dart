@@ -206,7 +206,7 @@ class _AppViewPageState extends State<AppViewPage> {
     super.initState();
     _web = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setBackgroundColor(const Color(0xFF0B0C0F))
+      ..setBackgroundColor(const Color(0xFF0C0C0B))
       ..setNavigationDelegate(NavigationDelegate(
         onProgress: (p) => mounted ? setState(() => _progress = p) : null,
         onPageFinished: (url) {

@@ -140,7 +140,7 @@ class _SystemSectionsState extends State<SystemSections> {
       if (!open && _web != null)
         ListTile(
           leading: const Icon(Icons.key_rounded),
-          title: Text(_reveal ? token : '•' * 12, style: const TextStyle(fontFamily: 'monospace')),
+          title: Text(_reveal ? token : '•' * 12, style: const TextStyle(fontFamily: 'GeistMono')),
           subtitle: const Text('Web and remote-CLI password'),
           trailing: Row(mainAxisSize: MainAxisSize.min, children: [
             IconButton(

@@ -313,7 +313,7 @@ port) open inside the app. It needs nothing new on the machines or the device ma
 
 | ID | Requirement |
 |---|---|
-| UX-01 | Dark, minimal, consistent design in GUI and Web: one accent colour, rounded cards, clear hierarchy, no clutter. |
+| UX-01 | Dark, minimal, consistent design on every screen - the device manager, the machine's web UI, the backup terminal and the Android apps - from one definition, [docs/design.md](design.md): warm near-black surfaces, off-white text, one off-white primary action per view, colour only for status, 1 px hairlines, the bundled Geist fonts (nothing fetched from the internet), no gradients, clear hierarchy, no clutter. |
 | UX-02 | Smooth animations for navigation, sheets and state changes (≤ 300 ms, no jank). The record button animates between idle and recording. |
 | UX-03 | Layouts work from a small phone (360×640) to large screens (1920×1080) without overflow. |
 

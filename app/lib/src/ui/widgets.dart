@@ -2,6 +2,8 @@ import 'dart:math';
 
 import 'package:flutter/material.dart';
 
+import '../theme.dart';
+
 /// Back-button handlers of what is shown inside the main screen (the live view's focus loupe,
 /// REC-14): the main screen asks them first; the newest that returns true has used the press.
 final List<bool Function()> backHandlers = [];
@@ -25,7 +27,6 @@ class SectionCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     return Card(
       margin: EdgeInsets.zero,
       child: Padding(
@@ -35,15 +36,8 @@ class SectionCard extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             Row(children: [
-              if (icon != null) ...[Icon(icon, size: 18, color: scheme.primary), const SizedBox(width: 8)],
-              Expanded(
-                child: Text(title.toUpperCase(),
-                    style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                          letterSpacing: 1.1,
-                          color: scheme.onSurfaceVariant,
-                          fontWeight: FontWeight.w600,
-                        )),
-              ),
+              if (icon != null) ...[Icon(icon, size: 16, color: Arstro.muted), const SizedBox(width: 8)],
+              Expanded(child: Text(title.toUpperCase(), style: Arstro.overline)),
               ?trailing,
             ]),
             const SizedBox(height: 12),
@@ -201,7 +195,7 @@ class _SparkPainter extends CustomPainter {
           ..shader = LinearGradient(
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
-            colors: [color.withValues(alpha: 0.35), color.withValues(alpha: 0.02)],
+            colors: [color.withValues(alpha: 0.14), color.withValues(alpha: 0.02)],
           ).createShader(Offset.zero & size));
     canvas.drawPath(
         path,
@@ -265,7 +259,7 @@ class KeyValueRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final style = theme.textTheme.bodyMedium?.copyWith(
-      fontFamily: mono ? 'monospace' : null,
+      fontFamily: mono ? 'GeistMono' : null,
       fontWeight: FontWeight.w500,
     );
     return Padding(

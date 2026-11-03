@@ -44,7 +44,7 @@ export const $ = (sel, root = document) => root.querySelector(sel);
 
 // ---------------------------------------------------------------- icons
 const P = {
-  logo: '<path d="M6 20 12 5l6 15M8.5 14h7"/>',
+  logo: '<path d="M6.75 16.5 12 6l5.25 10.5M8.6 12.75h6.8"/>',
   recorder: '<rect x="2.5" y="6" width="13" height="12" rx="2.5"/><path d="m15.5 10 6-3.5v11l-6-3.5"/>',
   gallery: '<rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="9" cy="9" r="2"/><path d="m21 15-4.5-4.5L6 21"/>',
   monitor: '<path d="M3 12h4l3-8 4 16 3-8h4"/>',

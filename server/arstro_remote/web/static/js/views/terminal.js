@@ -18,12 +18,13 @@
 
 import { h, clear, icon, store, conn, toast, confirmBox, errText, loadScript, loadStyle, isNarrow, CONTROLLER_NAMES } from "../core.js";
 
+// the Arstro palette (docs/design.md); the background is the surface the shell sits on (.term-box)
 const THEME = {
-  background: "#0c0d10", foreground: "#e3e6ea", cursor: "#7c9cff", cursorAccent: "#0c0d10",
-  selectionBackground: "rgba(124,156,255,.3)",
-  black: "#1b1f25", red: "#ff6b6b", green: "#3ddc97", yellow: "#f5b841", blue: "#7c9cff", magenta: "#c49bff",
-  cyan: "#5fd4e6", white: "#d7dbe0", brightBlack: "#5c6370", brightRed: "#ff8a8a", brightGreen: "#6ee7b7",
-  brightYellow: "#fcd34d", brightBlue: "#a5b8ff", brightMagenta: "#d8b4fe", brightCyan: "#99f6e4", brightWhite: "#ffffff",
+  background: "#131312", foreground: "#ededea", cursor: "#ededea", cursorAccent: "#131312",
+  selectionBackground: "rgba(237,237,234,.22)",
+  black: "#34342f", red: "#ec7e76", green: "#7cc495", yellow: "#ddb764", blue: "#8fb3e0", magenta: "#c9a2d9",
+  cyan: "#7fc4c4", white: "#d6d4cd", brightBlack: "#868379", brightRed: "#f29d96", brightGreen: "#9ed6b1",
+  brightYellow: "#e8cc8e", brightBlue: "#b1cbea", brightMagenta: "#dcbfe7", brightCyan: "#a6d9d8", brightWhite: "#f7f7f4",
 };
 
 // Shells we are attached to survive view switches (the server keeps streaming to us), and so

@@ -26,8 +26,8 @@ export default {
       if (!status) return clear(head, h("div.row", null, h("span.spin"), h("span.muted", null, "Loading…")));
       if (!s.present) return clear(head, h("div.muted", null, "No Bluetooth adapter: " + (s.error || "")));
       clear(head, h("div.row", null,
-        h("div.ico", { style: { width: "44px", height: "44px", borderRadius: "13px", display: "grid", placeItems: "center",
-                                background: s.powered ? "var(--accent-soft)" : "var(--card-3)", color: s.powered ? "var(--accent)" : "var(--muted)" } },
+        h("div.ico", { style: { width: "44px", height: "44px", borderRadius: "var(--r)", display: "grid", placeItems: "center",
+                                background: s.powered ? "var(--ok-soft)" : "var(--card-3)", color: s.powered ? "var(--ok)" : "var(--muted)" } },
           icon("bluetooth")),
         h("div.grow", null, h("div", { style: { fontWeight: 600 } }, s.alias || s.name || "Adapter"),
           h("div.muted.mono", { style: { fontSize: "12.5px" } }, [s.address, s.discovering ? "scanning" : null].filter(Boolean).join(" · "))),

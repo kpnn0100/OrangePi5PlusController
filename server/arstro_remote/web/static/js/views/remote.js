@@ -173,7 +173,7 @@ export default {
                         try { localStorage.setItem(PREF, String(sens)); } catch (x) { /* ignore */ } } });
 
     const captureToggle = toggle(false, (on) => setCapture(on), { label: "Capture mouse and keyboard" });
-    const unavailable = h("div.card.hidden", { style: { marginBottom: "16px", borderColor: "rgba(245,184,65,.4)" } });
+    const unavailable = h("div.card.hidden", { style: { marginBottom: "16px", borderColor: "rgba(221,183,100,.4)" } });
 
     root.append(
       h("div.view-head", null, h("div", null, h("h1", null, "Remote"), h("div.sub", null, "Mouse and keyboard of the Pi's desktop"))),

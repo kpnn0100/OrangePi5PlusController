@@ -67,7 +67,7 @@ class _LiveViewState extends State<LiveView> with WidgetsBindingObserver {
   void _loupeRefused(String error) {
     if (!mounted) return;
     ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-        SnackBar(content: Text('Focus loupe: $error'), backgroundColor: const Color(0xFF5A2330)));
+        SnackBar(content: Text('Focus loupe: $error'), backgroundColor: const Color(0xFF3A2321)));
   }
 
   @override
@@ -147,7 +147,7 @@ class _LiveViewState extends State<LiveView> with WidgetsBindingObserver {
         }
         return;
       }
-      messenger?.showSnackBar(SnackBar(content: Text(msg), backgroundColor: const Color(0xFF5A2330)));
+      messenger?.showSnackBar(SnackBar(content: Text(msg), backgroundColor: const Color(0xFF3A2321)));
     }
   }
 
