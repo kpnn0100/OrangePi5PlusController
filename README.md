@@ -154,7 +154,7 @@ machine, backup terminal and phone with its state. Give a device's access key on
 on the phone), then *Open* shows the device's own pages - this web UI with its screen, terminal and
 files, or any other port - inside the app, end-to-end encrypted, over the HTTP fallback too. Ports
 that answered stay under *Recent* for one tap. Build it with `scripts/build_apk.sh --devices`
-(requirements MGR-01..06).
+(requirements MGR-01..07).
 
 **One look everywhere.** The device manager, this web UI, the backup terminal and the three apps
 share one dark, minimal design defined in [docs/design.md](docs/design.md) (warm near-black,

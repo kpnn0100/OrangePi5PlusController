@@ -54,6 +54,28 @@ class Probe {
 
 enum DeviceKind { computer, phone, backup }
 
+/// What a device runs on, as it told the device manager (RLY-29): the id is a hash of the machine's
+/// id, the same for its slots and its backup terminal. Devices of older versions send none.
+class Machine {
+  Machine({required this.id, this.model = '', this.cpu = '', this.cores, this.memory, this.os = '', this.kernel = '', this.arch = ''});
+  final String id;
+  final String model;
+  final String cpu;
+  final int? cores;
+  final int? memory;
+  final String os;
+  final String kernel;
+  final String arch;
+
+  static Machine? fromJson(dynamic j) {
+    if (j is! Map || j['id'] is! String || (j['id'] as String).isEmpty) return null;
+    String text(String k) => j[k] is String ? j[k] as String : '';
+    int? number(String k) => j[k] is num ? (j[k] as num).toInt() : null;
+    return Machine(id: j['id'] as String, model: text('model'), cpu: text('cpu'), cores: number('cores'),
+        memory: number('memory'), os: text('os'), kernel: text('kernel'), arch: text('arch'));
+  }
+}
+
 class Device {
   Device({
     required this.id,
@@ -69,6 +91,7 @@ class Device {
     this.viewers = 0,
     this.hasKey = false,
     this.keyId,
+    this.machine,
   });
 
   final String id;
@@ -84,6 +107,7 @@ class Device {
   final int viewers;
   final bool hasKey;
   final String? keyId;
+  final Machine? machine;
 
   /// The version without the backup terminal's "backup-" prefix.
   String get shortVersion => version.startsWith('backup-') ? version.substring(7) : version;
@@ -113,8 +137,71 @@ class Device {
         viewers: (j['viewers'] as num?)?.toInt() ?? 0,
         hasKey: (j['hasKey'] as bool?) ?? false,
         keyId: j['keyId'] as String?,
+        machine: Machine.fromJson(j['machine']),
       );
 }
+
+/// One item of the list (RLY-29): a machine's slots and its backup terminal together - slots first,
+/// the backup last. A device that names no machine is an item of its own.
+class MachineGroup {
+  MachineGroup(this.id, this.name, this.machine, this.devices);
+  final String id;
+  final String name;
+  final Machine? machine;
+  final List<Device> devices;
+
+  int get online => devices.where((d) => d.online).length;
+}
+
+/// The devices as the device manager groups them (relay `_machine_list`): online machines first, then by name.
+List<MachineGroup> groupByMachine(List<Device> devices) {
+  final groups = <String, List<Device>>{};
+  for (final d in devices) {
+    groups.putIfAbsent(d.machine != null ? 'm-${d.machine!.id}' : 'd-${d.id}', () => []).add(d);
+  }
+  String order(Device d) {
+    final slot = (d.slot ?? '').toLowerCase();
+    return '${slot == 'backup' ? 1 : 0}\u0000$slot\u0000${d.name.toLowerCase()}\u0000${d.id}';
+  }
+
+  final out = <MachineGroup>[];
+  for (final MapEntry(:key, value: devs) in groups.entries) {
+    devs.sort((a, b) => order(a).compareTo(order(b)));
+    // the newest description: an online device, else the one seen last
+    final fresh = devs.reduce((a, b) {
+      if (a.online != b.online) return a.online ? a : b;
+      return (b.lastSeen ?? DateTime(0)).isAfter(a.lastSeen ?? DateTime(0)) ? b : a;
+    });
+    final name = key.startsWith('m-') && fresh.hostname.isNotEmpty ? fresh.hostname : fresh.name;
+    out.add(MachineGroup(key, name, fresh.machine, devs));
+  }
+  out.sort((a, b) {
+    if ((a.online > 0) != (b.online > 0)) return a.online > 0 ? -1 : 1;
+    final byName = a.name.toLowerCase().compareTo(b.name.toLowerCase());
+    return byName != 0 ? byName : a.id.compareTo(b.id);
+  });
+  return out;
+}
+
+const _ramSizes = [1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048];
+
+/// The RAM fitted: the kernel's total is a little less (60.4 GiB on a 64 GB machine).
+String memoryText(int bytes) {
+  final g = bytes / 1073741824;
+  if (g < 0.9) return '${(bytes / 1048576).round()} MB';
+  final size = _ramSizes.where((s) => s >= g && g >= s * 0.88).firstOrNull;
+  return '${size ?? g.round()} GB';
+}
+
+/// What the machine is: model, processor, cores, memory, system.
+List<String> machineBits(Machine? m, [Device? d]) => [
+      if (m != null && m.model.isNotEmpty) m.model,
+      if (m != null && m.cpu.isNotEmpty) m.cpu,
+      if (m?.cores != null) '${m!.cores} ${m.cores == 1 ? 'core' : 'cores'}',
+      if (m?.memory != null) memoryText(m!.memory!),
+      if (m != null && m.os.isNotEmpty) '${m.os}${m.arch.isNotEmpty ? ' ${m.arch}' : ''}'
+      else if (d != null && d.platform.isNotEmpty) d.platform,
+    ];
 
 /// A port that answered (MGR-05): newest first.
 class Recent {

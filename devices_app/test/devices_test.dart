@@ -20,7 +20,7 @@ class FakeApi implements DevicesApi {
   Device _withKey(Device d) => Device(
       id: d.id, name: d.name, hostname: d.hostname, platform: d.platform, version: d.version, slot: d.slot, web: d.web,
       online: d.online, since: d.since, lastSeen: d.lastSeen, viewers: d.viewers, hasKey: keys.containsKey(d.id),
-      keyId: keys.containsKey(d.id) ? 'kid123' : null);
+      keyId: keys.containsKey(d.id) ? 'kid123' : null, machine: d.machine);
 
   @override
   Future<ServerList> servers() async => ServerList(current, serverList);
@@ -106,6 +106,22 @@ List<Device> sampleDevices() => [
           online: true, since: now.subtract(const Duration(hours: 20))),
       Device(id: 'pi-a-loamop', name: 'orangepi5plus', hostname: 'orangepi5plus', version: '2.6.0', slot: 'a', web: 8080,
           online: false, lastSeen: now.subtract(const Duration(days: 2))),
+      Device(id: 'tecno-phone-ab12cd', name: 'TECNO CM5', hostname: 'TECNO CM5', slot: 'phone', version: '2.4.0', web: 8080, online: true),
+    ];
+
+final pc = Machine(id: '53ecff00aa11bb22cc33dd44ee55ff66', model: 'MSI PRO X870-P WIFI', cpu: 'AMD Ryzen 9 9900X', cores: 24,
+    memory: 64833409024, os: 'Ubuntu 22.04.5 LTS', kernel: '6.12.94-generic', arch: 'x86_64');
+final pi = Machine(id: '0a1b2c3d4e5f60718293a4b5c6d7e8f9', model: 'Orange Pi 5 Plus', cpu: 'Rockchip RK3588', cores: 8,
+    memory: 16508760064, os: 'Ubuntu 22.04.5 LTS', arch: 'aarch64');
+
+/// Devices of the current versions (RLY-29): each tells the device manager its machine.
+List<Device> machineDevices() => [
+      Device(id: 'aviron1-backup-rdht75', name: 'aviron1 (backup terminal)', hostname: 'aviron1', slot: 'backup', web: 8181,
+          version: 'backup-1.2.0', online: true, since: now.subtract(const Duration(hours: 20)), machine: pc),
+      Device(id: 'aviron1-a-xpr0at', name: 'aviron1', hostname: 'aviron1', platform: 'Linux x86_64', version: '2.5.0', slot: 'a',
+          web: 8180, online: false, lastSeen: now.subtract(const Duration(minutes: 5)), machine: pc),
+      Device(id: 'pi-a-loamop', name: 'orangepi5plus', hostname: 'orangepi5plus', version: '2.5.0', slot: 'a', web: 8080,
+          online: true, machine: pi),
       Device(id: 'tecno-phone-ab12cd', name: 'TECNO CM5', hostname: 'TECNO CM5', slot: 'phone', version: '2.4.0', web: 8080, online: true),
     ];
 
@@ -275,5 +291,83 @@ void main() {
     await tester.tap(find.byKey(const Key('device-aviron1-a-xpr0at')));
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
+  });
+
+  // covers: MGR-07
+  test('devices are grouped by machine like the device manager does; RAM in the sizes sold', () {
+    final groups = groupByMachine(machineDevices());
+    expect(groups.map((g) => g.name), ['aviron1', 'orangepi5plus', 'TECNO CM5']);
+    expect(groups.first.devices.map((d) => d.id), ['aviron1-a-xpr0at', 'aviron1-backup-rdht75']);   // slots first
+    expect(groups.first.online, 1);
+    expect(groups.first.id, 'm-${pc.id}');
+    expect(groups.last.id, 'd-tecno-phone-ab12cd');                    // no machine: an item of its own
+    expect(machineBits(pc), ['MSI PRO X870-P WIFI', 'AMD Ryzen 9 9900X', '24 cores', '64 GB', 'Ubuntu 22.04.5 LTS x86_64']);
+    expect(memoryText(16508760064), '16 GB');
+    expect(memoryText(8 * 1073741824 - 300 * 1048576), '8 GB');
+    expect(memoryText(512 * 1048576), '512 MB');
+    expect(Machine.fromJson({'id': ''}), isNull);
+    expect(Machine.fromJson({'id': 'abcdef0123', 'cores': 'x'})!.cores, isNull);
+  });
+
+  // covers: MGR-07
+  testWidgets('one item per machine: Main and Backup terminal together, the switch and the Machine card', (tester) async {
+    final api = withServer()..deviceList = machineDevices();
+    await pumpApp(tester, api);
+    expect(find.text('ONLINE · 3'), findsOneWidget);                   // 3 items for 4 devices
+    expect(find.text('OFFLINE · 1'), findsNothing);
+    final item = find.byKey(Key('machine-m-${pc.id}'));
+    expect(item, findsOneWidget);
+    expect(find.descendant(of: item, matching: find.text('aviron1')), findsOneWidget);
+    expect(find.descendant(of: item, matching: find.text('1 of 2 online')), findsOneWidget);
+    expect(find.text('MSI PRO X870-P WIFI · AMD Ryzen 9 9900X · 24 cores · 64 GB · Ubuntu 22.04.5 LTS x86_64'), findsOneWidget);
+    expect(find.descendant(of: item, matching: find.byKey(const Key('device-aviron1-a-xpr0at'))), findsOneWidget);
+    expect(find.descendant(of: item, matching: find.byKey(const Key('device-aviron1-backup-rdht75'))), findsOneWidget);
+    expect(find.descendant(of: item, matching: find.text('Main')), findsOneWidget);
+    expect(find.descendant(of: item, matching: find.text('slot A')), findsOneWidget);
+    expect(find.descendant(of: item, matching: find.text('Backup terminal')), findsOneWidget);
+    final main = tester.getTopLeft(find.byKey(const Key('device-aviron1-a-xpr0at'))).dy;
+    final backup = tester.getTopLeft(find.byKey(const Key('device-aviron1-backup-rdht75'))).dy;
+    expect(main, lessThan(backup));                                    // Main first, even while it is down
+    expect(find.byKey(const Key('open-aviron1-a-xpr0at')), findsNothing);       // offline: no Open
+    expect(find.byKey(const Key('open-aviron1-backup-rdht75')), findsOneWidget);
+    // a machine on its own: one row with its model; a device that names no machine: as before
+    expect(find.byKey(Key('machine-m-${pi.id}')), findsNothing);
+    expect(find.text('Orange Pi 5 Plus · slot A · v2.5.0'), findsOneWidget);
+    expect(find.byKey(const Key('device-tecno-phone-ab12cd')), findsOneWidget);
+
+    // the device page: switch from the backup to Main, and what the machine is
+    await tester.tap(find.byKey(const Key('device-aviron1-backup-rdht75')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('sib-aviron1-a-xpr0at')), findsOneWidget);
+    expect(find.byKey(const Key('sib-aviron1-backup-rdht75')), findsOneWidget);
+    expect(find.text('Open the backup terminal (port 8181)'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('sib-aviron1-a-xpr0at')));
+    await tester.pumpAndSettle();
+    expect(find.widgetWithText(AppBar, 'aviron1'), findsOneWidget);
+    expect(find.text('Open the web UI (port 8180)'), findsOneWidget);
+    expect(find.textContaining('last seen 5 min ago'), findsOneWidget);
+    await tester.scrollUntilVisible(find.byKey(const Key('machine-card')), 200, scrollable: devicePageList);
+    expect(find.descendant(of: find.byKey(const Key('machine-card')), matching: find.text('64 GB')), findsOneWidget);
+    expect(find.descendant(of: find.byKey(const Key('machine-card')), matching: find.text('AMD Ryzen 9 9900X')), findsOneWidget);
+    expect(find.text('Linux x86_64'), findsNothing);                   // the machine's system instead
+    // the phone has no machine: no switch, no Machine card
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('device-tecno-phone-ab12cd')));
+    await tester.pumpAndSettle();
+    expect(find.byType(DevicePage), findsOneWidget);
+    expect(find.byKey(const Key('sib-tecno-phone-ab12cd')), findsNothing);
+    expect(find.byKey(const Key('machine-card')), findsNothing);
+  });
+
+  // covers: MGR-07, UX-01
+  testWidgets('a machine fits a 360 px wide phone', (tester) async {
+    final api = withServer()..deviceList = machineDevices();
+    await pumpApp(tester, api, size: const Size(360, 640));
+    expect(tester.takeException(), isNull);
+    await tester.tap(find.byKey(const Key('device-aviron1-a-xpr0at')));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(find.byKey(const Key('sib-aviron1-backup-rdht75')), findsOneWidget);
   });
 }

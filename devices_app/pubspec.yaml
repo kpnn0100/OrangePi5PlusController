@@ -3,7 +3,7 @@ description: "Arstro Devices - every device of your Arstro device managers in on
 publish_to: 'none'
 
 # versionName+versionCode of the APK (scripts/build_apk.sh --devices names the file after it)
-version: 1.1.0+2
+version: 1.2.0+3
 
 environment:
   sdk: ^3.10.4

@@ -225,26 +225,48 @@ class StatusDot extends StatelessWidget {
   }
 }
 
-/// Round status pill with a dot: "online" (ok on ok-soft) or "offline" (muted on surface-3).
+/// Round status pill with a dot: "online" (ok on ok-soft) or "offline" (muted on surface-3); a machine
+/// with only some of its devices online: "1 of 2 online" (warn on warn-soft).
 class StatusPill extends StatelessWidget {
-  const StatusPill({super.key, required this.online});
+  const StatusPill({super.key, required this.online, this.of});
   final bool online;
+  final (int, int)? of;                                  // (online, all) of a machine's devices
+
+  /// The pill of a machine: online, offline, or how many of its devices are online.
+  factory StatusPill.machine(int online, int all, {Key? key}) =>
+      StatusPill(key: key, online: online > 0, of: online > 0 && online < all ? (online, all) : null);
 
   @override
   Widget build(BuildContext context) {
-    final color = online ? Arstro.ok : Arstro.muted;
+    final part = of != null;
+    final color = part ? Arstro.warn : (online ? Arstro.ok : Arstro.muted);
     return Container(
       padding: const EdgeInsets.fromLTRB(8, 3, 9, 3),
       decoration: BoxDecoration(
-        color: online ? Arstro.okSoft : Arstro.surface3,
+        color: part ? Arstro.warnSoft : (online ? Arstro.okSoft : Arstro.surface3),
         borderRadius: BorderRadius.circular(99),
       ),
       child: Row(mainAxisSize: MainAxisSize.min, children: [
         Container(width: 7, height: 7, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
         const SizedBox(width: 7),
-        Text(online ? 'online' : 'offline',
+        Text(part ? '${of!.$1} of ${of!.$2} online' : (online ? 'online' : 'offline'),
             style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: color, height: 1.3)),
       ]),
+    );
+  }
+}
+
+/// A small label next to a name ("slot A"): surface-3, 6 px radius, text-2.
+class Tag extends StatelessWidget {
+  const Tag(this.text, {super.key});
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+      decoration: BoxDecoration(color: Arstro.surface3, borderRadius: BorderRadius.circular(Arstro.rChip)),
+      child: Text(text, style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w500, color: Arstro.text2, height: 1.4)),
     );
   }
 }

@@ -4,18 +4,20 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'api.dart';
-import 'devices_page.dart' show kindIcon;
+import 'devices_page.dart' show kindIcon, roleOf;
 import 'open.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
 /// One device (MGR-02, MGR-05): what the device manager knows about it, its access key, the ports
-/// that answered lately, any other port, and the ports it listens on.
+/// that answered lately, any other port, and the ports it listens on; a switch to the other devices
+/// of its machine and what the machine is (MGR-07).
 class DevicePage extends StatefulWidget {
-  const DevicePage({super.key, required this.api, required this.server, required this.device});
+  const DevicePage({super.key, required this.api, required this.server, required this.device, this.devices = const []});
   final DevicesApi api;
   final String server;
   final Device device;
+  final List<Device> devices;                            // the list it was opened from (for the switch)
 
   @override
   State<DevicePage> createState() => _DevicePageState();
@@ -23,6 +25,7 @@ class DevicePage extends StatefulWidget {
 
 class _DevicePageState extends State<DevicePage> with WidgetsBindingObserver {
   late Device _d = widget.device;
+  late List<Device> _all = widget.devices;
   List<Recent> _recents = const [];
   DeviceCheck? _check;
   String? _checkError;
@@ -64,10 +67,34 @@ class _DevicePageState extends State<DevicePage> with WidgetsBindingObserver {
       if (mounted) setState(() => _recents = recents);
       final list = await api.devices(widget.server);
       final d = list.where((x) => x.id == _d.id).firstOrNull;
-      if (d != null && mounted) setState(() => _d = d);
+      if (mounted) {
+        setState(() {
+          _all = list;
+          if (d != null) _d = d;
+        });
+      }
     } on ApiError {
       // the home page shows connection problems; keep what is shown
     }
+  }
+
+  /// The devices of this device's machine, slots first (MGR-07); fewer than two: no switch.
+  List<Device> get _siblings =>
+      groupByMachine(_all).where((g) => g.devices.any((x) => x.id == _d.id)).firstOrNull?.devices ?? const [];
+
+  /// Shows another device of the machine in place (Main <-> Backup terminal).
+  void _switchTo(Device x) {
+    if (x.id == _d.id) return;
+    setState(() {
+      _d = x;
+      _recents = const [];
+      _check = null;
+      _checkError = null;
+      _ports = null;
+      _portsError = null;
+      _port.clear();
+    });
+    _refresh();
   }
 
   Future<void> _open(int port) async {
@@ -157,14 +184,29 @@ class _DevicePageState extends State<DevicePage> with WidgetsBindingObserver {
         ? [if (d.since != null) 'for ${span(d.since!)}', if (d.viewers > 0) '${d.viewers} viewer${d.viewers == 1 ? '' : 's'}']
             .join(' · ')
         : 'last seen ${d.lastSeen != null ? ago(d.lastSeen!) : 'never'}';
+    final m = d.machine;
+    final siblings = _siblings;
+    final facts = [
+      if (m != null && m.model.isNotEmpty) KeyValueRow('Model', m.model),
+      if (m != null && m.cpu.isNotEmpty) KeyValueRow('Processor', m.cpu),
+      if (m?.cores != null) KeyValueRow('Cores', '${m!.cores}'),
+      if (m?.memory != null) KeyValueRow('Memory', memoryText(m!.memory!)),
+      if (m != null && m.os.isNotEmpty) KeyValueRow('System', m.os),
+      if (m != null && m.kernel.isNotEmpty) KeyValueRow('Kernel', m.kernel, mono: true),
+      if (m != null && m.arch.isNotEmpty) KeyValueRow('Architecture', m.arch),
+    ];
     final about = [
-      if (d.platform.isNotEmpty) d.platform,
+      if (m != null && m.model.isNotEmpty) m.model else if (d.platform.isNotEmpty) d.platform,
       if (d.kind == DeviceKind.backup) 'backup terminal',
       if (d.slotLabel != null) 'slot ${d.slotLabel}',
     ];
     return Scaffold(
       appBar: AppBar(title: Text(d.name)),
       body: ListView(padding: const EdgeInsets.fromLTRB(16, 20, 16, 32), children: [
+        if (siblings.length > 1) ...[
+          _Siblings(devices: siblings, current: d.id, onTap: _switchTo),
+          const SizedBox(height: 20),
+        ],
         Row(children: [
           KindBox(icon: kindIcon(d.kind), online: d.online, size: 44),
           const SizedBox(width: 14),
@@ -351,6 +393,17 @@ class _DevicePageState extends State<DevicePage> with WidgetsBindingObserver {
                                 ),
                             ]),
         ),
+        if (facts.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          SectionCard(
+            key: const Key('machine-card'),
+            title: 'Machine',
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 7),
+            child: Column(children: [
+              for (final (i, row) in facts.indexed) ...[if (i > 0) const Divider(), row],
+            ]),
+          ),
+        ],
         const SizedBox(height: 12),
         SectionCard(
           title: 'Details',
@@ -359,7 +412,7 @@ class _DevicePageState extends State<DevicePage> with WidgetsBindingObserver {
             for (final (i, row) in [
               KeyValueRow('Device id', d.id, mono: true, selectable: true),
               if (d.hostname.isNotEmpty) KeyValueRow('Host name', d.hostname),
-              if (d.platform.isNotEmpty) KeyValueRow('System', d.platform),
+              if (d.platform.isNotEmpty && (m == null || m.os.isEmpty)) KeyValueRow('System', d.platform),
               if (d.shortVersion.isNotEmpty) KeyValueRow('Version', d.shortVersion, mono: true),
               if (d.slotLabel != null) KeyValueRow('Slot', d.slotLabel!),
               KeyValueRow(d.online ? 'Online for' : 'Last seen',
@@ -402,6 +455,59 @@ class _PortRow extends StatelessWidget {
               ]),
             ),
             ?trailing,
+          ]),
+        ),
+      ),
+    );
+  }
+}
+
+/// The devices of one machine as a switch (MGR-07): a status dot and the role of each, the shown one
+/// selected - from Main to the Backup terminal when the main server is down.
+class _Siblings extends StatelessWidget {
+  const _Siblings({required this.devices, required this.current, required this.onTap});
+  final List<Device> devices;
+  final String current;
+  final void Function(Device) onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(3),
+      decoration: BoxDecoration(
+        color: Arstro.surface,
+        border: Border.all(color: Arstro.line),
+        borderRadius: BorderRadius.circular(Arstro.rCard),
+      ),
+      child: Row(children: [
+        for (final (i, x) in devices.indexed) ...[
+          if (i > 0) const SizedBox(width: 3),
+          Expanded(child: _segment(x)),
+        ],
+      ]),
+    );
+  }
+
+  Widget _segment(Device x) {
+    final role = roleOf(x);
+    final active = x.id == current;
+    return Material(
+      color: active ? Arstro.surface3 : Colors.transparent,
+      borderRadius: BorderRadius.circular(Arstro.rButton - 1),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        key: Key('sib-${x.id}'),
+        onTap: () => onTap(x),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+          child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+            StatusDot(online: x.online, size: 6),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(role.name, maxLines: 1, overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w500, height: 1.3, color: active ? Arstro.text : Arstro.text2)),
+            ),
+            if (role.tag != null) ...[const SizedBox(width: 6), Tag(role.tag!)],
           ]),
         ),
       ),

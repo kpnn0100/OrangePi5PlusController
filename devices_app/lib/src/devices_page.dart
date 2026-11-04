@@ -15,8 +15,22 @@ IconData kindIcon(DeviceKind k) => switch (k) {
       DeviceKind.computer => Icons.computer_outlined,
     };
 
-/// The home page (MGR-02): the devices of the current device manager, online first, and the ports
-/// that answered lately (MGR-05). Refreshes every 10 s while it is on screen.
+/// The device's place on its machine (RLY-29): "Main" (a slot), "Backup terminal", or its own name.
+({String name, String? tag, IconData icon}) roleOf(Device d) {
+  final slot = (d.slot ?? '').toLowerCase();
+  if (slot == 'backup') return (name: 'Backup terminal', tag: null, icon: Icons.terminal);
+  if (RegExp(r'^[a-z]$').hasMatch(slot)) return (name: 'Main', tag: 'slot ${slot.toUpperCase()}', icon: Icons.web_asset);
+  return (name: d.name, tag: null, icon: kindIcon(d.kind));
+}
+
+/// "online for 3 h · 1 viewer" or "last seen 2 d ago".
+String onlineText(Device d) => d.online
+    ? ['online${d.since != null ? ' for ${span(d.since!)}' : ''}', if (d.viewers > 0) '${d.viewers} viewer${d.viewers == 1 ? '' : 's'}']
+        .join(' · ')
+    : 'last seen ${d.lastSeen != null ? ago(d.lastSeen!) : 'never'}';
+
+/// The home page (MGR-02): the devices of the current device manager, one item per machine (MGR-07),
+/// online first, and the ports that answered lately (MGR-05). Refreshes every 10 s while it is on screen.
 class DevicesPage extends StatefulWidget {
   const DevicesPage({super.key, required this.api, this.refreshEvery = const Duration(seconds: 10)});
   final DevicesApi api;
@@ -119,7 +133,8 @@ class _DevicesPageState extends State<DevicesPage> with WidgetsBindingObserver {
   }
 
   Future<void> _details(Device d) async {
-    await Navigator.of(context).push(MaterialPageRoute(builder: (_) => DevicePage(api: api, server: server!.id, device: d)));
+    await Navigator.of(context)
+        .push(MaterialPageRoute(builder: (_) => DevicePage(api: api, server: server!.id, device: d, devices: _devices ?? const [])));
     if (mounted) _load();
   }
 
@@ -127,8 +142,9 @@ class _DevicesPageState extends State<DevicesPage> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     final s = server;
     final devices = _devices ?? const <Device>[];
-    final online = devices.where((d) => d.online).toList();
-    final offline = devices.where((d) => !d.online).toList();
+    final groups = groupByMachine(devices);
+    final online = groups.where((g) => g.online > 0).toList();
+    final offline = groups.where((g) => g.online == 0).toList();
     final names = {for (final d in devices) d.id: d.name};
     return Scaffold(
       appBar: AppBar(
@@ -217,18 +233,25 @@ class _DevicesPageState extends State<DevicesPage> with WidgetsBindingObserver {
             ),
           if (online.isNotEmpty) ...[
             _Header('Online · ${online.length}'),
-            RowGroup(children: [
-              for (final d in online)
-                _DeviceTile(device: d, onTap: () => _details(d), onOpen: d.web != null ? () => _open(d, d.web!) : null),
-            ]),
+            RowGroup(children: [for (final g in online) _item(g)]),
           ],
           if (offline.isNotEmpty) ...[
             _Header('Offline · ${offline.length}'),
-            RowGroup(children: [for (final d in offline) _DeviceTile(device: d, onTap: () => _details(d))]),
+            RowGroup(children: [for (final g in offline) _item(g)]),
           ],
         ]),
       ),
     );
+  }
+
+  /// A machine with several devices is one item (MGR-07); a device on its own is one row.
+  Widget _item(MachineGroup g) {
+    VoidCallback? opener(Device d) => d.online && d.web != null ? () => _open(d, d.web!) : null;
+    if (g.devices.length == 1) {
+      final d = g.devices.single;
+      return _DeviceTile(device: d, onTap: () => _details(d), onOpen: opener(d));
+    }
+    return _MachineItem(group: g, onTap: _details, opener: opener);
   }
 }
 
@@ -325,13 +348,11 @@ class _DeviceTile extends StatelessWidget {
     }
 
     if (d.hostname.isNotEmpty && d.hostname != d.name) add(TextSpan(text: d.hostname));
+    if (d.machine != null && d.machine!.model.isNotEmpty) add(TextSpan(text: d.machine!.model));
     if (d.slotLabel != null) add(TextSpan(text: 'slot ${d.slotLabel}'));
     if (d.kind == DeviceKind.backup) add(const TextSpan(text: 'backup terminal'));
     if (d.shortVersion.isNotEmpty) add(TextSpan(text: 'v${d.shortVersion}', style: Arstro.monoStyle(size: 11.5, color: Arstro.muted)));
-    final line2 = d.online
-        ? ['online${d.since != null ? ' for ${span(d.since!)}' : ''}', if (d.viewers > 0) '${d.viewers} viewer${d.viewers == 1 ? '' : 's'}']
-            .join(' · ')
-        : 'last seen ${d.lastSeen != null ? ago(d.lastSeen!) : 'never'}';
+    final line2 = onlineText(d);
     return InkWell(
       key: Key('device-${d.id}'),
       onTap: onTap,
@@ -352,11 +373,7 @@ class _DeviceTile extends StatelessWidget {
                 StatusDot(online: d.online, size: 6),
                 const SizedBox(width: 7),
                 Flexible(child: Text(line2, maxLines: 1, overflow: TextOverflow.ellipsis, style: Arstro.meta)),
-                if (!d.hasKey) ...[
-                  const SizedBox(width: 10),
-                  const Icon(Icons.key_off_outlined, size: 13, color: Arstro.muted),
-                  const Text(' no key', style: Arstro.meta),
-                ],
+                if (!d.hasKey) ..._noKey,
               ]),
             ]),
           ),
@@ -368,6 +385,124 @@ class _DeviceTile extends StatelessWidget {
               onPressed: onOpen,
               child: const Text('Open'),
             )
+          else
+            const Icon(Icons.chevron_right, size: 18, color: Arstro.muted),
+        ]),
+      ),
+    );
+  }
+}
+
+/// The marker of a device the app has no access key for.
+const _noKey = [
+  SizedBox(width: 10),
+  Icon(Icons.key_off_outlined, size: 13, color: Arstro.muted),
+  Text(' no key', style: Arstro.meta),
+];
+
+/// A machine with several devices (MGR-07, like the web list): its name, what it is and how many of
+/// its devices are online, then one row per device - Main (its slot) and the Backup terminal.
+class _MachineItem extends StatelessWidget {
+  const _MachineItem({required this.group, required this.onTap, required this.opener});
+  final MachineGroup group;
+  final void Function(Device) onTap;
+  final VoidCallback? Function(Device) opener;
+
+  static const _inset = 64.0;                            // under the name: 14 + the kind box + 14
+
+  @override
+  Widget build(BuildContext context) {
+    final g = group;
+    final on = g.online > 0;
+    final bits = machineBits(g.machine, g.devices.first);
+    return Column(key: Key('machine-${g.id}'), crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(14, 12, 12, 11),
+        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          KindBox(icon: Icons.computer_outlined, online: on),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                Expanded(
+                  child: Text(g.name, maxLines: 1, overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 15, fontWeight: FontWeight.w500, height: 1.35, color: on ? Arstro.text : Arstro.text2)),
+                ),
+                const SizedBox(width: 8),
+                StatusPill.machine(g.online, g.devices.length, key: Key('machine-pill-${g.id}')),
+              ]),
+              if (bits.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Text(bits.join(' · '), key: Key('machine-about-${g.id}'), maxLines: 2, overflow: TextOverflow.ellipsis,
+                      style: Arstro.meta),
+                ),
+            ]),
+          ),
+        ]),
+      ),
+      for (final d in g.devices) ...[
+        const Divider(indent: _inset),
+        _MemberRow(device: d, onTap: () => onTap(d), onOpen: opener(d)),
+      ],
+    ]);
+  }
+}
+
+/// One device of a machine: its role (Main · slot A, Backup terminal), version, status and Open.
+class _MemberRow extends StatelessWidget {
+  const _MemberRow({required this.device, required this.onTap, this.onOpen});
+  final Device device;
+  final VoidCallback onTap;
+  final VoidCallback? onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    final d = device;
+    final role = roleOf(d);
+    final color = d.online ? Arstro.text : Arstro.text2;
+    return InkWell(
+      key: Key('device-${d.id}'),
+      onTap: onTap,
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(_MachineItem._inset, 10, onOpen != null ? 12 : 10, 10),
+        child: Row(children: [
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                Icon(role.icon, size: 15, color: d.online ? Arstro.text2 : Arstro.muted),
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(role.name, maxLines: 1, overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w500, height: 1.35, color: color)),
+                ),
+                if (role.tag != null) ...[const SizedBox(width: 8), Tag(role.tag!)],
+              ]),
+              const SizedBox(height: 2),
+              Row(children: [
+                StatusDot(online: d.online, size: 6),
+                const SizedBox(width: 7),
+                Flexible(
+                  child: Text.rich(
+                    TextSpan(children: [
+                      if (d.shortVersion.isNotEmpty) ...[
+                        TextSpan(text: 'v${d.shortVersion}', style: Arstro.monoStyle(size: 11.5, color: Arstro.muted)),
+                        const TextSpan(text: ' · '),
+                      ],
+                      TextSpan(text: onlineText(d)),
+                    ]),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Arstro.meta,
+                  ),
+                ),
+                if (!d.hasKey) ..._noKey,
+              ]),
+            ]),
+          ),
+          const SizedBox(width: 8),
+          if (onOpen != null)
+            OutlinedButton(key: Key('open-${d.id}'), style: Arstro.small, onPressed: onOpen, child: const Text('Open'))
           else
             const Icon(Icons.chevron_right, size: 18, color: Arstro.muted),
         ]),

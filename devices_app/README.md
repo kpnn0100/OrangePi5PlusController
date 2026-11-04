@@ -1,6 +1,6 @@
 # Arstro Devices
 
-Every device of your Arstro device managers in one Android app (requirements MGR-01..06 in
+Every device of your Arstro device managers in one Android app (requirements MGR-01..07 in
 `docs/requirements.md`). The device list and the device pages are native; a device's own pages -
 its web UI with screen, terminal and files, a backup terminal, a phone's page, any other port -
 open inside the app, end-to-end encrypted with the device's access key.
@@ -8,6 +8,8 @@ open inside the app, end-to-end encrypted with the device's access key.
 * **Add a device manager:** type its address; the domain is enough
   (`arstro.example.com` -> `https://arstro.example.com/arstro/internal/devices`). A viewer password
   is asked only when it has one. Switch or edit device managers from the title.
+* **One item per machine:** a machine's main server (its slot) and its backup terminal are one item,
+  with the machine's model, processor, memory and system; a device page switches between them.
 * **Open a device:** *Open* (its web port) or the device page (any port, the ports it listens on).
   The first time the app asks for the device's access key: `arstro-remote relay key` on a machine
   (`arstro-remote-a` / `-b` for a slot), `arstro-backup key` for a backup terminal, the access key

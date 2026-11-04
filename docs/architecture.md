@@ -105,7 +105,7 @@ protocol and vectors as the Python agent) and hands every http / ws stream to an
 `Router` (no local port) that serves the phone's web UI (`assets/phone/`) and the features
 (`features/`). The contract is `core/Api.kt` + [phone/PHONE.md](phone/PHONE.md).
 
-## Arstro Devices (MGR-01..06)
+## Arstro Devices (MGR-01..07)
 
 A third app, Arstro Devices (`devices_app/`), is a *viewer*: the device list and the device pages are
 Flutter (`lib/src/`), everything else Kotlin (`android/.../core/`) behind one method channel
