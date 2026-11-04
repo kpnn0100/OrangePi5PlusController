@@ -937,13 +937,110 @@ class Channel:
         self.agent.channel_closed(self)
 
 
+# ----------------------------------------------------------------------- the machine
+_JUNK = re.compile(r"^(to be filled.*|system (manufacturer|product name|version)|default string|not (applicable|specified)|"
+                   r"n/?a|none|o\.?e\.?m\.?|0+|x+|123456789|type1.*|unknown)$", re.I)
+_VENDORS = {"micro-star international co., ltd.": "MSI", "asustek computer inc.": "ASUS", "lenovo": "Lenovo",
+            "gigabyte technology co., ltd.": "Gigabyte", "dell inc.": "Dell", "hewlett-packard": "HP", "hp": "HP",
+            "intel corporation": "Intel", "intel(r) client systems": "Intel", "asrock": "ASRock",
+            "qemu": "QEMU", "innotek gmbh": "VirtualBox", "microsoft corporation": "Microsoft"}
+_SOC_VENDORS = {"rockchip": "Rockchip", "brcm": "Broadcom", "allwinner": "Allwinner", "amlogic": "Amlogic",
+                "qcom": "Qualcomm", "nvidia": "NVIDIA", "mediatek": "MediaTek", "fsl": "NXP", "nxp": "NXP",
+                "ti": "TI", "starfive": "StarFive", "sophgo": "Sophgo", "apple": "Apple"}
+
+
+def _read(path, n=4096):
+    try:
+        with open(path, "rb") as f:
+            return f.read(n).decode("utf-8", "replace").replace("\x00", "\n").strip()
+    except OSError:
+        return ""
+
+
+def _clean(text, n=64):
+    text = " ".join("".join(c for c in str(text or "") if c.isprintable()).split())
+    return text[:n] or None
+
+
+def _model():
+    """The DT model on boards ("Orange Pi 5 Plus"), the DMI vendor and product on PCs."""
+    dt = _read("/proc/device-tree/model") or _read("/sys/firmware/devicetree/base/model")
+    if dt:
+        return _clean(dt.splitlines()[0])
+    dmi = {k: _read("/sys/class/dmi/id/" + k, 256) for k in ("sys_vendor", "product_name", "product_version",
+                                                             "board_vendor", "board_name")}
+    ok = {k: v for k, v in dmi.items() if v and not _JUNK.match(v)}
+    vendor = ok.get("sys_vendor") or ok.get("board_vendor") or ""
+    product = ok.get("product_name")
+    if vendor.lower() == "lenovo" and ok.get("product_version"):
+        product = ok["product_version"]             # Lenovo: product_name is a part number
+    board = ok.get("board_name")
+    if board and (not product or product in board):  # a self-built PC: the mainboard says more
+        product = re.sub(r"\s*\(%s\)$" % re.escape(product), "", board) if product else board
+    short = _VENDORS.get(vendor.lower(), re.sub(r",?\s+(co\.,?\s*)?(ltd|inc|corp(oration)?|gmbh|ag)\.?$", "", vendor,
+                                                flags=re.I))
+    if product and short and not product.lower().startswith(short.lower()):
+        product = short + " " + product
+    return _clean(product or short)
+
+
+def _cpu():
+    """The processor: "AMD Ryzen 9 9900X", or the SoC on boards ("Rockchip RK3588")."""
+    for line in _read("/proc/cpuinfo", 1 << 16).splitlines():
+        key, _, value = line.partition(":")
+        if key.strip() in ("model name", "Model Name", "cpu model") and value.strip():
+            v = re.sub(r"\((r|tm)\)|\b(cpu|processor)\b|@.*$|\b\d+-core\b", " ", value, flags=re.I)
+            return _clean(v)
+    compatible = [c for c in _read("/proc/device-tree/compatible").split("\n") if "," in c]
+    if compatible:
+        vendor, _, chip = compatible[-1].partition(",")
+        return _clean("%s %s" % (_SOC_VENDORS.get(vendor, vendor.capitalize()), chip.upper()))
+    return None
+
+
+def _machine_id():
+    """An app-specific hash of the systemd machine id (never the id itself): the same for every
+    Arstro program on the machine - its slots and the backup terminal - and different per machine."""
+    for path in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
+        mid = _read(path, 128)
+        if re.match(r"^[0-9a-f]{32}$", mid):
+            return hashlib.sha256(b"arstro-machine\x00" + mid.encode()).hexdigest()[:32]
+    return None
+
+
+def _os_name():
+    for line in _read("/etc/os-release").splitlines():
+        if line.startswith("PRETTY_NAME="):
+            return _clean(line.split("=", 1)[1].strip().strip("\"'"))
+    return _clean("%s %s" % (os.uname().sysname, os.uname().release))
+
+
+def _memory():
+    m = re.search(r"^MemTotal:\s+(\d+)\s*kB", _read("/proc/meminfo"), re.M)
+    return int(m.group(1)) * 1024 if m else None
+
+
+_MACHINE = None
+
+
+def machine_info():
+    """Which machine this is and what it is, for the device manager's list (RLY-29):
+    {id, model, cpu, cores, memory, os, kernel, arch}; what it cannot find is None. Read once."""
+    global _MACHINE
+    if _MACHINE is None:
+        u = os.uname()
+        _MACHINE = {"id": _machine_id(), "model": _model(), "cpu": _cpu(), "cores": os.cpu_count(),
+                    "memory": _memory(), "os": _os_name(), "kernel": _clean(u.release), "arch": _clean(u.machine)}
+    return dict(_MACHINE)
+
+
 # ------------------------------------------------------------------------- the agent
 class Agent:
     """The control connection to the device manager and the viewer channels.
 
     configure(cfg) with cfg = {url, token, name, enabled, ports, id, secret, key_raw, version,
-    hostname, platform, slot, web, blocked}; `on_change()` is called after every change of
-    state(), viewers or wrong keys."""
+    hostname, platform, slot, web, machine, blocked}; `on_change()` is called after every change of
+    state(), viewers or wrong keys. Without a `machine` key the hello carries machine_info()."""
 
     def __init__(self, on_change=None):
         self.on_change = on_change or (lambda: None)
@@ -1137,7 +1234,8 @@ class Agent:
             _send_json(conn, {"t": "hello", "v": e2e.VERSION, "id": cfg["id"], "name": cfg["name"],
                               "secret": cfg["secret"], "token": cfg["token"], "version": cfg.get("version"),
                               "hostname": cfg.get("hostname"), "platform": cfg.get("platform"),
-                              "slot": cfg.get("slot"), "web": cfg.get("web")})
+                              "slot": cfg.get("slot"), "web": cfg.get("web"),
+                              "machine": cfg["machine"] if "machine" in cfg else machine_info()})
             msg = _recv_json(conn)
             if msg.get("t") == "error":
                 raise TunnelError("the device manager refused this device: %s" % (msg.get("error") or "no reason"))

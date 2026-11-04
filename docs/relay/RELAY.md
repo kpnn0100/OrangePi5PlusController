@@ -1,4 +1,4 @@
-# Device manager: reach your machines over the internet (RLY-01..26)
+# Device manager: reach your machines over the internet (RLY-01..29)
 
 A machine running Arstro Remote sits at home or in a lab, behind NAT. The **device manager**
 (a small server in a Docker container, e.g. on an Oracle Cloud VM) is on the internet. Each
@@ -11,6 +11,12 @@ scripts use the same path through a small Python client that can also forward an
 
 Everything between you and the machine is **end-to-end encrypted with the access key**. The
 device manager forwards ciphertext and never has the key. Wire format: [PROTOCOL.md](PROTOCOL.md).
+
+**One item per machine.** A computer can advertise more than once: its A/B slots and its backup
+terminal are separate devices with their own keys. Each one says which machine it runs on (a
+hash of `/etc/machine-id`, the same for all of them) and what the machine is (model, processor,
+cores, memory, system), so the list shows the computer once with a row for *Main* and one for
+*Backup terminal* (RLY-29). When the main server is down, its backup is right under it.
 
 **Behind any web proxy.** The connections are WebSockets when the path allows them. When a
 proxy does not pass WebSockets (e.g. an nginx without the `Upgrade` lines), the device, the
@@ -96,7 +102,8 @@ work through it - use `forward` for those.
 
 | Attack | What stops it |
 |---|---|
-| Someone finds the device list | it shows names only; nothing works without a machine's key; set `RELAY_PASSWORD` to hide the list too |
+| Someone finds the device list | it shows names and what each machine is (model, processor, memory, system - never an address or the machine id itself); nothing works without a machine's key; set `RELAY_PASSWORD` to hide the list too |
+| A device claims another machine's id | it is only shown under that machine: the machine id groups the list and grants nothing - each device still has its own id, secret and access key |
 | Guessing a key | 256-bit keys; five wrong proofs refuse new channels for a minute; every wrong key is logged |
 | A fake machine with the same name | it cannot produce the machine's proof: the viewer stops before sending anything derived from the key |
 | Registering junk machines / taking an id | join token required; id bound to its secret |

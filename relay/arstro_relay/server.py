@@ -7,7 +7,7 @@
   GET  B/d/<id>/<port>/...    the boot page (static/boot.html) until the service worker is in control
   GET  B/api/info             {name, version, base, auth, authorized}
   POST B/api/login, B/api/logout    viewer password -> cookie arstro_devices
-  GET  B/api/devices          the device list (viewer auth)
+  GET  B/api/devices          the device list and the machines they run on (viewer auth)
   GET  B/api/connect/<id>     WebSocket: a viewer channel (viewer auth)
   GET  B/api/agent            WebSocket: a device's control connection (join token in its hello)
   GET  B/api/agent/data       WebSocket: a device's data connection (device secret)
@@ -55,6 +55,7 @@ IDLE = 60                       # s an idle keep-alive HTTP connection stays ope
 # Every message name the relay reads or writes = the relay message table of e2e.py (tested).
 MESSAGES = ("hello", "welcome", "open", "refuse", "ping", "pong", "bye", "data", "linked", "relay", "error")
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,39}$")
+MACHINE_RE = re.compile(r"^[a-z0-9-]{8,64}$")
 BOOT_RE = re.compile(r"^/d/([^/]+)/([0-9]{1,5})(/.*)?$")
 PIPE_RE = re.compile(r"^/api/pipe/([A-Za-z0-9_-]{1,64})/(down|up)$")
 COOKIE = "arstro_devices"
@@ -132,6 +133,27 @@ def _text(value, n=64):
     if value is None:
         return None
     return "".join(c for c in str(value) if c.isprintable())[:n]
+
+
+def _machine(value):
+    """The hello's `machine` - which machine the device runs on and what it is (RLY-29) - with
+    every field checked: {id, model, cpu, cores, memory, os, kernel, arch}, unknown ones None."""
+    if not isinstance(value, dict):
+        return None
+    mid = value.get("id")
+    out = {"id": mid if isinstance(mid, str) and MACHINE_RE.match(mid) else None}
+    for k in ("model", "cpu", "os", "kernel", "arch"):
+        out[k] = _text(value.get(k)) or None
+    for k, hi in (("cores", 4096), ("memory", 1 << 50)):
+        v = value.get(k)
+        out[k] = v if isinstance(v, int) and not isinstance(v, bool) and 1 <= v <= hi else None
+    return out
+
+
+def _member_order(d):
+    """A machine's devices: its slots (A, B) first, the backup terminal last."""
+    slot = str(d.get("slot") or "").lower()
+    return (slot == "backup", slot, str(d["name"]).lower(), d["id"])
 
 
 def _cookie(header, name):
@@ -363,7 +385,8 @@ class Relay:
             denied = self._denied(req)
             if denied:
                 return await self._error(writer, req, *denied)
-            return await self._json(writer, req, 200, {"devices": self._device_list()})
+            devices = self._device_list()
+            return await self._json(writer, req, 200, {"devices": devices, "machines": self._machine_list(devices)})
         if rest.startswith("/api/connect/"):
             return await self._viewer(req, reader, writer, urllib.parse.unquote(rest[len("/api/connect/"):]))
         if rest == "/api/agent":
@@ -517,10 +540,32 @@ class Relay:
             dev = self.online.get(dev_id)
             out.append({"id": dev_id, "name": r.get("name") or dev_id, "hostname": r.get("hostname"),
                         "platform": r.get("platform"), "version": r.get("version"), "slot": r.get("slot"),
-                        "web": r.get("web"), "online": dev is not None, "since": int(dev.since) if dev else None,
+                        "web": r.get("web"), "machine": r.get("machine") if isinstance(r.get("machine"), dict) else None,
+                        "online": dev is not None, "since": int(dev.since) if dev else None,
                         "last_seen": int(dev.heard) if dev else r.get("last_seen"),
                         "viewers": len(self.links.get(dev_id, ()))})
         out.sort(key=lambda d: (not d["online"], str(d["name"]).lower(), d["id"]))
+        return out
+
+    @staticmethod
+    def _machine_list(devices):
+        """The devices grouped by the machine they run on (RLY-29): a machine's slots and its backup
+        terminal are one entry. A device that names no machine is a machine of its own. The id is
+        what the devices say (they hold the join token): it groups the list, it grants nothing."""
+        groups = {}
+        for d in devices:
+            mid = (d.get("machine") or {}).get("id")
+            groups.setdefault("m-" + mid if mid else "d-" + d["id"], []).append(d)
+        out = []
+        for key, devs in groups.items():
+            devs.sort(key=_member_order)
+            fresh = max(devs, key=lambda d: (d["online"], d["last_seen"] or 0))     # the newest description
+            m = fresh.get("machine") or {}
+            name = (fresh.get("hostname") if key.startswith("m-") else None) or fresh["name"]
+            out.append(dict({k: m.get(k) for k in ("model", "cpu", "cores", "memory", "os", "kernel", "arch")},
+                            id=key, name=name, hostname=fresh.get("hostname"), platform=fresh.get("platform"),
+                            online=sum(1 for d in devs if d["online"]), devices=[d["id"] for d in devs]))
+        out.sort(key=lambda g: (not g["online"], str(g["name"]).lower(), g["id"]))
         return out
 
     def _check_hello(self, hello):
@@ -543,7 +588,7 @@ class Relay:
             web = None
         return None, {"id": dev_id, "name": name, "hostname": _text(hello.get("hostname")),
                       "platform": _text(hello.get("platform")), "version": _text(hello.get("version")),
-                      "slot": _text(hello.get("slot")), "web": web}
+                      "slot": _text(hello.get("slot")), "web": web, "machine": _machine(hello.get("machine"))}
 
     def _register(self, info, secret):
         """Bind the id to sha256(secret) on first sight (TOFU) and store the hello. -> error or None."""

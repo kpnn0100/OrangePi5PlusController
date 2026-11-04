@@ -117,13 +117,20 @@ EOF
     wait_http "http://127.0.0.1:$P_BACKUP/" 15 || die "the backup terminal did not start (see $D/logs/backup.log)"
 
     say "Demo devices"
-    demo() {                                   # name id hostname platform version slot
-        spawn "$2" "$ROOT" python3 devices_app/tool/fake_device.py --relay "$relay_url" --token "$token" \
-            --name "$1" --id "$2" --hostname "$3" --platform "$4" --version "$5" --slot "$6" --key-file "$D/keys/$2"
+    demo() {                                   # name id hostname platform version slot [fake_device options]
+        local name=$1 id=$2 host=$3 plat=$4 ver=$5 slot=$6
+        shift 6
+        spawn "$id" "$ROOT" python3 devices_app/tool/fake_device.py --relay "$relay_url" --token "$token" \
+            --name "$name" --id "$id" --hostname "$host" --platform "$plat" --version "$ver" --slot "$slot" \
+            --key-file "$D/keys/$id" "$@"
     }
-    demo "Orange Pi 5 Plus" orangepi5plus-a-demo01 orangepi5plus "Linux aarch64 (Orange Pi 5 Plus)" 2.6.0 a
-    demo "Pixel 8" pixel8-phone-demo02 pixel8 "Android 15" 1.1.0 phone
-    demo "Office NUC" office-nuc-a-demo03 office-nuc "Linux x86_64" 2.5.0 a
+    local pi=(--model "Orange Pi 5 Plus" --cpu "Rockchip RK3588" --cores 8 --memory-gb 16 --os "Ubuntu 22.04.5 LTS" --arch aarch64)
+    # the Pi: its slot and its backup terminal - one machine in the list
+    demo "orangepi5plus (slot A)" orangepi5plus-a-demo01 orangepi5plus "Linux aarch64 (Orange Pi 5 Plus)" 2.6.0 a "${pi[@]}"
+    demo "orangepi5plus (backup terminal)" orangepi5plus-backup-demo04 orangepi5plus "Linux aarch64" backup-1.1.0 backup "${pi[@]}"
+    demo "Pixel 8" pixel8-phone-demo02 pixel8 "Android 15" 1.1.0 phone --no-machine
+    demo "Office NUC" office-nuc-a-demo03 office-nuc "Linux x86_64" 2.5.0 a \
+        --model "Intel NUC11PAHi5" --cpu "Intel Core i5-1135G7" --cores 8 --memory-gb 16 --os "Debian GNU/Linux 12 (bookworm)" --arch x86_64
     local i
     for ((i = 0; i < 100; i++)); do [ -s "$D/keys/office-nuc-a-demo03" ] && break; sleep 0.1; done
     sleep 1

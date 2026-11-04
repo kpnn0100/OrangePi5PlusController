@@ -18,6 +18,7 @@ Routes of the web app:
 """
 
 import argparse
+import hashlib
 import http.server
 import json
 import os
@@ -154,6 +155,13 @@ def main():
     p.add_argument("--platform", default="Linux test")
     p.add_argument("--version", default="test")
     p.add_argument("--slot", default="t", help="a, b, ..., backup or phone (what the list shows)")
+    p.add_argument("--model", help="the machine's model (devices with the same --hostname are one machine)")
+    p.add_argument("--cpu")
+    p.add_argument("--cores", type=int)
+    p.add_argument("--memory-gb", type=int)
+    p.add_argument("--os")
+    p.add_argument("--arch")
+    p.add_argument("--no-machine", action="store_true", help="send no machine (like a phone)")
     a = p.parse_args()
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", a.web_port), Handler)
     srv.daemon_threads = True
@@ -161,9 +169,15 @@ def main():
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     key = e2e.new_key()
     agent = ag.Agent()
+    # never this computer's machine_info(): a fake host is a machine of its own
+    machine = None if a.no_machine else {
+        "id": hashlib.sha256(b"fake-machine\x00" + a.hostname.encode()).hexdigest()[:32], "model": a.model,
+        "cpu": a.cpu, "cores": a.cores, "memory": a.memory_gb << 30 if a.memory_gb else None, "os": a.os,
+        "kernel": None, "arch": a.arch}
     agent.configure({"enabled": True, "url": a.relay, "token": a.token, "id": a.id, "name": a.name,
                      "secret": e2e.b64e(os.urandom(32)), "key_raw": e2e.parse_key(key), "hostname": a.hostname,
-                     "version": a.version, "platform": a.platform, "slot": a.slot, "web": port, "ports": None})
+                     "version": a.version, "platform": a.platform, "slot": a.slot, "web": port, "ports": None,
+                     "machine": machine})
     agent.start()
     until = time.time() + 20
     while agent.state != "online":

@@ -36,7 +36,7 @@ that same URL (`https:` → `wss:`, `http:` → `ws:` for the sockets).
 | `GET B/api/info` | - | `{name, version, base, auth: "password"\|"open", authorized}` |
 | `POST B/api/login` | - | `{password}` → cookie `arstro_devices` (`Path=B/; HttpOnly; SameSite=Strict; Max-Age=2592000`, `Secure` on https); 401 if wrong |
 | `POST B/api/logout` | - | clears the cookie |
-| `GET B/api/devices` | viewer | `{devices: [{id, name, hostname, platform, version, slot, web, online, since, last_seen, viewers}]}` (sorted: online first, then name) |
+| `GET B/api/devices` | viewer | `{devices: [{id, name, hostname, platform, version, slot, web, machine, online, since, last_seen, viewers}], machines: [{id, name, hostname, platform, model, cpu, cores, memory, os, kernel, arch, online, devices: [<id>, ...]}]}` (both sorted: online first, then name). `machines` groups the devices by `machine.id` (RLY-29): a machine's slots, then its backup terminal; `online` counts its devices online; a device without a machine id is a machine of its own (id `d-<device id>`), the others `m-<machine id>` |
 | `GET B/api/connect/<id>` | viewer | WebSocket: a viewer channel (section 3) |
 | `GET B/api/agent` | join token | WebSocket: a device's control connection (section 2) |
 | `GET B/api/agent/data` | device secret | WebSocket: a device's data connection (section 2) |
@@ -75,7 +75,7 @@ All JSON messages here are **text** WebSocket messages with a `"t"` field. Names
 
 | Dir | Message | |
 |---|---|---|
-| D→R | `{"t":"hello","v":1,"id","name","secret","token","version","hostname","platform","slot","web"}` | first message, within 10 s. `id`: `^[a-z0-9][a-z0-9-]{2,39}$`; `name`: 1-64 printable characters; `secret`: ≥ 32 characters; `token`: the relay's join token; `web`: the device's Arstro web port (a hint for the list) |
+| D→R | `{"t":"hello","v":1,"id","name","secret","token","version","hostname","platform","slot","web","machine"}` | first message, within 10 s. `id`: `^[a-z0-9][a-z0-9-]{2,39}$`; `name`: 1-64 printable characters; `secret`: ≥ 32 characters; `token`: the relay's join token; `web`: the device's Arstro web port (a hint for the list); `machine` (optional, RLY-29): `{id, model, cpu, cores, memory, os, kernel, arch}` - `id` (`^[a-z0-9-]{8,64}$`) is the same for every program on one computer (Arstro Remote: the first 32 hex digits of sha256("arstro-machine\0" + /etc/machine-id)), `memory` in bytes; the relay keeps checked values (text ≤ 64 characters) and drops the rest |
 | R→D | `{"t":"welcome","v":1,"heartbeat":20,"relay":"<version>"}` | accepted |
 | R→D | `{"t":"error","error":"..."}` then close | wrong join token / id taken by another device / bad hello / too many devices |
 | R→D | `{"t":"open","sid":"<id>","addr":"203.0.113.7"}` | a viewer is waiting: open a data connection for `sid` within 10 s |

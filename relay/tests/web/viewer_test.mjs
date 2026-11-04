@@ -165,11 +165,52 @@ test("list_shows_the_device_online", ["RLY-21", "RLY-22"], async () => {
   check(await until(() => page.$eval(`.device[data-id="${ID}"] .pill`, (e) => e.classList.contains("on"))), "device not online");
   const meta = await text(page, `.device[data-id="${ID}"] .meta`);
   const dev = (await relayApi("devices")).devices.find((d) => d.id === ID);
-  if (dev.hostname) check(meta.includes(dev.hostname), "hostname not shown: " + meta);
+  // a device on its own shows its host name in its row; one of a machine's devices under the machine's name
+  const item = await page.$eval(`.device[data-id="${ID}"]`, (e) => (e.closest(".machine") || e).textContent);
+  if (dev.hostname) check(item.includes(dev.hostname), "hostname not shown: " + item);
   check(/online/.test(meta), "online time not shown: " + meta);
   check(/Agent \/ CLI access/.test(await text(page, ".foot")), "agent note missing");
   check(await page.$eval("#client-link", (a) => a.getAttribute("href").endsWith("/client/arstro_relay_client.py")), "client link");
   await shot(page, "list");
+  await page.close();
+});
+
+test("one_item_per_machine_and_its_details", ["RLY-29"], async () => {
+  const data = await relayApi("devices");
+  const dev = data.devices.find((d) => d.id === ID);
+  const m = (data.machines || []).find((x) => x.devices.includes(ID));
+  check(m, "the device is in no machine of /api/devices");
+  const page = await newPage();
+  await openList(page);
+  await page.waitForSelector(`.device[data-id="${ID}"]`, { timeout: 15000 });
+  if (m.devices.length > 1) {
+    // its machine is one item: the machine's name and what it is, then a row per device (slots first)
+    const rows = await page.$$eval(`.machine[data-machine="${m.id}"] .device.member`, (els) => els.map((e) => e.getAttribute("data-id")));
+    check(JSON.stringify(rows) === JSON.stringify(m.devices), `rows ${rows} != ${m.devices}`);
+    const head = await text(page, `.machine[data-machine="${m.id}"] .machine-head`);
+    check(head.includes(m.name), "machine name not shown: " + head);
+    if (m.model) check(head.includes(m.model), "machine model not shown: " + head);
+    check(await page.$$eval(".machine .device.member, #devices > .device", (els) => new Set(els.map((e) => e.getAttribute("data-id"))).size) ===
+          data.devices.length, "every device once");
+  }
+  await page.click(`.device[data-id="${ID}"]`);
+  await page.waitForSelector("#check", { timeout: 5000 });
+  if (m.devices.length > 1) {
+    const sibs = await page.$$eval(".siblings .sib", (els) => els.map((e) => [e.getAttribute("data-id"), e.classList.contains("active")]));
+    check(sibs.length === m.devices.length && sibs.some(([id, on]) => id === ID && on), "siblings: " + JSON.stringify(sibs));
+    const other = sibs.find(([id]) => id !== ID)[0];
+    await page.click(`.siblings .sib[data-id="${other}"]`);
+    check(await until(() => page.evaluate(() => decodeURIComponent(location.hash.slice(1)))
+      .then((h) => h === other)), "the sibling link opens the other device");
+    await page.waitForSelector(`.siblings .sib.active[data-id="${other}"]`, { timeout: 5000 });
+    await page.goBack();
+    await page.waitForSelector(`.siblings .sib.active[data-id="${ID}"]`, { timeout: 5000 });
+  }
+  if (dev.machine) {
+    const card = await text(page, ".machine-card");
+    for (const v of [dev.machine.model, dev.machine.cpu, dev.machine.os].filter(Boolean)) check(card.includes(v), `${v} not in: ${card}`);
+  }
+  await shot(page, "machine");
   await page.close();
 });
 

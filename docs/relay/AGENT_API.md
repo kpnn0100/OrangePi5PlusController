@@ -130,7 +130,7 @@ Base `B` = the device manager URL. Viewer password, when set: `Authorization: Be
 | Request | Answer |
 |---|---|
 | `GET B/api/info` | `{name, version, base, auth: "password"\|"open", authorized}` |
-| `GET B/api/devices` | `{devices: [{id, name, hostname, platform, version, slot, web, online, since, last_seen, viewers}]}` |
+| `GET B/api/devices` | `{devices: [{id, name, hostname, platform, version, slot, web, machine, online, since, last_seen, viewers}], machines: [{id, name, hostname, platform, model, cpu, cores, memory, os, kernel, arch, online, devices: [<id>, ...]}]}` - `machines` is the same devices grouped by the computer they run on (slots and backup terminal together) |
 | `GET B/api/health` | `{"ok": true}` |
 | `GET B/client/<file>` | the client files (`arstro_relay_client.py`, `e2e.py`, `ws.py`, `pipe.py`) |
 | `WS B/api/connect/<id>` | a viewer channel (needs the key - use the client, or implement [PROTOCOL.md](PROTOCOL.md) section 4) |

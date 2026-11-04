@@ -8,4 +8,4 @@ and transports, the WebSocket code, xterm) are COPIED into vendor/ and static/ w
 so a later update of the main server cannot change it.
 """
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"

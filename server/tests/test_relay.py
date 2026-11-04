@@ -393,8 +393,27 @@ def device_channel_allow_list_and_flow_control(ctx):
     pv.c.close()
 
 
+@test("RLY-29")
+def machine_info_names_this_computer_without_its_machine_id(ctx):
+    m = ag.machine_info()
+    check(set(m) == {"id", "model", "cpu", "cores", "memory", "os", "kernel", "arch"}, m)
+    check(m == ag.machine_info(), "the same every time")
+    check(m["arch"] == os.uname().machine and m["kernel"] == os.uname().release and m["cores"] == os.cpu_count(), m)
+    check(isinstance(m["memory"], int) and m["memory"] > 1 << 26, "memory in bytes: %s" % m["memory"])
+    try:
+        with open("/etc/machine-id") as f:
+            mid = f.read().strip()
+    except OSError:
+        mid = None
+    if mid:
+        check(re.match(r"^[0-9a-f]{32}$", m["id"] or "") and mid not in json.dumps(m), "a hash, never the machine id")
+        check(m["id"] == hashlib.sha256(b"arstro-machine\x00" + mid.encode()).hexdigest()[:32], "the documented hash")
+    for value in m.values():
+        check(value is None or isinstance(value, int) or (isinstance(value, str) and len(value) <= 64), m)
+
+
 # ================================================================== with the device manager
-@test("RLY-01", "RLY-08")
+@test("RLY-01", "RLY-08", "RLY-29")
 def device_goes_online_at_the_device_manager(ctx):
     t = ctx.t
     st = t.c.call("relay.set", url=ctx.relay_url + "/", token=ctx.join, name="Relay test", enabled=True)
@@ -405,6 +424,7 @@ def device_goes_online_at_the_device_manager(ctx):
     ctx.device_id = st["id"]
     d = {x["id"]: x for x in devices(ctx)}.get(st["id"])
     check(d and d["online"] and d["name"] == "Relay test" and d["web"] == t.port and d["slot"] == "t", d)
+    check(d["machine"] == ag.machine_info(), "the hello names the machine (RLY-29): %s" % d["machine"])
     path = os.path.join(cfg_dir(t), "relay.json")
     with open(path) as f:
         saved = json.load(f)

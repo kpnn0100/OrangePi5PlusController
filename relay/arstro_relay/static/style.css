@@ -94,7 +94,7 @@ svg.i { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor;
 }
 .input::placeholder { color: var(--muted); }
 .input:focus { outline: none; border-color: var(--text-2); box-shadow: 0 0 0 3px var(--ring); }
-.btn:focus-visible, .device:focus-visible, .port-btn:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.btn:focus-visible, .device:focus-visible, .port-btn:focus-visible, .sib:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .input.mono { font-family: var(--mono); font-size: 13.5px; }
 .input.port { width: 110px; flex: none; }
 .input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
@@ -132,8 +132,8 @@ main { padding: 36px 0 40px; }
 }
 .device:first-child { border-top: 0; }
 .device:hover { background: var(--surface-2); }
-.device .kind { grid-area: icon; width: 36px; height: 36px; border-radius: var(--r-sm); border: 1px solid var(--line);
-                background: var(--surface-2); color: var(--text-2); display: grid; place-items: center; }
+.device .kind, .machine-head .kind { grid-area: icon; width: 36px; height: 36px; border-radius: var(--r-sm);
+                border: 1px solid var(--line); background: var(--surface-2); color: var(--text-2); display: grid; place-items: center; }
 .device .name { grid-area: name; font-weight: 500; font-size: 15px; min-width: 0; overflow: hidden; text-overflow: ellipsis;
                 white-space: nowrap; }
 .device .pill { grid-area: pill; justify-self: end; }
@@ -142,7 +142,31 @@ main { padding: 36px 0 40px; }
 .device .chev { grid-area: chev; color: var(--muted); width: 16px; height: 16px; transition: transform var(--t) var(--ease); }
 .device:hover .chev { transform: translateX(2px); color: var(--text-2); }
 .device.offline .name { color: var(--text-2); }
-.device.offline .kind { color: var(--muted); background: transparent; }
+.device.offline .kind, .machine.offline .kind { color: var(--muted); background: transparent; }
+
+/* a machine with several devices (its slots, its backup terminal) is one item (RLY-29) */
+.machine { border-top: 1px solid var(--line); animation: rise 360ms var(--ease) both; animation-delay: calc(var(--i, 0) * 40ms); }
+.devices > :first-child { border-top: 0; }
+.machine-head { display: grid; grid-template-columns: 36px minmax(0, 1fr) auto 16px; grid-template-areas: "icon name pill ." "icon meta meta .";
+                gap: 2px 14px; align-items: center; padding: 14px 16px 8px; }
+.machine-head .name { grid-area: name; font-weight: 500; font-size: 15px; min-width: 0; overflow: hidden;
+                      text-overflow: ellipsis; white-space: nowrap; }
+.machine-head .pill { grid-area: pill; justify-self: end; }
+.machine-head .meta { grid-area: meta; color: var(--muted); font-size: 12.5px; min-width: 0; }
+.machine-head .meta span { white-space: nowrap; }
+.machine.offline .machine-head .name { color: var(--text-2); }
+.members { padding-bottom: 6px; }
+.device.member { grid-template-columns: 36px minmax(150px, max-content) minmax(0, 1fr) 16px;
+                 grid-template-areas: "dot role meta chev"; padding: 9px 16px; border-top: 0; position: relative; animation: none; }
+.device.member::before { content: ""; position: absolute; left: 66px; right: 16px; top: 0; border-top: 1px solid var(--line); }
+.member .pill { grid-area: dot; justify-self: center; font-size: 0; gap: 0; padding: 0; background: none; }
+.member .pill.on::before { box-shadow: 0 0 0 3px var(--ok-soft); }
+.member .role { grid-area: role; display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+.member .role svg.i { width: 16px; height: 16px; color: var(--muted); flex: none; }
+.member .role .name { font-size: 14px; }
+.member .chev { width: 14px; height: 14px; }
+.tag { font-family: var(--mono); font-size: 11.5px; color: var(--text-2); background: var(--surface-3); padding: 1px 6px;
+       border-radius: var(--r-xs); white-space: nowrap; }
 @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 
 .pill { display: inline-flex; align-items: center; gap: 7px; padding: 2px 9px 2px 8px; border-radius: 99px;
@@ -150,6 +174,7 @@ main { padding: 36px 0 40px; }
 .pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 .pill.on { color: var(--ok); background: var(--ok-soft); }
 .pill.off { color: var(--muted); background: var(--surface-3); }
+.pill.part { color: var(--warn); background: var(--warn-soft); }
 
 .empty { padding: 40px 24px; text-align: center; color: var(--muted); border: 1px dashed var(--line-2); border-radius: var(--r); }
 .empty p { margin: 4px 0; }
@@ -162,6 +187,17 @@ main { padding: 36px 0 40px; }
 .dev-head h2 { margin: 0; font-size: 28px; line-height: 1.15; font-weight: 600; letter-spacing: -.025em; overflow-wrap: anywhere; }
 .dev-meta { color: var(--muted); font-size: 13px; margin-bottom: 28px; }
 .dev-meta .mono { color: var(--text-2); font-size: 12.5px; }
+.siblings { display: flex; flex-wrap: wrap; gap: 6px; margin: -14px 0 24px; }
+.sib { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border: 1px solid var(--line-2);
+       border-radius: var(--r-sm); color: var(--text-2); font-size: 13.5px; font-weight: 500; text-decoration: none;
+       transition: background var(--t) var(--ease), color var(--t) var(--ease), border-color var(--t) var(--ease); }
+.sib:hover { background: var(--surface-2); color: var(--text); }
+.sib.active { background: var(--surface-3); border-color: var(--text-2); color: var(--text); }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex: none; }
+.dot.on { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
+.facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px 24px; margin: 0; }
+.facts dt { color: var(--muted); font-size: 12.5px; margin-bottom: 2px; }
+.facts dd { margin: 0; font-size: 14px; overflow-wrap: anywhere; }
 .panels { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
 .card {
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 20px;
@@ -198,7 +234,7 @@ main { padding: 36px 0 40px; }
 .spin { width: 14px; height: 14px; border-radius: 50%; border: 1.75px solid var(--line-2); border-top-color: var(--text);
         display: inline-block; vertical-align: -2px; margin-right: 10px; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .spin { animation-duration: 3s; } .device { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .spin { animation-duration: 3s; } .device, .machine { animation: none; } }
 
 .foot { color: var(--muted); font-size: 12.5px; padding: 20px 0 36px; border-top: 1px solid var(--line); }
 .foot p { margin: 6px 0; max-width: 680px; }
@@ -213,6 +249,15 @@ main { padding: 36px 0 40px; }
   .device .kind { width: 32px; height: 32px; }
   .device .pill { font-size: 0; gap: 0; padding: 0; background: none; justify-self: start; }   /* the dot alone */
   .device { grid-template-columns: 32px minmax(0, max-content) 1fr 14px; }
+  .machine-head { padding: 12px 14px 6px; gap: 2px 12px; grid-template-columns: 32px minmax(0, max-content) 1fr 14px;
+                  grid-template-areas: "icon name pill ." "icon meta meta ."; }
+  .machine-head .pill:not(.part) { font-size: 0; gap: 0; padding: 0; background: none; justify-self: start; }
+  .machine-head .kind { width: 32px; height: 32px; }
+  .device.member { grid-template-columns: 32px minmax(0, 1fr) 14px; grid-template-areas: "dot role chev" "dot meta chev";
+                   padding: 9px 14px; gap: 1px 12px; }
+  .device.member::before { left: 58px; right: 14px; }
+  .member .pill { font-size: 0; }
+  .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; }
   .ports { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
   .row .btn { flex: 1 1 auto; }
   .input.port { flex: 1 1 100px; width: auto; }

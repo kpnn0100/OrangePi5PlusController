@@ -426,6 +426,44 @@ def device_list_online_and_offline(ctx):
     check(d["since"] is None and isinstance(d["last_seen"], int), "offline: since null, last_seen kept: %s" % d)
 
 
+@test("RLY-29")
+def devices_are_grouped_by_their_machine(ctx):
+    r = ctx["main"]
+    pc = {"id": "a1b2c3d4e5f60718293a4b5c6d7e8f90", "model": "MSI PRO X870-P WIFI", "cpu": "AMD Ryzen 9 9900X",
+          "cores": 24, "memory": 64833409024, "os": "Ubuntu 22.04.5 LTS", "kernel": "6.12.94", "arch": "x86_64"}
+    backup = FakeDevice(r, "grp-pc-backup", name="pc (backup terminal)", hostname="pc", slot="backup",
+                        version="backup-1.2.0", machine=pc)
+    main = FakeDevice(r, "grp-pc-a", name="pc (slot A)", hostname="pc", slot="a", machine=pc)
+    lone = FakeDevice(r, "grp-phone", name="Phone", hostname="phone", slot="phone")
+    odd = FakeDevice(r, "grp-odd", name="Odd", hostname="odd",
+                     machine={"id": "NOT VALID!", "model": "x" * 300, "cores": True, "memory": -1, "os": 7, "extra": "y"})
+    _, _, body = http(r.url("/api/devices"))
+    data = json.loads(body)
+    d = next(x for x in data["devices"] if x["id"] == "grp-pc-a")
+    check(d["machine"] == pc, "the device's machine as sent: %s" % d["machine"])
+    o = next(x for x in data["devices"] if x["id"] == "grp-odd")["machine"]
+    check(o["id"] is None and len(o["model"]) == 64 and o["cores"] is None and o["memory"] is None and o["os"] == "7"
+          and "extra" not in o, "bad machine fields are dropped or cut: %s" % o)
+    check(next(x for x in data["devices"] if x["id"] == "grp-phone")["machine"] is None, "no machine: null")
+    ms = {m["id"]: m for m in data["machines"] if any(i.startswith("grp-") for i in m["devices"])}
+    g = ms.get("m-" + pc["id"])
+    check(g and g["devices"] == ["grp-pc-a", "grp-pc-backup"], "the slot first, then the backup terminal: %s" % g)
+    check(g["name"] == "pc" and g["online"] == 2 and g["model"] == pc["model"] and g["memory"] == pc["memory"]
+          and g["os"] == pc["os"] and g["cores"] == 24, "the machine's entry: %s" % g)
+    check(ms.get("d-grp-phone", {}).get("devices") == ["grp-phone"] and ms["d-grp-phone"]["name"] == "Phone",
+          "a device without a machine is a machine of its own")
+    check(ms.get("d-grp-odd", {}).get("devices") == ["grp-odd"], "an invalid machine id groups nothing")
+    with open(os.path.join(r.data, "devices.json")) as f:
+        check(json.load(f)["grp-pc-a"]["machine"] == pc, "devices.json keeps the machine")
+    main.close()
+    check(wait_until(lambda: not r.device("grp-pc-a")["online"], 5), "the slot goes offline")
+    _, _, body = http(r.url("/api/devices"))
+    g = next(m for m in json.loads(body)["machines"] if m["id"] == "m-" + pc["id"])
+    check(g["online"] == 1 and g["devices"] == ["grp-pc-a", "grp-pc-backup"], "one of two online, order kept: %s" % g)
+    for dev in (backup, lone, odd):
+        dev.close()
+
+
 @test("RLY-21")
 def join_token_and_bad_hello_refused(ctx):
     r = ctx["main"]

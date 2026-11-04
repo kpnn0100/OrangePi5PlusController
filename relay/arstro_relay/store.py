@@ -1,6 +1,6 @@
 """The relay's data directory (RELAY_DATA, /data in the container).
 
-    devices.json   {id: {name, secret_sha256, hostname, platform, version, slot, web, first_seen, last_seen}}
+    devices.json   {id: {name, secret_sha256, hostname, platform, version, slot, web, machine, first_seen, last_seen}}
     join_token     the token devices join with (when RELAY_JOIN_TOKEN is not set)
     cookie_key     random key for the viewer login cookie (HMAC)
 

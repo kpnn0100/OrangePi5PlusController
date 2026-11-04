@@ -136,7 +136,9 @@ example: `server/examples/ntwb/hello/`). `arstro-remote apps list | call ID METH
 the *Internet access* page), then open `https://abc.example.com/arstro/internal/devices/`, pick
 the machine, type its access key (`arstro-remote relay key`) and a port - 8080 opens this web
 UI, any other port that port's page. End-to-end encrypted; the server never sees the key.
-Agents and scripts: `arstro-remote relay forward <id> 8080 --listen 127.0.0.1:18080` -
+Each computer is one item in the list - its model, processor, memory and system, with a row for
+*Main* (its slot) and one for the *Backup terminal* - so the backup is right there when the main
+server is down. Agents and scripts: `arstro-remote relay forward <id> 8080 --listen 127.0.0.1:18080` -
 [docs/relay/AGENT_API.md](docs/relay/AGENT_API.md). Design and security: [docs/relay/RELAY.md](docs/relay/RELAY.md).
 
 **Share this phone (Android): Arstro Remote Client.** A second app (`client_app/`, apart from the

@@ -1,4 +1,5 @@
-/* The device manager's device list (RLY-21, RLY-22): the devices that advertise here, and for one
+/* The device manager's device list (RLY-21, RLY-22, RLY-29): the devices that advertise here, grouped by
+ * the machine they run on (its slots and its backup terminal are one item), and for one
  * device: its access key (kept in this browser as a non-extractable key, remembered or for 12 h),
  * its listening ports (through the end-to-end channel), and "Open" for B/d/<id>/<port>/.
  * No frameworks, no inline scripts (the page's CSP is script-src 'self'). */
@@ -18,6 +19,7 @@
 
   let info = null;
   let devices = [];
+  let machines = [];
   let pollTimer = null;
   let current = null;           // the open device view: {id, els..., busy}
   let animated = false;         // the list's rows animate in once, not on every refresh
@@ -51,6 +53,7 @@
     computer: "M3.5 5.5h17v11h-17zM9 20h6M12 16.5V20",
     phone: "M7.5 3h9v18h-9zM11 18h2",
     terminal: "M3.5 4.5h17v15h-17zM7.5 9.5l3 2.5-3 2.5M12.5 15h4",
+    window: "M3.5 4.5h17v15h-17zM3.5 8.5h17",
     chevron: "M9.5 6l6 6-6 6",
     back: "M14.5 6l-6 6 6 6",
   };
@@ -94,6 +97,14 @@
     return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   }
   function plural(n, one, many) { return n + " " + (n === 1 ? one : many); }
+  const RAM_SIZES = [1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048];
+  /** The RAM fitted: the kernel's total is a little less (60.4 GiB on a 64 GB machine). */
+  function gb(bytes) {
+    const g = bytes / 1073741824;
+    if (g < 0.9) return Math.round(bytes / 1048576) + " MB";
+    const size = RAM_SIZES.find((s) => s >= g && g >= s * 0.88);
+    return (size || Math.round(g)) + " GB";
+  }
   /** Items with " · " between them; the dot stays with the item before it, so no line starts with one. */
   function dotted(items) {
     const out = [];
@@ -158,6 +169,8 @@
     try {
       const d = await api("devices");
       devices = d.devices || [];
+      machines = d.machines || devices.map((x) => ({ id: "d-" + x.id, name: x.name, online: x.online ? 1 : 0,
+                                                     devices: [x.id] }));
       if (!current) renderList();
       else updateDeviceHead();
     } catch (e) {
@@ -212,18 +225,97 @@
   function statusPill(d) {
     return h("span.pill." + (d.online ? "on" : "off"), { text: d.online ? "online" : "offline" });
   }
+  /** A machine's pill: online, offline, or how many of its devices are online. */
+  function machinePill(m) {
+    const n = m.devices.length;
+    if (m.online === n || !m.online) return statusPill({ online: m.online > 0 });
+    return h("span.pill.part", { text: m.online + " of " + n + " online" });
+  }
+
+  /** The device's place on its machine: "Main" (a slot), "Backup terminal", or its own name. */
+  function roleOf(d) {
+    const slot = (d.slot || "").toLowerCase();
+    if (slot === "backup") return { name: "Backup terminal", tag: "", icon: "terminal" };
+    if (/^[a-z]$/.test(slot)) return { name: "Main", tag: "slot " + slot.toUpperCase(), icon: "window" };
+    return { name: d.name || d.id, tag: "", icon: kindOf(d) };
+  }
+
+  function versionText(d) {
+    const version = (d.version || "").replace(/^backup-/, "");
+    return version ? "v" + version : "";
+  }
+  function onlineText(d) {
+    return d.online ? (d.since ? "online for " + ago(d.since).replace(/ ago$/, "").replace("just now", "a moment") : "online")
+                    : "last seen " + ago(d.last_seen);
+  }
+  /** What the machine is: model, processor, cores, memory, system. */
+  function machineBits(m, d) {
+    const bits = [];
+    if (m && m.model) bits.push(m.model);
+    if (m && m.cpu) bits.push(m.cpu);
+    if (m && m.cores) bits.push(plural(m.cores, "core", "cores"));
+    if (m && m.memory) bits.push(gb(m.memory));
+    if (m && m.os) bits.push(m.os + (m.arch ? " " + m.arch : ""));
+    else if (d && d.platform) bits.push(d.platform);
+    return bits;
+  }
 
   function metaBits(d) {
     const bits = [];
     if (d.hostname) bits.push(d.hostname);
-    if (d.platform) bits.push(d.platform);
-    const version = (d.version || "").replace(/^backup-/, "");
+    const m = d.machine || {};
+    if (m.model) bits.push(m.model); else if (d.platform) bits.push(d.platform);
     const slot = d.slot && kindOf(d) === "computer" ? "slot " + d.slot.toUpperCase() : "";
-    if (version) bits.push("v" + version + (slot ? " · " + slot : ""));
-    bits.push(d.online ? (d.since ? "online for " + ago(d.since).replace(/ ago$/, "").replace("just now", "a moment") : "online")
-                       : "last seen " + ago(d.last_seen));
+    const version = versionText(d);
+    if (version) bits.push(version + (slot ? " · " + slot : ""));
+    bits.push(onlineText(d));
     if (d.viewers) bits.push(plural(d.viewers, "viewer", "viewers"));
     return bits;
+  }
+  function memberBits(d) {
+    const bits = [];
+    if (versionText(d)) bits.push(versionText(d));
+    bits.push(onlineText(d));
+    if (d.viewers) bits.push(plural(d.viewers, "viewer", "viewers"));
+    return bits;
+  }
+
+  function spans(bits) { return dotted(bits.map((b) => h("span", { text: b }))); }
+  function openDevice(d) { return () => { location.hash = "#" + encodeURIComponent(d.id); }; }
+
+  /** A device on its own: one row. */
+  function deviceRow(d, i) {
+    return h("button.device" + (d.online ? "" : ".offline"), {
+      type: "button", "data-id": d.id, "aria-label": "Open " + d.name,
+      style: animated ? "animation: none" : "--i: " + i, onclick: openDevice(d),
+    },
+    h("span.kind", {}, icon(kindOf(d))),
+    h("span.name", { text: d.name || d.id }), statusPill(d),
+    h("span.meta", {}, spans(metaBits(d))),
+    icon("chevron", "chev"));
+  }
+
+  /** A machine with several devices (its slots, its backup terminal): one item, a row per device. */
+  function machineItem(m, devs, i) {
+    const desc = machineBits(m, devs[0]);
+    return h("div.machine" + (m.online ? "" : ".offline"), {
+      "data-machine": m.id, role: "group", "aria-label": m.name,
+      style: animated ? "animation: none" : "--i: " + i,
+    },
+    h("div.machine-head", {},
+      h("span.kind", {}, icon("computer")),
+      h("span.name", { text: m.name }), machinePill(m),
+      desc.length ? h("span.meta", {}, spans(desc)) : null),
+    h("div.members", {}, devs.map((d) => {
+      const role = roleOf(d);
+      return h("button.device.member" + (d.online ? "" : ".offline"), {
+        type: "button", "data-id": d.id, "aria-label": "Open " + d.name + " on " + m.name, onclick: openDevice(d),
+      },
+      h("span.role", {}, icon(role.icon), h("span.name", { text: role.name }),
+        role.tag ? h("span.tag", { text: role.tag }) : null),
+      h("span.meta", {}, spans(memberBits(d))), statusPill(d),
+      icon("chevron", "chev"));
+    })));
   }
 
   function renderList() {
@@ -237,20 +329,15 @@
       return;
     }
     const online = devices.filter((d) => d.online).length;
-    const sorted = devices.slice().sort((a, b) => (b.online ? 1 : 0) - (a.online ? 1 : 0));
+    const byId = new Map(devices.map((d) => [d.id, d]));
+    const items = machines.map((m) => ({ m, devs: m.devices.map((id) => byId.get(id)).filter(Boolean) }))
+                          .filter((x) => x.devs.length);
+    const count = (items.length !== devices.length ? plural(items.length, "machine", "machines") + " · " : "") +
+                  online + " of " + devices.length + " online";
     clear(main,
-      h("div.section-head", {}, h("h2", { text: "Devices" }),
-        h("span.count", { text: online + " of " + devices.length + " online" })),
-      h("div.devices", { id: "devices" }, sorted.map((d, i) =>
-        h("button.device" + (d.online ? "" : ".offline"), {
-          type: "button", "data-id": d.id, "aria-label": "Open " + d.name,
-          style: animated ? "animation: none" : "--i: " + i,
-          onclick: () => { location.hash = "#" + encodeURIComponent(d.id); },
-        },
-        h("span.kind", {}, icon(kindOf(d))),
-        h("span.name", { text: d.name || d.id }), statusPill(d),
-        h("span.meta", {}, dotted(metaBits(d).map((b) => h("span", { text: b })))),
-        icon("chevron", "chev")))));
+      h("div.section-head", {}, h("h2", { text: "Devices" }), h("span.count", { text: count })),
+      h("div.devices", { id: "devices" }, items.map((x, i) =>
+        x.devs.length === 1 ? deviceRow(x.devs[0], i) : machineItem(x.m, x.devs, i))));
     animated = true;
   }
 
@@ -267,6 +354,8 @@
 
     els.head = h("div.dev-head");
     els.meta = h("div.dev-meta");
+    els.siblings = h("nav.siblings", { "aria-label": "On this machine" });
+    els.machine = h("section.card.machine-card", { "aria-labelledby": "machine-h" });
     els.keyBody = h("div");
     els.portInput = h("input.input.port.mono", { type: "number", min: "1", max: "65535", inputmode: "numeric",
                                                  id: "port", placeholder: "port", "aria-label": "Port",
@@ -283,12 +372,13 @@
 
     clear(main,
       h("button.btn.ghost.sm.back", { type: "button", onclick: () => { location.hash = ""; } }, icon("back"), "All devices"),
-      els.head, els.meta,
+      els.head, els.meta, els.siblings,
       h("div.panels", {},
         h("section.card", { "aria-labelledby": "key-h" }, h("h3", { id: "key-h", text: "Access key" }), els.keyBody),
         h("section.card", { "aria-labelledby": "port-h" }, h("h3", { id: "port-h", text: "Open a port" }),
           h("div.row", {}, els.portInput, els.open, els.check),
-          els.link, els.portsNote, els.ports, els.err, els.ok)));
+          els.link, els.portsNote, els.ports, els.err, els.ok),
+        els.machine));
     updateDeviceHead();
     updateLink(c);
     if (!SECURE) {
@@ -305,6 +395,34 @@
     clear(current.els.head, h("h2", { text: d.name || d.id }), statusPill(d));
     clear(current.els.meta, dotted([h("span.mono", { text: d.id })].concat(metaBits(d).map((b) => h("span", { text: b })))));
     if (!current.els.portInput.value && d.web) { current.els.portInput.value = String(d.web); updateLink(current); }
+    renderSiblings(current, d);
+    renderMachine(current, d);
+  }
+
+  /** The other devices of this device's machine (main <-> backup terminal), one tap away. */
+  function renderSiblings(c, d) {
+    const m = machines.find((x) => x.devices.includes(d.id));
+    const devs = m ? m.devices.map(deviceById).filter(Boolean) : [];
+    c.els.siblings.hidden = devs.length < 2;
+    if (devs.length < 2) return;
+    clear(c.els.siblings, devs.map((x) => {
+      const role = roleOf(x);
+      return h("a.sib" + (x.id === d.id ? ".active" : ""), {
+        href: "#" + encodeURIComponent(x.id), "data-id": x.id, "aria-current": x.id === d.id ? "page" : null,
+      }, h("span.dot." + (x.online ? "on" : "off")), role.name, role.tag ? h("span.tag", { text: role.tag }) : null);
+    }));
+  }
+
+  /** What the machine is (RLY-29): model, processor, memory, system - as the device told the device manager. */
+  function renderMachine(c, d) {
+    const m = d.machine || {};
+    const rows = [["Host name", d.hostname], ["Model", m.model], ["Processor", m.cpu],
+                  ["Cores", m.cores ? String(m.cores) : ""], ["Memory", m.memory ? gb(m.memory) : ""],
+                  ["System", m.os], ["Kernel", m.kernel], ["Architecture", m.arch || (m.os ? "" : d.platform)]]
+      .filter((r) => r[1]);
+    c.els.machine.hidden = !rows.length;
+    clear(c.els.machine, h("h3", { id: "machine-h", text: "Machine" }),
+      h("dl.facts", {}, rows.map(([k, v]) => h("div", {}, h("dt", { text: k }), h("dd", { text: v })))));
   }
 
   function portValue(c) {
