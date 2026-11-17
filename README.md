@@ -8,7 +8,7 @@ Control an Orange Pi 5 Plus - or any Linux machine - from an **Android app**, a 
 | **Monitor** | CPU, memory, temperatures, disks, network, processes |
 | **System** | server info, logs (live tail, level, markers), modules, pairing, web access, restart / reboot |
 | **Camera** | HDMI input, USB (V4L2) camera or test pattern: live H.264 preview, recording (H.265 MOV with PCM audio, or RAW), gallery with conversion and verified-lossless FFV1 - and an external recorder for film: time-of-day timecode in every file, slate names and markers, audio meters and an audio-interface input, zebras / false colour / waveform / LUTs, click-to-zoom focus check, disk speed check and time left, a GPIO record button and tally light, a CSV of the takes for the editor |
-| **Connection** | Wi-Fi, Ethernet and every NetworkManager profile (DHCP / static), Bluetooth devices |
+| **Connection** | Wi-Fi (and the machine's own hotspot - the way in without a router), Ethernet and every NetworkManager profile (DHCP / static), Bluetooth devices |
 | **Terminal** | shared shells |
 | **Screen** | watch and control the desktop (like TeamViewer) one monitor at a time, remote keyboard and mouse, Win+L to lock |
 | **IO Control** | GPIO (header view, edges), I2C scan / transfer / dump, SPI, UART consoles, PWM, LEDs, ADC - a bring-up and debugging bench |
@@ -20,7 +20,7 @@ a recording from the CLI and the record button turns red in the app and on the w
 
 | | Android app | Web UI | CLI |
 |---|---|---|---|
-| Reaches the Pi over | Bluetooth (control) + Wi-Fi (video) | the network, `http://<pi>:8080/` (slot B: 8081) | the Pi itself, or `--url` from anywhere |
+| Reaches the Pi over | Bluetooth only (no network permission; the picture, gallery files, screen and apps are the web UI's) | the network, `http://<pi>:8080/` (slot B: 8081) - also inside the Pi's hotspot | the Pi itself, or `--url` from anywhere |
 | Sign-in | pairing (Bluetooth) | password, once per browser | none on the Pi / password remotely |
 
 ## Install the server on a machine (one script)

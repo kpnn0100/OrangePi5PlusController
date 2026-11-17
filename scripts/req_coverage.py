@@ -29,7 +29,7 @@ MANUAL = {
     "SEC-01": "Pair a new phone outside and inside the pairing window (`server/tests/bt_pairing_security_test.sh`).",
     "SEC-02": "`server/tests/bt_pairing_security_test.sh`: an untrusted device is refused.",
     "CON-01": "Walk out of Bluetooth range and back: the app reconnects and the shell resumes (also `reconnect_live_test.dart`).",
-    "CON-02": "Phone on another Wi-Fi: the Recorder tab explains why there is no picture; same Wi-Fi: live picture.",
+    "WIFI-08": "Start the hotspot from the app over Bluetooth, join it from a laptop and open the web address it shows; stop it: the machine is back on its Wi-Fi.",
 }
 
 

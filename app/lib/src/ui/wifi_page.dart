@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../app_scope.dart';
 import '../remote_client.dart';
 import 'format.dart';
+import 'hotspot_card.dart';
 import 'widgets.dart';
 
 class WifiPage extends StatefulWidget {
@@ -29,7 +30,9 @@ class _WifiPageState extends State<WifiPage> {
     final c = AppScope.of(context).client;
     if (c != _client) {
       _client?.removeListener(_onClient);
+      _client?.topic('wifi').removeListener(_onWifi);
       _client = c..addListener(_onClient);
+      c.topic('wifi').addListener(_onWifi);
       _lastState = c.state;
       if (c.isConnected) _load(rescan: false);
     }
@@ -38,7 +41,17 @@ class _WifiPageState extends State<WifiPage> {
   @override
   void dispose() {
     _client?.removeListener(_onClient);
+    _client?.topic('wifi').removeListener(_onWifi);
     super.dispose();
+  }
+
+  /// WIFI-07: the pushed status (also a hotspot started or stopped elsewhere, WIFI-08).
+  void _onWifi() {
+    final v = _client!.topic('wifi').value;
+    if (v is! Map || !mounted) return;
+    final hotspotChanged = (_status?['hotspot'] == null) != (v['hotspot'] == null);
+    setState(() => _status = Map<String, dynamic>.from(v));
+    if (hotspotChanged && !_loading) _load(rescan: false);     // the saved networks' "active" changed too
   }
 
   void _onClient() {
@@ -214,6 +227,8 @@ class _WifiPageState extends State<WifiPage> {
               child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
                 _StatusCard(status: st, onToggle: _toggleRadio, connecting: _connecting),
                 const SizedBox(height: 12),
+                HotspotCard(client: _client!),
+                const SizedBox(height: 12),
                 SectionCard(
                   title: 'Available networks',
                   icon: Icons.wifi_find,
@@ -301,6 +316,7 @@ class _StatusCard extends StatelessWidget {
     final theme = Theme.of(context);
     final connected = status['connected'] == true;
     final enabled = status['enabled'] == true;
+    final hotspot = status['hotspot'] is Map ? Map<String, dynamic>.from(status['hotspot'] as Map) : null;
     return Card(
       margin: EdgeInsets.zero,
       child: Padding(
@@ -311,7 +327,8 @@ class _StatusCard extends StatelessWidget {
               radius: 26,
               backgroundColor: connected ? theme.colorScheme.primary : theme.colorScheme.surfaceContainerHighest,
               foregroundColor: connected ? theme.colorScheme.onPrimary : theme.colorScheme.onSurfaceVariant,
-              child: Icon(connected ? signalIcon(status['signal'] as int?) : Icons.wifi_off, size: 28),
+              child: Icon(hotspot != null ? Icons.wifi_tethering_rounded : connected ? signalIcon(status['signal'] as int?) : Icons.wifi_off,
+                  size: 28),
             ),
             const SizedBox(width: 16),
             Expanded(
@@ -319,7 +336,9 @@ class _StatusCard extends StatelessWidget {
                 Text(
                   connecting != null
                       ? 'Connecting to $connecting…'
-                      : connected
+                      : hotspot != null
+                          ? 'Hotspot ${hotspot['ssid'] ?? ''}'
+                          : connected
                           ? (status['ssid'] ?? status['connection'] ?? 'Connected').toString()
                           : enabled
                               ? 'Not connected'
@@ -327,9 +346,11 @@ class _StatusCard extends StatelessWidget {
                   style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
                 ),
                 Text(
-                  connected
-                      ? 'IP ${status['ip'] ?? '–'} · signal ${status['signal'] ?? '–'}% · ${status['device']}'
-                      : '${status['device'] ?? 'no device'} · ${status['state'] ?? ''}',
+                  hotspot != null
+                      ? 'IP ${hotspot['ip'] ?? '–'} · not on a network while the hotspot is on'
+                      : connected
+                          ? 'IP ${status['ip'] ?? '–'} · signal ${status['signal'] ?? '–'}% · ${status['device']}'
+                          : '${status['device'] ?? 'no device'} · ${status['state'] ?? ''}',
                   style: theme.textTheme.bodyMedium,
                 ),
               ]),

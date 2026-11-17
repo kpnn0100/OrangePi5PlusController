@@ -6,15 +6,13 @@ import io.flutter.embedding.engine.FlutterEngine
 
 class MainActivity : FlutterActivity() {
     private var bluetooth: BluetoothBridge? = null
-    private var preview: PreviewBridge? = null
-    private var download: DownloadBridge? = null
+    private var phone: PhoneBridge? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         val messenger = flutterEngine.dartExecutor.binaryMessenger
         bluetooth = BluetoothBridge(this, messenger)
-        preview = PreviewBridge(flutterEngine.renderer, messenger)
-        download = DownloadBridge(applicationContext, messenger)
+        phone = PhoneBridge(this, messenger)
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
@@ -25,7 +23,8 @@ class MainActivity : FlutterActivity() {
 
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        if (bluetooth?.onActivityResult(requestCode, resultCode) != true) {
+        if (bluetooth?.onActivityResult(requestCode, resultCode) != true &&
+            phone?.onActivityResult(requestCode, resultCode) != true) {
             super.onActivityResult(requestCode, resultCode, data)
         }
     }
@@ -33,10 +32,8 @@ class MainActivity : FlutterActivity() {
     override fun onDestroy() {
         bluetooth?.dispose()
         bluetooth = null
-        preview?.dispose()
-        preview = null
-        download?.dispose()
-        download = null
+        phone?.dispose()
+        phone = null
         super.onDestroy()
     }
 }

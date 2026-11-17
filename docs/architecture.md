@@ -193,7 +193,7 @@ that is where polkit allows `nmcli` Wi-Fi changes and where the X display is.
 * `hello` returns a snapshot of all topics, so a controller that (re)connects is complete at once.
 * Controllers never keep their own copy of server state; they render the topic.
 
-## Media path (REC-02, CON-02)
+## Media path (REC-02)
 
 HDMI RX (`rk_hdmirx`, V4L2) → GStreamer tee in the worker:
 
@@ -204,8 +204,7 @@ HDMI RX (`rk_hdmirx`, V4L2) → GStreamer tee in the worker:
   immediately requested keyframe) → `/ws/preview`. Measured from a 4K 4:2:2 source: 30 fps at
   360p/720p, 28 fps at 1080p. (Without x264 the VPU encoder is used in VBR mode; its CBR mode
   re-encodes frames and manages only ~22 fps.) Browsers decode with WebCodecs (secure context)
-  or MSE (jmuxer, kept at the live edge); the app decodes with MediaCodec into a Flutter
-  `SurfaceProducer` texture.
+  or MSE (jmuxer, kept at the live edge). The app shows no picture: it is Bluetooth-only (CON-06).
 * **recording**: `mpph265enc` to MP4/MKV, or RAW `.arh` (uncompressed frames + audio) with
   optional HQ H.265 / FFV1 copies made during or after recording by transcode jobs.
 * **conversions on the VPU** (`recorder/mppenc.py`): the H.264 / H.265 jobs drive the encoder

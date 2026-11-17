@@ -199,8 +199,15 @@ class Daemon:
     def wifi_refresh(self):
         """Read Wi-Fi status now and push it if it changed (WIFI-07)."""
         st = wifi.status()
+        self.hotspot_web(st.get("hotspot"))
         self.hub.publish("wifi", st)
         return st
+
+    def hotspot_web(self, hs):
+        """Add this slot's web address inside the hotspot (WIFI-08) to a hotspot state."""
+        if hs and hs.get("active") and hs.get("ip") and self.config.get("web_enabled", True):
+            hs["web"] = "http://%s:%s/" % (hs["ip"], self.config.get("web_port"))
+        return hs
 
     def _wifi_poller(self):
         interval = max(3, int(self.config.get("wifi_poll_sec", 10)))

@@ -6,7 +6,6 @@ import 'package:flutter/services.dart';
 import '../app_scope.dart';
 import '../bt/bluetooth.dart';
 import '../remote_client.dart';
-import 'apps_page.dart';
 import 'dashboard_page.dart';
 import 'recorder/recorder_page.dart';
 import 'remote_page.dart';
@@ -52,7 +51,6 @@ class _HomePageState extends State<HomePage> {
       _immersive?.removeListener(_onImmersive);
       _immersive = scope.settings.immersive..addListener(_onImmersive);
     }
-    scope.client.slots; // start following the other A/B slots (TERM-06)
   }
 
   /// TERM-07: full screen hides the system bars too; leaving gives them back.
@@ -132,11 +130,6 @@ class _HomePageState extends State<HomePage> {
           ]),
           actions: [
             IconButton(
-              tooltip: 'Apps',
-              icon: const Icon(Icons.apps_outlined),
-              onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const AppsPage())),
-            ),
-            IconButton(
               tooltip: 'Settings',
               icon: const Icon(Icons.settings_outlined),
               onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SettingsPage())),
@@ -195,9 +188,7 @@ class _LinkDot extends StatelessWidget {
     return Container(
       width: 10,
       height: 10,
-      decoration: BoxDecoration(color: color, shape: BoxShape.circle, boxShadow: [
-        BoxShadow(color: color.withValues(alpha: 0.6), blurRadius: 6),
-      ]),
+      decoration: BoxDecoration(color: color, shape: BoxShape.circle),
     );
   }
 }

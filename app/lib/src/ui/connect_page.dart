@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../app_scope.dart';
@@ -474,9 +475,10 @@ class _AddressDialogState extends State<_AddressDialog> {
   static final _mac = RegExp(r'^([0-9A-F]{2}:){5}[0-9A-F]{2}$');
 
   String get _value {
-    // Developer option: tcp:host:port reaches the daemon through an SSH tunnel
-    // (see README). Outbound only; the Pi itself never listens on TCP.
-    if (_ctl.text.trim().startsWith('tcp:')) return _ctl.text.trim();
+    // Developer option, debug builds only: tcp:host:port reaches the daemon through an SSH tunnel
+    // (see README). The release app has no network permission at all (CON-06).
+    final raw = _ctl.text.trim().toLowerCase();       // the field types capitals
+    if (kDebugMode && raw.startsWith('tcp:')) return raw;
     final hex = _ctl.text.toUpperCase().replaceAll(RegExp(r'[^0-9A-F]'), '');
     if (hex.length != 12) return _ctl.text.toUpperCase().trim();
     return [for (var i = 0; i < 12; i += 2) hex.substring(i, i + 2)].join(':');
@@ -490,7 +492,7 @@ class _AddressDialogState extends State<_AddressDialog> {
 
   @override
   Widget build(BuildContext context) {
-    final ok = _mac.hasMatch(_value) || (RegExp(r'^tcp:[\w.-]+:\d+$').hasMatch(_value));
+    final ok = _mac.hasMatch(_value) || (kDebugMode && RegExp(r'^tcp:[\w.-]+:\d+$').hasMatch(_value));
     return AlertDialog(
       title: const Text('Connect by address'),
       content: SizedBox(

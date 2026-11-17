@@ -5,9 +5,8 @@ import 'package:flutter/services.dart';
 
 import '../app_scope.dart';
 import '../remote_client.dart';
-import 'screen_view.dart';
 
-/// Mouse + keyboard for the Pi desktop.
+/// Mouse + keyboard for the Pi desktop, over Bluetooth (no picture: the screen is the web UI's, CON-06).
 ///
 /// The pad only moves the pointer (and scrolls with two fingers); clicks are
 /// separate press-and-hold buttons, so you can drag by holding Left with one
@@ -21,8 +20,6 @@ class RemotePage extends StatefulWidget {
 }
 
 class _RemotePageState extends State<RemotePage> {
-  bool _screen = false;           // Touchpad | Screen (SCR-04)
-
   @override
   Widget build(BuildContext context) {
     final client = AppScope.of(context).client;
@@ -35,13 +32,11 @@ class _RemotePageState extends State<RemotePage> {
         return LayoutBuilder(builder: (context, box) {
           // side by side on large screens and on phones held sideways
           final wide = box.maxWidth >= 900 || box.maxWidth > box.maxHeight * 1.6;
-          final mouse = _screen
-              ? ScreenView(client: client, active: widget.active)
-              : Column(children: [
-                  const Expanded(child: _Touchpad()),
-                  const SizedBox(height: 12),
-                  const SizedBox(height: 96, child: _MouseButtons()),
-                ]);
+          const mouse = Column(children: [
+            Expanded(child: _Touchpad()),
+            SizedBox(height: 12),
+            SizedBox(height: 96, child: _MouseButtons()),
+          ]);
           return Column(children: [
             if (warning != null)
               MaterialBanner(
@@ -49,34 +44,19 @@ class _RemotePageState extends State<RemotePage> {
                 leading: const Icon(Icons.warning_amber),
                 actions: const [SizedBox.shrink()],
               ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
-              child: Center(
-                child: SegmentedButton<bool>(
-                  showSelectedIcon: false,
-                  style: const ButtonStyle(visualDensity: VisualDensity.compact),
-                  segments: const [
-                    ButtonSegment(value: false, icon: Icon(Icons.touch_app_outlined), label: Text('Touchpad')),
-                    ButtonSegment(value: true, icon: Icon(Icons.desktop_windows_outlined), label: Text('Screen')),
-                  ],
-                  selected: {_screen},
-                  onSelectionChanged: (v) => setState(() => _screen = v.first),
-                ),
-              ),
-            ),
             Expanded(
               child: Padding(
                 padding: const EdgeInsets.all(12),
                 child: wide
                     ? Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-                        Expanded(child: mouse),
+                        const Expanded(child: mouse),
                         const SizedBox(width: 12),
                         SizedBox(
                             width: min(520, max(340, box.maxWidth * 0.38)),
                             child: _KeyboardPanel(compact: box.maxWidth < 900)),
                       ])
                     : Column(children: [
-                        Expanded(child: mouse),
+                        const Expanded(child: mouse),
                         const SizedBox(height: 12),
                         ConstrainedBox(
                           constraints: BoxConstraints(maxHeight: box.maxHeight * 0.42),

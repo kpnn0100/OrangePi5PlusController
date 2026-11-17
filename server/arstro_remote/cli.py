@@ -10,7 +10,7 @@ the app and the web page is here too (ARC-04), and changes made here show up the
     arstro-remote gallery list|show|convert|delete|delete-take|download|targets
                    gallery download FILE|TAKE... [--day D] [--month M] [--kind K] [--out DIR | --zip [FILE]]
     arstro-remote jobs list|cancel ID|clear
-    arstro-remote wifi status|scan|connect SSID|disconnect|forget NAME|radio on|off
+    arstro-remote wifi status|scan|connect SSID|disconnect|forget NAME|radio on|off|hotspot [on|off]
     arstro-remote term list|open|attach ID|close ID|run CMD
     arstro-remote input move DX DY|click [BUTTON]|key KEY|type TEXT|scroll DY|pointer
     arstro-remote camera sources|select SOURCE
@@ -282,10 +282,17 @@ def cmd_stats(ctl, a):
 def cmd_wifi(ctl, a):
     sub = a.wifi_cmd or "status"
     if sub == "status":
-        out(a, ctl.call("wifi.status"), lambda s: print(
-            "%s: %s  %s  signal %s  ip %s  radio %s" % (s["device"], "connected" if s["connected"] else "not connected",
-                                                       s.get("ssid") or "-", s.get("signal"), s.get("ip"),
-                                                       "on" if s["enabled"] else "off")))
+        def human(s):
+            hs = s.get("hotspot")
+            if hs:
+                print("%s: hotspot %s on (%s)  ip %s  %s device%s joined%s" % (
+                    s["device"], hs.get("ssid"), hs.get("band"), hs.get("ip"), hs.get("clients") or 0,
+                    "" if hs.get("clients") == 1 else "s", "  web %s" % hs["web"] if hs.get("web") else ""))
+                return
+            print("%s: %s  %s  signal %s  ip %s  radio %s" % (s["device"], "connected" if s["connected"] else "not connected",
+                                                             s.get("ssid") or "-", s.get("signal"), s.get("ip"),
+                                                             "on" if s["enabled"] else "off"))
+        out(a, ctl.call("wifi.status"), human)
     elif sub == "scan":
         r = ctl.call("wifi.scan", rescan=True)
         out(a, r, lambda r: [print("%s %-32s %3d%%  %-12s %s" % ("*" if n["in_use"] else " ", n["ssid"], n["signal"],
@@ -308,6 +315,43 @@ def cmd_wifi(ctl, a):
     elif sub == "radio":
         r = ctl.call("wifi.radio", enabled=a.state == "on")
         print("Wi-Fi radio %s" % ("on" if r["enabled"] else "off"))
+    elif sub == "hotspot":
+        cmd_hotspot(ctl, a)
+
+
+def print_hotspot(h):
+    if not h.get("supported", True):
+        print("Hotspot  : not possible - %s has no access point mode" % (h.get("device") or "no Wi-Fi device"))
+        return
+    print("Hotspot  : %s" % ("on" if h.get("active") else "off"))
+    print("Name     : %s  (%s)" % (h.get("ssid"), h.get("band")))
+    print("Password : %s" % (h.get("password") or "(made when it first starts)"))
+    if h.get("active"):
+        print("Address  : %s%s" % (h.get("ip") or "-", "  -  web: %s" % h["web"] if h.get("web") else ""))
+        if h.get("clients") is not None:
+            print("Joined   : %d device%s" % (h["clients"], "" if h["clients"] == 1 else "s"))
+
+
+def cmd_hotspot(ctl, a):
+    """WIFI-08: the machine's own Wi-Fi network."""
+    action = a.hotspot_state
+    if action is None:
+        out(a, ctl.call("wifi.hotspot"), print_hotspot)
+        return
+    if action == "off":
+        r = ctl.call("wifi.hotspot.stop", timeout=90)
+        out(a, r, lambda r: print(r["message"]))
+        return
+    pw = a.password
+    if a.ask:
+        import getpass
+        pw = getpass.getpass("Hotspot password (8-63 characters): ")
+    h = ctl.call("wifi.hotspot")
+    if h.get("connected_to") and not h.get("active") and not a.yes:
+        sys.exit("the machine leaves %s while the hotspot is on (one radio): whatever reaches it over that network "
+                 "loses it - add --yes" % h["connected_to"])
+    r = ctl.call("wifi.hotspot.start", ssid=a.ssid, password=pw, band=a.band, timeout=90)
+    out(a, r, lambda r: (print(r["message"]), print_hotspot(r["hotspot"])))
 
 
 # ------------------------------------------------------------------ terminals
@@ -1727,6 +1771,13 @@ def build_parser():
     f.add_argument("name", help="SSID, profile name or UUID")
     r = ws_.add_parser("radio")
     r.add_argument("state", choices=["on", "off"])
+    h = ws_.add_parser("hotspot", help="the machine's own Wi-Fi network (WIFI-08): show, on, off")
+    h.add_argument("hotspot_state", nargs="?", choices=["on", "off"])
+    h.add_argument("--ssid", help="its name (default: kept, first Arstro-<host>)")
+    h.add_argument("--password", help="8-63 characters (default: kept, first a random one)")
+    h.add_argument("--ask", action="store_true", help="ask for the password (not shown)")
+    h.add_argument("--band", choices=["2.4", "5"], help="2.4 GHz (default) or 5 GHz")
+    h.add_argument("--yes", action="store_true", help="leave the current Wi-Fi network without asking")
 
     t = sub.add_parser("term", help="shared shells")
     ts = t.add_subparsers(dest="term_cmd")

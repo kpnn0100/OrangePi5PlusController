@@ -392,6 +392,27 @@ class Session:
         finally:
             self.ctx.wifi_refresh()
 
+    def op_wifi_hotspot(self, _msg):
+        """WIFI-08: the hotspot's settings (with its password - only to the controller that asks)."""
+        return self.ctx.hotspot_web(wifi.hotspot(with_password=True))
+
+    def op_wifi_hotspot_start(self, msg):
+        log.info("hotspot start (name %r, password: %s, band %s) from %s", msg.get("ssid"),
+                 "new" if msg.get("password") else "kept", msg.get("band") or "kept", self.controller)
+        try:
+            r = wifi.hotspot_start(msg.get("ssid"), msg.get("password") or None, msg.get("band"))
+            self.ctx.hotspot_web(r["hotspot"])
+            return r
+        finally:
+            self.ctx.wifi_refresh()
+
+    def op_wifi_hotspot_stop(self, _msg):
+        log.info("hotspot stop from %s", self.controller)
+        try:
+            return wifi.hotspot_stop()
+        finally:
+            self.ctx.wifi_refresh()
+
     def op_wifi_radio(self, msg):
         try:
             return wifi.set_radio(bool(msg.get("enabled", True)))

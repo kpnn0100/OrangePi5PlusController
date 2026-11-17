@@ -295,7 +295,7 @@ def web_info_and_cli(c):
     check(code == 1 and "CLI_25" in out, (code, out, err))
 
 
-@test("TERM-06", "SEC-03")
+@test("ADM-06", "CON-04", "SEC-03")
 def every_slot_is_listed_and_reachable(c):
     info = c.local.call("web.info")
     mine = [x for x in info["slots"] if x["self"]]
@@ -304,7 +304,7 @@ def every_slot_is_listed_and_reachable(c):
     web = c.local.call("state.get", topics=["web"])["web"]
     check(all("token" not in x for x in web.get("slots", [])), web)
     others = [x for x in info["slots"] if not x["self"] and x["running"]]
-    for o in others:      # the app opens the other slot with exactly this: its port and password
+    for o in others:      # a remote CLI opens the other slot with exactly this: its port and password
         base = "http://127.0.0.1:%d/" % o["port"]
         code, out, err = cli("--url", base, "--token", o.get("token") or "", "term", "run",
                              "echo SLOT_%s_$((40+2))" % o["slot"].upper())

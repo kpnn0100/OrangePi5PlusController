@@ -1,17 +1,15 @@
 import 'package:flutter/foundation.dart' show setEquals;
 import 'package:flutter/material.dart';
-import 'package:video_player/video_player.dart';
 
-import '../../media.dart';
+import '../../phone.dart';
 import '../../remote_client.dart';
 import 'common.dart';
 
-/// Gallery (GAL-01..09): takes grouped by month and day with thumbnails, jobs, a sheet per take
-/// to play, download, convert or delete its files, and many takes at once - a day, a month or any
-/// set - saved to the phone. The list comes over Bluetooth; thumbnails, playback and downloads
-/// come over Wi-Fi. For film work (GAL-13) each take shows its slate, start timecode, good-take
-/// star, markers and A/V sync; a take's notes, good flag and slate are edited in its sheet, and
-/// the selected takes (a day, a month) are exported as the editor's CSV sheet.
+/// Gallery (GAL-01, GAL-04..10, GAL-13): takes grouped by month and day, jobs, a sheet per take to
+/// convert, check or delete its files - all over Bluetooth. For film work each take shows its slate,
+/// start timecode, good-take star, markers and A/V sync; a take's notes, good flag and slate are
+/// edited in its sheet, and the selected takes (a day, a month) are exported as the editor's CSV
+/// sheet. Pictures, playback and downloads are the web UI's (CON-06).
 class GalleryView extends StatefulWidget {
   const GalleryView({super.key, required this.client, required this.active});
   final RemoteClient client;
@@ -113,40 +111,14 @@ class _GalleryViewState extends State<GalleryView> {
         _selected.contains(id) ? _selected.remove(id) : _selected.add(id);
       });
 
-  /// GAL-12: the server picks the files (and leaves out what is still being written); each one
-  /// goes to the phone's download queue, into Downloads/Arstro like a single download.
-  Future<void> _downloadSelected() async {
-    final messenger = ScaffoldMessenger.of(context);
-    try {
-      final r = asMap(await client.request(
-          'gallery.bundle', {'takes': _selected.toList(), 'kind': _filter}, const Duration(seconds: 20)));
-      final files = List<String>.from(r['files'] as List? ?? const []);
-      for (final f in files) {
-        await client.media.download('/api/media/$f', f);
-      }
-      final skipped = asList(r['skipped']).length;
-      messenger.showSnackBar(SnackBar(
-          content: Text('Saving ${files.length} file${files.length == 1 ? '' : 's'} (${size(r['size'] as num?)}) '
-              'to Downloads/Arstro${skipped > 0 ? ' · $skipped still being written, left out' : ''}')));
-      if (mounted) {
-        setState(() {
-          _selecting = false;
-          _selected.clear();
-        });
-      }
-    } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text(e.toString())));
-    }
-  }
-
   /// GAL-13: the editor's sheet of the selection - a whole day or month by its name, else the
-  /// takes - saved into Downloads/Arstro like the downloads (no Wi-Fi needed).
+  /// takes - saved into Downloads/Arstro.
   Future<void> _exportCsv() async {
     final messenger = ScaffoldMessenger.of(context);
     try {
       final r = asMap(await client.request('gallery.csv', _csvScope(), const Duration(seconds: 30)));
       final name = r['name'] as String? ?? 'arstro-takes.csv';
-      final where = await MediaLink.saveText(name, r['csv'] as String? ?? '');
+      final where = await Phone.saveText(name, r['csv'] as String? ?? '');
       messenger.showSnackBar(SnackBar(
           content: Text('Saved $name · ${r['rows']} row${r['rows'] == 1 ? '' : 's'} · ${where ?? 'Downloads/Arstro/$name'}')));
       if (mounted) {
@@ -192,9 +164,8 @@ class _GalleryViewState extends State<GalleryView> {
 
   @override
   Widget build(BuildContext context) {
-    final media = client.media;
     return ListenableBuilder(
-      listenable: Listenable.merge([media, client.topic('jobs'), _gallery]),
+      listenable: Listenable.merge([client.topic('jobs'), _gallery]),
       builder: (context, _) {
         final g = asMap(_gallery.value);
         final jobs = asList(client.topic('jobs').value);
@@ -206,10 +177,7 @@ class _GalleryViewState extends State<GalleryView> {
                 : takes.where((t) => asList(t['items']).any((i) => i['kind'] == _filter)).toList();
         final theme = Theme.of(context);
         final list = RefreshIndicator(
-          onRefresh: () async {
-            await _load();
-            await media.refresh();
-          },
+          onRefresh: _load,
           child: CustomScrollView(slivers: [
             SliverPadding(
               padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
@@ -245,7 +213,6 @@ class _GalleryViewState extends State<GalleryView> {
                       child: Text(_selecting ? 'Done' : 'Select'),
                     ),
                   ]),
-                  if (!media.ready) _MediaBanner(media: media),
                   if (jobs.isNotEmpty) JobsCard(client: client, jobs: jobs),
                   const SizedBox(height: 12),
                 ]),
@@ -288,7 +255,7 @@ class _GalleryViewState extends State<GalleryView> {
                     child: _GroupHead(
                         label: dayLabel(day), takes: ts, selected: _selected, selecting: _selecting, onToggle: _toggleGroup),
                   ),
-                  _grid(ts, media),
+                  _list(ts),
                 ],
               ],
             SliverToBoxAdapter(child: SizedBox(height: _selecting ? 96 : 24)),
@@ -312,9 +279,7 @@ class _GalleryViewState extends State<GalleryView> {
                   child: _SelectionBar(
                     takes: (takes ?? const []).where((t) => _selected.contains(t['id'])).toList(),
                     kind: _filter,
-                    canDownload: media.ready,
                     onClear: () => setState(_selected.clear),
-                    onDownload: _downloadSelected,
                     onCsv: _exportCsv,
                   ),
                 ),
@@ -326,37 +291,27 @@ class _GalleryViewState extends State<GalleryView> {
     );
   }
 
-  // rows as tall as a 16:9 thumbnail plus the text under it, whatever the width
-  Widget _grid(List<Map<String, dynamic>> ts, MediaLink media) => SliverPadding(
+  /// A day's takes: rows in one bordered list (docs/design.md), no pictures over Bluetooth.
+  Widget _list(List<Map<String, dynamic>> ts) => SliverPadding(
         padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-        sliver: SliverLayoutBuilder(builder: (context, c) {
-          const gap = 12.0;
-          final cols = (c.crossAxisExtent / (280 + gap)).ceil().clamp(1, 12);
-          final w = (c.crossAxisExtent - (cols - 1) * gap) / cols;
-          final tsc = MediaQuery.textScalerOf(context).scale(14) / 14;
-          return SliverGrid(
-            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: cols,
-              mainAxisSpacing: gap,
-              crossAxisSpacing: gap,
-              mainAxisExtent: w * 9 / 16 + 30 + 40 * tsc + 24,
-            ),
-            delegate: SliverChildBuilderDelegate(
-              (context, i) {
-                final id = ts[i]['id'] as String;
-                return _TakeCard(
+        sliver: SliverToBoxAdapter(
+          child: Card(
+            margin: EdgeInsets.zero,
+            clipBehavior: Clip.antiAlias,
+            child: Column(children: [
+              for (var i = 0; i < ts.length; i++) ...[
+                if (i > 0) const Divider(height: 1),
+                _TakeRow(
                   take: ts[i],
-                  media: media,
                   selecting: _selecting,
-                  selected: _selected.contains(id),
-                  onTap: () => _selecting ? _toggleTake(id) : showTake(context, client, id),
-                  onLongPress: () => _toggleTake(id),
-                );
-              },
-              childCount: ts.length,
-            ),
-          );
-        }),
+                  selected: _selected.contains(ts[i]['id']),
+                  onTap: () => _selecting ? _toggleTake(ts[i]['id'] as String) : showTake(context, client, ts[i]['id'] as String),
+                  onLongPress: () => _toggleTake(ts[i]['id'] as String),
+                ),
+              ],
+            ]),
+          ),
+        ),
       );
 }
 
@@ -407,16 +362,13 @@ class _GroupHead extends StatelessWidget {
   }
 }
 
-/// The selection's sum and the one action (GAL-12): how many takes, how many files of the kind
-/// the filter shows, how big - and Download.
+/// The selection's sum and its action (GAL-13): how many takes, how many files of the kind the
+/// filter shows, how big - and the editor's CSV.
 class _SelectionBar extends StatelessWidget {
-  const _SelectionBar({required this.takes, required this.kind, required this.canDownload, required this.onClear,
-                       required this.onDownload, required this.onCsv});
+  const _SelectionBar({required this.takes, required this.kind, required this.onClear, required this.onCsv});
   final List<Map<String, dynamic>> takes;
   final String kind;
-  final bool canDownload;
   final VoidCallback onClear;
-  final VoidCallback onDownload;
   final VoidCallback onCsv;
 
   @override
@@ -443,56 +395,16 @@ class _SelectionBar extends StatelessWidget {
           TextButton(onPressed: takes.isEmpty ? null : onClear, child: const Text('Clear')),
           Tooltip(
             message: 'Export the takes as a CSV for the editor (DaVinci Resolve metadata)',
-            child: TextButton(onPressed: takes.isEmpty ? null : onCsv, child: const Text('CSV')),
-          ),
-          FilledButton.icon(
-            onPressed: ready.isEmpty || !canDownload ? null : onDownload,
-            icon: const Icon(Icons.download, size: 18),
-            label: const Text('Download'),
+            child: FilledButton.icon(
+              onPressed: takes.isEmpty ? null : onCsv,
+              icon: const Icon(Icons.table_chart_outlined, size: 18),
+              label: const Text('CSV'),
+            ),
           ),
         ]),
       ),
     );
   }
-}
-
-class _MediaBanner extends StatelessWidget {
-  const _MediaBanner({required this.media});
-  final MediaLink media;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Container(
-      margin: const EdgeInsets.only(top: 12),
-      padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
-      decoration: BoxDecoration(
-        color: kWarn.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: kWarn.withValues(alpha: 0.35)),
-      ),
-      child: Row(children: [
-        const Icon(Icons.wifi_off_rounded, color: kWarn, size: 20),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Text(
-            media.checking ? 'Looking for the Pi on Wi-Fi…' : (media.error ?? 'Pictures and playback need Wi-Fi.'),
-            style: TextStyle(fontSize: 12.5, color: scheme.onSurface),
-          ),
-        ),
-        TextButton(onPressed: media.checking ? null : media.refresh, child: const Text('Retry')),
-      ]),
-    );
-  }
-}
-
-String _thumbPath(Map<String, dynamic> take) {
-  var v = 0;
-  for (final i in asList(take['items'])) {
-    final m = (i['mtime'] as num?)?.toInt() ?? 0;
-    if (m > v) v = m;
-  }
-  return 'api/thumb/${Uri.encodeComponent(take['id'] as String)}?v=$v';
 }
 
 /// "27 Sep 2026  22:52:52" -> ("27 Sep 2026", "22:52:52")
@@ -513,41 +425,10 @@ String _thumbPath(Map<String, dynamic> take) {
   return (d, d.abs() > frameMs);
 }
 
-class Thumb extends StatelessWidget {
-  const Thumb({super.key, required this.take, required this.media, this.fit = BoxFit.cover});
+/// One take as a row: slate or time, date, files and size, formats, and its film marks.
+class _TakeRow extends StatelessWidget {
+  const _TakeRow({required this.take, required this.onTap, this.onLongPress, this.selecting = false, this.selected = false});
   final Map<String, dynamic> take;
-  final MediaLink media;
-  final BoxFit fit;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final readable = asList(take['items']).any((i) => !('${i['problem'] ?? ''}').startsWith("can't"));
-    final ph = ColoredBox(
-      color: scheme.surfaceContainerHighest,
-      child: Center(child: Icon(readable ? Icons.movie_outlined : Icons.error_outline, color: scheme.onSurfaceVariant)),
-    );
-    if (!media.ready || !readable) return ph;
-    return Image.network(
-      media.url(_thumbPath(take)).toString(),
-      headers: media.headers,
-      fit: fit,
-      gaplessPlayback: true,
-      frameBuilder: (context, child, frame, sync) => AnimatedOpacity(
-        opacity: frame == null ? 0 : 1,
-        duration: const Duration(milliseconds: 350),
-        child: frame == null && !sync ? ph : child,
-      ),
-      errorBuilder: (_, _, _) => ph,
-    );
-  }
-}
-
-class _TakeCard extends StatelessWidget {
-  const _TakeCard({required this.take, required this.media, required this.onTap, this.onLongPress,
-                   this.selecting = false, this.selected = false});
-  final Map<String, dynamic> take;
-  final MediaLink media;
   final VoidCallback onTap;
   final VoidCallback? onLongPress;
   final bool selecting;
@@ -556,94 +437,78 @@ class _TakeCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final muted = theme.colorScheme.onSurfaceVariant;
     final items = asList(take['items']);
     final (date, time) = _titleParts(take['title'] as String? ?? '');
     final meta = asMap(take['meta']);
     final slate = take['slate'] as String?;
     final markers = asList(meta['markers']).length;
     final drift = avDrift(meta, items);
-    return Card(
-      margin: EdgeInsets.zero,
-      clipBehavior: Clip.antiAlias,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: selected ? theme.colorScheme.primary : Colors.transparent, width: 2),
-      ),
-      child: InkWell(
-        onTap: onTap,
-        onLongPress: onLongPress,
-        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          AspectRatio(
-            aspectRatio: 16 / 9,
-            child: Stack(fit: StackFit.expand, children: [
-              Thumb(take: take, media: media),
-              if (take['recording'] == true)
-                Positioned(left: selecting ? 40 : 8, top: 8, child: const Tag('REC', color: kRec, dot: true)),
-              Positioned(
-                left: 6,
-                top: 6,
-                child: AnimatedOpacity(
-                  opacity: selecting ? 1 : 0,
-                  duration: const Duration(milliseconds: 150),
-                  child: Icon(selected ? Icons.check_circle : Icons.radio_button_unchecked,
-                      color: selected ? theme.colorScheme.primary : Colors.white, size: 26,
-                      shadows: const [Shadow(blurRadius: 4)]),
-                ),
-              ),
-              if (meta['good'] == true)
-                const Positioned(
-                  right: 6,
-                  top: 6,
-                  child: Icon(Icons.star_rounded, color: kWarn, size: 24, shadows: [Shadow(blurRadius: 4)],
-                      semanticLabel: 'Good take'),
-                ),
-              if (meta['tc'] != null && take['recording'] != true)
-                Positioned(
-                  left: 8,
-                  bottom: 8,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                    decoration: BoxDecoration(color: Colors.black.withValues(alpha: 0.7), borderRadius: BorderRadius.circular(6)),
-                    child: Text('${meta['tc']}',
-                        style: const TextStyle(
-                            fontSize: 11.5, fontWeight: FontWeight.w600, color: Colors.white,
-                            fontFeatures: [FontFeature.tabularFigures()])),
-                  ),
-                ),
-              if (take['duration'] != null)
-                Positioned(
-                  right: 8,
-                  bottom: 8,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                    decoration: BoxDecoration(color: Colors.black.withValues(alpha: 0.7), borderRadius: BorderRadius.circular(6)),
-                    child: Text(clock(take['duration'] as num?),
-                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.white)),
-                  ),
-                ),
-            ]),
+    final readable = items.any((i) => !('${i['problem'] ?? ''}').startsWith("can't"));
+    const tabular = [FontFeature.tabularFigures()];
+    return InkWell(
+      key: ValueKey('take-${take['id']}'),
+      onTap: onTap,
+      onLongPress: onLongPress,
+      child: Container(
+        color: selected ? theme.colorScheme.surfaceContainerHighest : null,
+        padding: const EdgeInsets.fromLTRB(12, 10, 14, 10),
+        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          SizedBox(
+            width: 28,
+            child: Padding(
+              padding: const EdgeInsets.only(top: 1),
+              child: selecting
+                  ? Icon(selected ? Icons.check_circle : Icons.radio_button_unchecked,
+                      size: 20, color: selected ? theme.colorScheme.primary : muted)
+                  : take['recording'] == true
+                      ? const Icon(Icons.fiber_manual_record, size: 14, color: kRec)
+                      : Icon(readable ? Icons.movie_outlined : Icons.error_outline, size: 18,
+                          color: readable ? muted : kWarn),
+            ),
           ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
-              Text(slate ?? time ?? date,
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                Expanded(
+                  child: Text(slate ?? time ?? date,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600)),
+                ),
+                if (meta['good'] == true)
+                  const Padding(
+                    padding: EdgeInsets.only(left: 6),
+                    child: Icon(Icons.star_rounded, color: kWarn, size: 18, semanticLabel: 'Good take'),
+                  ),
+                if (take['recording'] == true)
+                  const Padding(padding: EdgeInsets.only(left: 6), child: Tag('REC', color: kRec, dot: true))
+                else if (take['duration'] != null)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 8),
+                    child: Text(clock(take['duration'] as num?),
+                        style: theme.textTheme.bodySmall?.copyWith(fontFeatures: tabular)),
+                  ),
+              ]),
+              const SizedBox(height: 2),
+              Text(
+                  [
+                    if (slate != null && time != null) time,
+                    if (time != null) date,
+                    if (meta['tc'] != null) 'TC ${meta['tc']}',
+                    '${items.length} file${items.length == 1 ? '' : 's'}',
+                    size(take['size'] as num?),
+                  ].join(' · '),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600)),
-              Text('${slate != null && time != null ? '$time · ' : ''}${time != null ? '$date · ' : ''}'
-                  '${items.length} file${items.length == 1 ? '' : 's'} · ${size(take['size'] as num?)}',
-                  maxLines: 1, overflow: TextOverflow.ellipsis, style: theme.textTheme.bodySmall),
+                  style: theme.textTheme.bodySmall?.copyWith(color: muted, fontFeatures: tabular)),
               const SizedBox(height: 6),
-              // one line of format tags; extra ones are clipped, never overflow
-              SizedBox(
-                height: 22,
-                child: Wrap(spacing: 4, runSpacing: 4, clipBehavior: Clip.hardEdge, children: [
-                  if (drift != null && drift.$2) Tag('A/V ${drift.$1.round()} ms', color: kWarn),
-                  for (final k in List<String>.from(take['kinds'] as List? ?? const []))
-                    Tag(kindLabel(k), color: kindColor(k)),
-                  if (markers > 0) Tag('$markers marker${markers == 1 ? '' : 's'}'),
-                ]),
-              ),
+              Wrap(spacing: 4, runSpacing: 4, children: [
+                if (drift != null && drift.$2) Tag('A/V ${drift.$1.round()} ms', color: kWarn),
+                for (final k in List<String>.from(take['kinds'] as List? ?? const []))
+                  Tag(kindLabel(k), color: kindColor(k)),
+                if (markers > 0) Tag('$markers marker${markers == 1 ? '' : 's'}'),
+              ]),
             ]),
           ),
         ]),
@@ -766,12 +631,6 @@ class _JobRow extends StatelessWidget {
 }
 
 // ------------------------------------------------------------------ take sheet
-bool playable(Map<String, dynamic> i) {
-  if (i['recording'] == true || i['problem'] != null) return false;
-  return const {'H.264', 'H.265', 'VIDEO'}.contains(i['kind']) &&
-      const {'h264', 'hevc', 'vp9', 'vp8', 'av1', 'mpeg4'}.contains(i['codec']);
-}
-
 Future<void> showTake(BuildContext context, RemoteClient client, String takeId) {
   return showModalBottomSheet<void>(
     context: context,
@@ -800,9 +659,6 @@ class _TakeSheet extends StatefulWidget {
 
 class _TakeSheetState extends State<_TakeSheet> {
   Map<String, dynamic>? _take;
-  String? _playing;
-  VideoPlayerController? _player;
-  String? _playerError;
 
   RemoteClient get client => widget.client;
 
@@ -816,7 +672,6 @@ class _TakeSheetState extends State<_TakeSheet> {
   @override
   void dispose() {
     client.topic('gallery').removeListener(_refresh);
-    _player?.dispose();
     super.dispose();
   }
 
@@ -825,32 +680,8 @@ class _TakeSheetState extends State<_TakeSheet> {
       final t = asMap(await client.request('gallery.get', {'take': widget.takeId}));
       if (!mounted) return;
       setState(() => _take = t);
-      final items = asList(t['items']);
-      if (_playing != null && !items.any((i) => i['id'] == _playing)) _play(null);
     } catch (e) {
       if (mounted && _take != null) Navigator.of(context).maybePop();
-    }
-  }
-
-  Future<void> _play(Map<String, dynamic>? item) async {
-    final old = _player;
-    setState(() {
-      _player = null;
-      _playing = item?['id'] as String?;
-      _playerError = null;
-    });
-    await old?.dispose();
-    final media = client.media;
-    if (item == null || !media.ready) return;
-    final c = VideoPlayerController.networkUrl(media.url(item['url'] as String), httpHeaders: media.headers);
-    setState(() => _player = c);
-    try {
-      await c.initialize();
-      if (!mounted || _player != c) return;
-      await c.play();
-      setState(() {});
-    } catch (e) {
-      if (mounted && _player == c) setState(() => _playerError = "This phone can't play ${item['kind']} here ($e)");
     }
   }
 
@@ -860,7 +691,6 @@ class _TakeSheetState extends State<_TakeSheet> {
     final theme = Theme.of(context);
     if (t == null) return const Center(child: CircularProgressIndicator());
     final items = asList(t['items']);
-    final media = client.media;
     final locked = items.any((i) => i['recording'] == true || i['busy'] == true);
     return ListView(
       controller: widget.scroll,
@@ -869,20 +699,6 @@ class _TakeSheetState extends State<_TakeSheet> {
         Text(t['title'] as String? ?? '', style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w600)),
         if (t['slate'] != null)
           Text(t['slate'] as String, style: theme.textTheme.titleSmall?.copyWith(color: theme.colorScheme.primary)),
-        const SizedBox(height: 12),
-        // at most ~half the screen height, so the file list stays visible in landscape
-        Center(
-          child: ConstrainedBox(
-            constraints: BoxConstraints(maxHeight: MediaQuery.sizeOf(context).height * 0.5),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(16),
-              child: AspectRatio(
-                aspectRatio: 16 / 9,
-                child: ColoredBox(color: Colors.black, child: _playerArea(t, items, media)),
-              ),
-            ),
-          ),
-        ),
         const SizedBox(height: 14),
         _TakeInfo(
           key: ValueKey(t['id']),
@@ -896,7 +712,7 @@ class _TakeSheetState extends State<_TakeSheet> {
           const SizedBox(width: 8),
           Text('${items.length} · ${size(t['size'] as num?)}', style: theme.textTheme.bodySmall),
         ]),
-        for (final i in items) _variant(i, media),
+        for (final i in items) _variant(i),
         const SizedBox(height: 16),
         OutlinedButton.icon(
           style: OutlinedButton.styleFrom(foregroundColor: kRec),
@@ -917,84 +733,6 @@ class _TakeSheetState extends State<_TakeSheet> {
         ),
       ],
     );
-  }
-
-  Widget _playerArea(Map<String, dynamic> t, List<Map<String, dynamic>> items, MediaLink media) {
-    final p = _player;
-    if (p != null && _playerError == null) {
-      return ValueListenableBuilder<VideoPlayerValue>(
-        valueListenable: p,
-        builder: (context, v, _) => Stack(fit: StackFit.expand, children: [
-          if (v.isInitialized)
-            Center(child: AspectRatio(aspectRatio: v.aspectRatio, child: VideoPlayer(p)))
-          else
-            const Center(child: CircularProgressIndicator()),
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 0,
-            child: Container(
-              color: Colors.black45,
-              child: Row(children: [
-                IconButton(
-                  color: Colors.white,
-                  icon: Icon(v.isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded),
-                  onPressed: () => v.isPlaying ? p.pause() : p.play(),
-                ),
-                Expanded(child: VideoProgressIndicator(p, allowScrubbing: true, padding: const EdgeInsets.symmetric(vertical: 12))),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 10),
-                  child: Text('${clock(v.position.inSeconds)} / ${clock(v.duration.inSeconds)}',
-                      style: const TextStyle(color: Colors.white, fontSize: 12)),
-                ),
-              ]),
-            ),
-          ),
-        ]),
-      );
-    }
-    final best = items.where(playable).toList()
-      ..sort((a, b) => ['H.264', 'VIDEO', 'H.265'].indexOf(a['kind'] as String).compareTo(
-          ['H.264', 'VIDEO', 'H.265'].indexOf(b['kind'] as String)));
-    final note = _playerError ??
-        (!media.ready
-            ? (media.error ?? 'Playback needs Wi-Fi to the Pi.')
-            : t['recording'] == true
-                ? 'Still recording.'
-                : best.isEmpty
-                    ? 'No copy this phone can play. Make an H.264 copy to watch it here.'
-                    : null);
-    final src = items.where((i) => i['recording'] != true && i['kind'] != 'H.264').firstOrNull;
-    return Stack(fit: StackFit.expand, children: [
-      Thumb(take: t, media: media, fit: BoxFit.contain),
-      if (note == null)
-        Center(
-          child: IconButton.filled(
-            iconSize: 34,
-            style: IconButton.styleFrom(backgroundColor: Colors.black54, foregroundColor: Colors.white),
-            onPressed: () => _play(best.first),
-            icon: const Icon(Icons.play_arrow_rounded),
-          ),
-        )
-      else
-        Positioned(
-          left: 10,
-          right: 10,
-          bottom: 10,
-          child: Container(
-            padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
-            decoration: BoxDecoration(color: Colors.black.withValues(alpha: 0.72), borderRadius: BorderRadius.circular(12)),
-            child: Row(children: [
-              Expanded(child: Text(note, style: const TextStyle(color: Colors.white, fontSize: 12.5))),
-              if (best.isEmpty && src != null && t['recording'] != true)
-                TextButton(
-                  onPressed: () => showConvert(context, client, src, preselect: 'h264-vpu'),
-                  child: const Text('Make H.264'),
-                ),
-            ]),
-          ),
-        ),
-    ]);
   }
 
   Future<void> _verify(Map<String, dynamic> i) async {
@@ -1021,7 +759,7 @@ class _TakeSheetState extends State<_TakeSheet> {
         'Checking ${i['id']} against the RAW');
   }
 
-  Widget _variant(Map<String, dynamic> i, MediaLink media) {
+  Widget _variant(Map<String, dynamic> i) {
     final theme = Theme.of(context);
     final locked = i['recording'] == true || i['busy'] == true;
     final meta = [
@@ -1032,7 +770,6 @@ class _TakeSheetState extends State<_TakeSheet> {
       ?i['pixel_format'] as String?,
       if (i['audio'] == true) 'audio',
     ].join(' · ');
-    final isPlaying = _playing == i['id'];
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
       child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -1040,9 +777,7 @@ class _TakeSheetState extends State<_TakeSheet> {
         const SizedBox(width: 10),
         Expanded(
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(i['id'] as String,
-                style: theme.textTheme.bodyMedium?.copyWith(
-                    fontWeight: FontWeight.w500, color: isPlaying ? theme.colorScheme.primary : null)),
+            Text(i['id'] as String, style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w500)),
             Text(meta, style: theme.textTheme.bodySmall),
             if (i['recording'] == true) const Padding(padding: EdgeInsets.only(top: 4), child: Tag('Recording', color: kRec, dot: true)),
             if (i['busy'] == true && i['recording'] != true)
@@ -1058,18 +793,6 @@ class _TakeSheetState extends State<_TakeSheet> {
           icon: const Icon(Icons.more_vert_rounded),
           onSelected: (a) async {
             switch (a) {
-              case 'play':
-                _play(i);
-              case 'download':
-                try {
-                  await media.download(i['url'] as String, i['id'] as String);
-                  if (mounted) {
-                    ScaffoldMessenger.of(context)
-                        .showSnackBar(SnackBar(content: Text('Downloading ${i['id']} to Downloads/Arstro')));
-                  }
-                } catch (e) {
-                  if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Download failed: $e')));
-                }
               case 'convert':
                 showConvert(context, client, i);
               case 'verify':
@@ -1087,8 +810,6 @@ class _TakeSheetState extends State<_TakeSheet> {
             }
           },
           itemBuilder: (_) => [
-            if (playable(i) && media.ready) const PopupMenuItem(value: 'play', child: Text('Play')),
-            if (media.ready) const PopupMenuItem(value: 'download', child: Text('Download to phone')),
             if (i['recording'] != true) const PopupMenuItem(value: 'convert', child: Text('Convert…')),
             if (i['kind'] == 'FFV1' && asList(_take?['items']).any((x) => x['kind'] == 'RAW'))
               PopupMenuItem(value: 'verify', enabled: !locked, child: const Text('Check against the RAW…')),

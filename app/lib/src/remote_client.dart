@@ -7,9 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'bt/bluetooth.dart';
-import 'media.dart';
 import 'proto/frames.dart';
-import 'slot_links.dart';
 import 'terminal_hub.dart';
 import 'transport.dart';
 
@@ -22,14 +20,13 @@ class RemoteError implements Exception {
   String toString() => message;
 }
 
-const String kAppVersion = '2.3.0';
+const String kAppVersion = '3.0.0';
 
 /// Owns the link to one Pi: handshake, request/response matching, server
 /// events, stats, terminal routing, input coalescing and auto-reconnect.
 ///
-/// The [primary] client is the phone's own link (Bluetooth, remembered, with stats and media).
-/// The other A/B slots of the same Pi get a client each over Wi-Fi ([SlotLinks], TERM-06):
-/// same protocol, nothing remembered, no stats.
+/// The [primary] client is the phone's own link - Bluetooth, the app's only way to the machine
+/// (CON-06) - remembered, with stats. A non-primary client (tests) remembers nothing.
 class RemoteClient extends ChangeNotifier {
   RemoteClient(this.prefs, {this.primary = true}) {
     _clientId = prefs.getString('client_id') ?? _newClientId();
@@ -42,13 +39,8 @@ class RemoteClient extends ChangeNotifier {
   final SharedPreferences prefs;
   final bool primary;
 
-  /// The other slots of this Pi, over Wi-Fi (primary client only).
-  late final SlotLinks slots = SlotLinks(this);
   final Bluetooth bt = Bluetooth.instance;
   late final TerminalHub terminals = TerminalHub(this);
-
-  /// Wi-Fi media link (preview, thumbnails, playback) to this Pi's web server.
-  late final MediaLink media = MediaLink(this);
 
   LinkState state = LinkState.idle;
   BtDevice? device;

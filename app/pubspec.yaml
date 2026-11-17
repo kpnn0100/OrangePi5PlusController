@@ -1,5 +1,5 @@
 name: arstro_remote
-description: "Arstro Remote - Bluetooth remote control for an Orange Pi (stats, Wi-Fi, terminal, mouse & keyboard)."
+description: "Arstro Remote - control a machine over Bluetooth only (monitor, Wi-Fi and hotspot, shells, mouse and keyboard, recorder)."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 2.7.0+15
+version: 3.0.0+16
 
 environment:
   sdk: ^3.10.4
@@ -36,8 +36,6 @@ dependencies:
   cupertino_icons: ^1.0.8
   xterm: ^4.0.0
   shared_preferences: ^2.5.5
-  video_player: ^2.11.1
-  webview_flutter: ^4.14.1
 
 dev_dependencies:
   flutter_test:

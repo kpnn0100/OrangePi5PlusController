@@ -58,7 +58,7 @@ Pushed to every session whenever they change (whoever changed them), newest valu
 | `recorder.settings` | the recording settings (see `recorder.settings.set`) |
 | `jobs` | list of jobs `{id, title, codec, state, source, output, progress, fps, eta, live, error, options, verify, attempt, max_attempts, note}`; `state`: queued, running, **verifying** (FFV1 being compared with its RAW), **retrying** (failed, runs again shortly - GAL-10), done, failed, cancelled; `note`: what happened on the way (RAW repaired, damage skipped, retries, resumed after a restart - GAL-09/10); `verify`: `{ok, frames, audio_bytes, detail, raw_deleted?}` or null; `codec` `verify` = an on-demand check |
 | `gallery` | summary `{version, takes, files, size, folder}`; fetch `gallery.list` when `version` changes |
-| `wifi` | `{device, enabled, connected, ssid, signal, ip, state, connection}` |
+| `wifi` | `{device, enabled, connected, ssid, signal, ip, state, connection, hotspot?}` - `hotspot` while the machine runs one (WIFI-08): `{active, ssid, band, ip, clients, web, profile}`, never its password; `connected` is false then |
 | `terminals` | shared shells `[{term, cols, rows, viewers, attached, opened_by, ephemeral, age, detached_for}]` |
 | `pairing` | Bluetooth `{ready, alias, address, pairing_open, pairing_remaining, paired_devices}` |
 | `controllers` | connected controllers `[{session, controller, kind, peer, since}]` |
@@ -86,6 +86,9 @@ Other events: `stats` `{data}` (after `stats.subscribe`), `term.exit` `{term, co
 | `wifi.disconnect` | | |
 | `wifi.forget` | `uuid` or `name` | |
 | `wifi.radio` | `enabled` | |
+| `wifi.hotspot` | | `{ssid, band, has_password, password, device, supported, active, ip, clients, web?, connected_to}` - the hotspot's settings (with its password, to the asking controller only) and whether it runs (WIFI-08) |
+| `wifi.hotspot.start` | `ssid?, password?, band?` (`2.4` / `5`; each kept for next time; no password ever = a random one) | `{message, hotspot}` - the machine leaves its Wi-Fi network while it runs; a failed start reconnects it |
+| `wifi.hotspot.stop` | | `{message, status, hotspot}` - back to the saved networks |
 | `term.list` | | `{terminals}` |
 | `term.open` | `cols, rows, ephemeral?` | `{term}` (the opener is a viewer) |
 | `term.attach` | `term, since?, cols?, rows?` | `{term, start, replayed, gap, cols, rows}` - sent **before** the replayed TERM_OUT bytes; `gap` = the ring no longer holds `since`, reset the screen |
@@ -130,7 +133,7 @@ Other events: `stats` `{data}` (after `stats.subscribe`), `term.exit` `{term, co
 | `admin.status` | | `{version, bluetooth, input, web, recorder, sessions}` |
 | `admin.pair` | `seconds` (0 closes) | status |
 | `admin.unpair` | `address` | |
-| `web.info` | | `{enabled, port, urls, auth, app, token, slot, slots}` - `token` is the password; `slots`: every A/B slot of the machine `[{slot, port, running, self, auth, token}]` (TERM-06: the app opens the others over Wi-Fi; the shared `web` state carries `slots` without `auth`/`token`) |
+| `web.info` | | `{enabled, port, urls, auth, app, token, slot, slots}` - `token` is the password; `slots`: every A/B slot of the machine `[{slot, port, running, self, auth, token}]` (TERM-06, withdrawn: the app opens the others over Wi-Fi; the shared `web` state carries `slots` without `auth`/`token`) |
 | `web.set_password` | `password` (5..256 chars) | info; signs out the other web/remote sessions |
 | `web.rotate_token` | | a new random password |
 | `web.set_auth` | `required` (bool) | info; `false` = open mode |
@@ -202,7 +205,7 @@ Take ids are `REC_YYYYMMDD_HHMMSS`; its files are `<take>.arh` (RAW), `<take>_H2
 | `GET /ws/screen` | one monitor of the Pi's desktop (the `screen` topic's `showing`, SCR-06), same messages as `/ws/preview`; control it with `in.move_to` (absolute desktop pixels: region + the point in the picture), `in.btn`, `in.scroll`, `in.key`, `in.text` |
 | `GET /api/media/<file>` | a recording, HTTP Range; `?download=1` |
 | `GET /api/thumb/<take>` | JPEG thumbnail |
-| `GET /ws` with `Authorization: Bearer <password>` | the control channel for programs (CLI `--url`, the app's link to another slot, TERM-06): binary messages carry exactly the Bluetooth frames |
+| `GET /ws` with `Authorization: Bearer <password>` | the control channel for programs (CLI `--url`, scripts): binary messages carry exactly the Bluetooth frames |
 | `GET /api/bundle/<id>.zip` | the files of a `gallery.bundle` as one ZIP, streamed: entries stored (not recompressed), ZIP64 where a value passes 32 bits, exact `Content-Length` before the first byte; 404 once expired (GAL-12) |
 | `POST /api/op/<op>` | one op, JSON body → `{ok, data \| error}` |
 | `GET /api/files/download?path=P` | a file of the Files module (HTTP Range); `&inline=1` to show instead of save |

@@ -4,8 +4,8 @@ import 'package:flutter/material.dart';
 
 import '../theme.dart';
 
-/// Back-button handlers of what is shown inside the main screen (the live view's focus loupe,
-/// REC-14): the main screen asks them first; the newest that returns true has used the press.
+/// Back-button handlers of what is shown inside the main screen: the main screen asks them
+/// first; the newest that returns true has used the press.
 final List<bool Function()> backHandlers = [];
 
 bool handleBack() {

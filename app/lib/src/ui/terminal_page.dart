@@ -4,7 +4,6 @@ import 'package:xterm/xterm.dart';
 
 import '../app_scope.dart';
 import '../remote_client.dart';
-import '../slot_links.dart';
 import '../terminal_hub.dart';
 import 'widgets.dart';
 
@@ -30,9 +29,6 @@ class _TerminalPageState extends State<TerminalPage> {
   final FocusNode _focus = FocusNode();
   bool _autoOpened = false;
 
-  /// The slot whose shells are shown (TERM-06); null = the Bluetooth link's own.
-  String? _slot;
-
   static const _snippets = <String, String>{
     'IP addresses': 'ip -br addr\n',
     'System monitor (htop)': 'htop\n',
@@ -54,11 +50,9 @@ class _TerminalPageState extends State<TerminalPage> {
   void didUpdateWidget(TerminalPage old) {
     super.didUpdateWidget(old);
     if (widget.active && !old.active) {
-      // after this frame: both notify listeners all over the tree (the slots, the media link)
+      // after this frame: opening a shell notifies listeners all over the tree
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        _ensureShell();
-        AppScope.of(context).client.slots.refresh();
+        if (mounted) _ensureShell();
       });
     }
   }
@@ -92,39 +86,15 @@ class _TerminalPageState extends State<TerminalPage> {
   Widget build(BuildContext context) {
     final scope = AppScope.of(context);
     final client = scope.client;
-    final links = client.slots;
     return ListenableBuilder(
-      listenable: Listenable.merge([links, client, scope.settings, scope.settings.immersive]),
-      builder: (context, _) {
-        final entries = links.entries;
-        final entry = entries.firstWhere((e) => e.slot == _slot, orElse: () => entries.first);
-        final c = entry.client;
-        final full = scope.settings.immersive.value;
-        return Column(children: [
-          if (entries.length > 1 && !full)
-            _SlotBar(entries: entries, selected: entry, onSelect: (e) => setState(() => _slot = e.slot)),
-          Expanded(
-            child: c == null
-                ? EmptyState(
-                    icon: Icons.wifi_off,
-                    text: entry.note ?? '${entry.label} is not reachable',
-                    action: OutlinedButton.icon(
-                        onPressed: links.refresh, icon: const Icon(Icons.refresh), label: const Text('Try again')),
-                  )
-                : ListenableBuilder(
-                    listenable: Listenable.merge([c, c.terminals]),
-                    builder: (context, _) => _shells(context, scope, entry, c, full),
-                  ),
-          ),
-        ]);
-      },
+      listenable: Listenable.merge([client, client.terminals, scope.settings, scope.settings.immersive]),
+      builder: (context, _) => _shells(context, scope, client, scope.settings.immersive.value),
     );
   }
 
-  Widget _shells(BuildContext context, AppScope scope, SlotEntry entry, RemoteClient client, bool full) {
+  Widget _shells(BuildContext context, AppScope scope, RemoteClient client, bool full) {
     final hub = client.terminals;
     final session = hub.current;
-    final connecting = !client.isConnected && !entry.self;
     return Column(children: [
       // TERM-08: the tabs stay in full screen too (a slim bar: switch, + new shell, leave)
       _TabsBar(
@@ -144,12 +114,8 @@ class _TerminalPageState extends State<TerminalPage> {
       Expanded(
         child: session == null
             ? EmptyState(
-                icon: connecting ? Icons.wifi_find : Icons.terminal,
-                text: connecting
-                    ? (client.error != null ? '${entry.label}: ${client.error}' : 'Connecting to ${entry.label} over Wi-Fi…')
-                    : client.isConnected
-                        ? 'No shell open on ${entry.label}'
-                        : 'Connect to open a shell',
+                icon: Icons.terminal,
+                text: client.isConnected ? 'No shell open on ${client.hostname}' : 'Connect to open a shell',
                 action: client.isConnected
                     ? FilledButton.icon(onPressed: hub.open, icon: const Icon(Icons.add), label: const Text('Open shell'))
                     : null,
@@ -203,50 +169,6 @@ class _TerminalPageState extends State<TerminalPage> {
           },
         ),
     ]);
-  }
-}
-
-/// TERM-06: which slot's shells are shown - the Bluetooth link's own, or another slot over Wi-Fi.
-class _SlotBar extends StatelessWidget {
-  const _SlotBar({required this.entries, required this.selected, required this.onSelect});
-  final List<SlotEntry> entries;
-  final SlotEntry selected;
-  final ValueChanged<SlotEntry> onSelect;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    Color dot(SlotEntry e) {
-      final c = e.client;
-      if (c == null) return scheme.outline;
-      if (c.isConnected) return const Color(0xFF7CC495);
-      return c.state == LinkState.failed ? const Color(0xFFEC7E76) : const Color(0xFFDDB764);
-    }
-
-    return Material(
-      color: scheme.surfaceContainerLow,
-      child: SizedBox(
-        height: 44,
-        child: ListView(
-          scrollDirection: Axis.horizontal,
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          children: [
-            for (final e in entries)
-              Padding(
-                padding: const EdgeInsets.only(right: 6),
-                child: ChoiceChip(
-                  selected: identical(e, selected) || e.slot == selected.slot,
-                  showCheckmark: false,
-                  avatar: Icon(Icons.circle, size: 10, color: dot(e)),
-                  label: Text('${e.label} · ${e.via}'),
-                  tooltip: e.note ?? (e.self ? 'This phone\'s Bluetooth link' : 'Reached over Wi-Fi'),
-                  onSelected: (_) => onSelect(e),
-                ),
-              ),
-          ],
-        ),
-      ),
-    );
   }
 }
 

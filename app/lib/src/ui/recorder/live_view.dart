@@ -1,21 +1,16 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
-import '../../media.dart';
 import '../../remote_client.dart';
-import '../widgets.dart' show backHandlers;
 import 'common.dart';
-import 'monitor.dart';
 import 'record_button.dart';
 import 'settings_sheet.dart';
 
-/// Live tab (REC-01..07): preview over Wi-Fi, the record button, status and settings - and for
-/// film work the on-set monitoring over the picture and the tally (REC-10, REC-13), the focus
-/// loupe (tap the picture: a magnifying glass over it, REC-14), timecode, slate and markers
-/// (REC-11, REC-15) and the storage figures with the disk test (REC-12).
+/// Live tab (REC-01, REC-03..07): the source's signal, the record button, status and settings -
+/// and for film work the tally (REC-13), timecode, slate and markers (REC-11, REC-15) and the
+/// storage figures with the disk test (REC-12). All over Bluetooth: the picture itself (preview,
+/// monitoring, focus loupe, meters) is the web UI's (CON-06).
 class LiveView extends StatefulWidget {
   const LiveView({super.key, required this.client, required this.active, required this.onOpenGallery});
   final RemoteClient client;
@@ -26,70 +21,28 @@ class LiveView extends StatefulWidget {
   State<LiveView> createState() => _LiveViewState();
 }
 
-class _LiveViewState extends State<LiveView> with WidgetsBindingObserver {
-  late final PreviewController _preview =
-      PreviewController(widget.client.media, want: const ['levels', 'analysis'])..onLoupeError = _loupeRefused;
-  bool _previewOn = true;
-  bool _fullScreen = false;          // the full-screen picture is the one looked at (and zoomed)
+class _LiveViewState extends State<LiveView> {
   bool _pending = false;
-  bool _foreground = true;
   double _elapsedBase = 0;
   DateTime _elapsedAt = DateTime.now();
   Timer? _tick;
 
   RemoteClient get client => widget.client;
-  MediaLink get media => client.media;
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
-    SharedPreferences.getInstance().then((p) {
-      if (mounted) setState(() => _previewOn = p.getBool('preview_on') ?? true);
-      _sync();
-    });
-    media.addListener(_sync);
     client.topic('recorder').addListener(_onRecorder);
     _tick = Timer.periodic(const Duration(milliseconds: 250), (_) {
-      if (mounted && _rec['recording']?['active'] == true) setState(() {});
+      if (mounted && widget.active && _rec['recording']?['active'] == true) setState(() {});
     });
-    backHandlers.add(_onBack);
     _onRecorder();
-  }
-
-  /// Android back closes the focus loupe first (REC-14).
-  bool _onBack() {
-    if (!widget.active || !_preview.loupeOpen) return false;
-    _preview.loupeOff();
-    return true;
-  }
-
-  void _loupeRefused(String error) {
-    if (!mounted) return;
-    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-        SnackBar(content: Text('Focus loupe: $error'), backgroundColor: const Color(0xFF3A2321)));
-  }
-
-  @override
-  void didUpdateWidget(LiveView old) {
-    super.didUpdateWidget(old);
-    if (old.active != widget.active) _sync();
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    _foreground = state == AppLifecycleState.resumed;
-    _sync();
   }
 
   @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    backHandlers.remove(_onBack);
-    media.removeListener(_sync);
     client.topic('recorder').removeListener(_onRecorder);
     _tick?.cancel();
-    _preview.dispose();
     super.dispose();
   }
 
@@ -101,23 +54,6 @@ class _LiveViewState extends State<LiveView> with WidgetsBindingObserver {
       _elapsedBase = (r['elapsed'] as num?)?.toDouble() ?? 0;
       _elapsedAt = DateTime.now();
     }
-    _sync();
-  }
-
-  /// Preview only while it is looked at (REC-06: the Pi stops the encoder when nobody watches).
-  void _sync() {
-    final want = widget.active && _foreground && _previewOn && media.ready && _rec['available'] == true;
-    if (want && !_preview.running) {
-      _preview.start();
-    } else if (!want && _preview.running) {
-      _preview.stop();
-    }
-  }
-
-  Future<void> _setPreviewOn(bool on) async {
-    setState(() => _previewOn = on);
-    (await SharedPreferences.getInstance()).setBool('preview_on', on);
-    _sync();
   }
 
   Future<void> _toggleRecording() async {
@@ -179,22 +115,22 @@ class _LiveViewState extends State<LiveView> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
-      listenable: Listenable.merge([client.topic('recorder'), client.topic('recorder.settings'), media, _preview]),
+      listenable: Listenable.merge([client.topic('recorder'), client.topic('recorder.settings')]),
       builder: (context, _) {
         final wide = MediaQuery.sizeOf(context).width >= 1000;
-        final preview = _previewCard(context);
+        final signal = _signalCard(context);
         final panel = _panel(context);
         return SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
           child: wide
               ? Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Expanded(child: preview),
+                  Expanded(child: signal),
                   const SizedBox(width: 16),
                   SizedBox(width: 340, child: panel),
                 ])
               : Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-                  preview,
-                  const SizedBox(height: 14),
+                  signal,
+                  const SizedBox(height: 12),
                   panel,
                 ]),
         );
@@ -202,214 +138,72 @@ class _LiveViewState extends State<LiveView> with WidgetsBindingObserver {
     );
   }
 
-  // --------------------------------------------------------------- preview
-  Widget _previewCard(BuildContext context) {
+  // ---------------------------------------------------------------- signal
+  /// What the recorder sees, without the picture: the source's signal, or why there is none,
+  /// and the tally while recording (REC-01, REC-13).
+  Widget _signalCard(BuildContext context) {
+    final theme = Theme.of(context);
     final rec = _rec;
     final sig = asMap(rec['signal']);
-    final r = asMap(rec['recording']);
-    final settings = asMap(client.topic('recorder.settings').value);
-    final quality = asMap(settings['preview'])['quality'] as String? ?? 'medium';
-    final playing = _preview.playing && _previewOn;
-    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-      ClipRRect(
-        borderRadius: BorderRadius.circular(18),
-        child: AspectRatio(
-          aspectRatio: 16 / 9,
-          child: ColoredBox(
-            color: Colors.black,
-            child: Stack(fit: StackFit.expand, children: [
-              if (_preview.textureId != null)
-                AnimatedOpacity(
-                  opacity: playing ? 1 : 0,
-                  duration: const Duration(milliseconds: 400),
-                  child: IgnorePointer(ignoring: !playing, child: _monitor(rec, settings, canZoom: !_fullScreen)),
-                ),
-              AnimatedOpacity(
-                opacity: playing ? 0 : 1,
-                duration: const Duration(milliseconds: 300),
-                child: IgnorePointer(ignoring: playing, child: _message(context, sig)),
+    final recording = asMap(rec['recording'])['active'] == true;
+    final up = rec['available'] == true;
+    final present = up && sig['present'] == true;
+    final title = !client.isConnected
+        ? 'Not connected'
+        : !up
+            ? 'Recorder not running'
+            : present
+                ? '${sig['width']}×${sig['height']} · ${((sig['fps'] as num?) ?? 0).round()} fps'
+                : 'No signal';
+    final detail = !up
+        ? 'The recorder on the Pi is starting or switched off.'
+        : present
+            ? [rec['source_title'] ?? 'HDMI input', sig['format']].whereType<String>().join(' · ')
+            : (sig['why'] as String? ?? 'Connect a source to the input.');
+    final dot = recording ? kRec : present ? kOk : up ? kWarn : theme.colorScheme.outline;
+    return Card(
+      key: const Key('signal-card'),
+      margin: EdgeInsets.zero,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(10),
+        side: recording ? const BorderSide(color: kRec, width: 2) : BorderSide(color: theme.dividerColor),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            Container(width: 8, height: 8, decoration: BoxDecoration(color: dot, shape: BoxShape.circle)),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(title,
+                  style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w600, fontFeatures: const [FontFeature.tabularFigures()])),
+            ),
+            if (recording)
+              Container(
+                key: const Key('tally'),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(color: kRec.withValues(alpha: 0.14), borderRadius: BorderRadius.circular(6)),
+                child: Text('REC ${clock(_elapsed)}',
+                    style: const TextStyle(color: kRec, fontSize: 12, fontWeight: FontWeight.w600)),
               ),
-              Positioned(left: 10, top: 10, child: _glass(
-                  Row(mainAxisSize: MainAxisSize.min, children: [
-                    Container(width: 7, height: 7, decoration: BoxDecoration(
-                        color: playing ? kOk : Colors.grey, shape: BoxShape.circle)),
-                    const SizedBox(width: 6),
-                    Text(
-                        (playing ? 'Live' : !_previewOn ? 'Paused' : sig['present'] == true ? 'Preview' : 'No signal') +
-                            (playing && (asMap(rec['preview'])['viewers'] as num? ?? 0) > 1
-                                ? ' · ${asMap(rec['preview'])['viewers']} watching'
-                                : ''),
-                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.white)),
-                  ]))),
-              if (sig['present'] == true && sig['width'] != null)
-                Positioned(right: 10, top: 10, child: _glass(Text(
-                    '${sig['width']}×${sig['height']} · ${((sig['fps'] as num?) ?? 0).round()} fps',
-                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.white)))),
-              if (r['active'] == true)
-                Positioned(left: 10, bottom: 10, child: _glass(
-                    Row(mainAxisSize: MainAxisSize.min, children: [
-                      const _Blink(child: Icon(Icons.circle, size: 8, color: Colors.white)),
-                      const SizedBox(width: 6),
-                      Text('REC ${clock(_elapsed)}',
-                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Colors.white)),
-                    ]),
-                    color: kRec.withValues(alpha: 0.85))),
-              if (playing)
-                Positioned(
-                  right: 6,
-                  bottom: 6,
-                  child: IconButton(
-                    tooltip: 'Full screen',
-                    color: Colors.white,
-                    style: IconButton.styleFrom(backgroundColor: Colors.black45),
-                    icon: const Icon(Icons.fullscreen_rounded),
-                    onPressed: () => _fullscreen(context),
-                  ),
-                ),
-              if (r['active'] == true) const _Tally(radius: 18),
-            ]),
-          ),
-        ),
-      ),
-      const SizedBox(height: 10),
-      Wrap(
-        alignment: WrapAlignment.spaceBetween,
-        crossAxisAlignment: WrapCrossAlignment.center,
-        runSpacing: 8,
-        spacing: 8,
-        children: [
-          InkWell(
-            borderRadius: BorderRadius.circular(20),
-            onTap: () => _setPreviewOn(!_previewOn),
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
-              Switch(value: _previewOn, onChanged: _setPreviewOn),
-              const SizedBox(width: 4),
-              const Text('Live preview'),
-            ]),
-          ),
-          SegmentedButton<String>(
-            showSelectedIcon: false,
-            style: const ButtonStyle(visualDensity: VisualDensity.compact),
-            segments: const [
-              ButtonSegment(value: 'low', label: Text('360p')),
-              ButtonSegment(value: 'medium', label: Text('720p')),
-              ButtonSegment(value: 'high', label: Text('1080p')),
-            ],
-            selected: {quality},
-            onSelectionChanged: (s) =>
-                runOp(context, client, 'recorder.settings.set', {'settings': {'preview': {'quality': s.first}}}),
-          ),
-        ],
-      ),
-    ]);
-  }
-
-  Widget _glass(Widget child, {Color? color}) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-        decoration: BoxDecoration(color: color ?? Colors.black.withValues(alpha: 0.6), borderRadius: BorderRadius.circular(20)),
-        child: child,
-      );
-
-  Widget _message(BuildContext context, Map<String, dynamic> sig) {
-    IconData? icon;
-    String title;
-    String detail = '';
-    Widget? action;
-    if (_rec['available'] != true) {
-      icon = Icons.error_outline;
-      title = 'Recorder not running';
-      detail = client.isConnected ? 'The recorder on the Pi is starting or switched off.' : 'Not connected to the Pi.';
-    } else if (!_previewOn) {
-      icon = Icons.pause_circle_outline;
-      title = 'Preview paused';
-      detail = 'Recording works without it.';
-      action = FilledButton.tonal(onPressed: () => _setPreviewOn(true), child: const Text('Resume'));
-    } else if (!media.ready) {
-      icon = Icons.wifi_off_rounded;
-      title = media.checking ? 'Looking for the Pi on Wi-Fi…' : 'Preview needs Wi-Fi';
-      detail = media.checking ? '' : (media.error ?? '');
-      if (!media.checking) action = FilledButton.tonal(onPressed: media.refresh, child: const Text('Retry'));
-    } else if (sig['present'] != true) {
-      icon = Icons.desktop_access_disabled_outlined;
-      title = 'No HDMI signal';
-      detail = sig['why'] as String? ?? 'Connect a source to the HDMI input.';
-    } else {
-      title = _preview.state == 'reconnecting' ? 'Reconnecting…' : 'Starting preview…';
-    }
-    return LayoutBuilder(builder: (context, c) {
-      final small = c.maxHeight < 200;
-      return Padding(
-        padding: EdgeInsets.fromLTRB(20, small ? 34 : 20, 20, 12),
-        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-          if (icon != null && !small) Icon(icon, size: 34, color: Colors.white54),
-          if (icon == null) const SizedBox(width: 26, height: 26, child: CircularProgressIndicator(strokeWidth: 2.4)),
-          const SizedBox(height: 8),
-          Text(title, textAlign: TextAlign.center,
-              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 15)),
+          ]),
           if (detail.isNotEmpty) ...[
             const SizedBox(height: 4),
-            Flexible(
-              child: Text(detail, textAlign: TextAlign.center, maxLines: small ? 2 : 4, overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(color: Colors.white70, fontSize: 12.5)),
+            Padding(
+              padding: const EdgeInsets.only(left: 18),
+              child: Text(detail, style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
             ),
           ],
-          if (action != null && !small) ...[const SizedBox(height: 10), action],
-        ]),
-      );
-    });
-  }
-
-  /// The picture with its monitoring (REC-13) and focus loupe (REC-14); [canZoom] only where
-  /// it is looked at (the full-screen one while that is open).
-  Widget _monitor(Map<String, dynamic> rec, Map<String, dynamic> settings, {required bool canZoom}) => MonitorLayer(
-        preview: _preview,
-        monitor: asMap(settings['monitor']),
-        bands: asList(asMap(rec['monitor'])['bands']),
-        canZoom: canZoom && _preview.playing,
-      );
-
-  void _fullscreen(BuildContext context) {
-    SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
-    setState(() => _fullScreen = true);
-    Navigator.of(context).push(PageRouteBuilder(
-      opaque: true,
-      transitionDuration: const Duration(milliseconds: 250),
-      pageBuilder: (_, _, _) => ListenableBuilder(
-        listenable: Listenable.merge([_preview, client.topic('recorder'), client.topic('recorder.settings')]),
-        builder: (context, _) => PopScope(
-          // back closes the focus loupe first, then full screen
-          canPop: !_preview.loupeOpen,
-          onPopInvokedWithResult: (didPop, _) {
-            if (!didPop) _preview.loupeOff();
-          },
-          child: ColoredBox(
-            color: Colors.black,
-            child: Stack(fit: StackFit.expand, children: [
-              if (_preview.textureId != null)
-                _monitor(_rec, asMap(client.topic('recorder.settings').value), canZoom: true),
-              if (asMap(_rec['recording'])['active'] == true) const _Tally(radius: 0),
-              Positioned(
-                right: 8,
-                bottom: 8,
-                child: SafeArea(
-                  child: IconButton(
-                    tooltip: 'Leave full screen',
-                    color: Colors.white,
-                    style: IconButton.styleFrom(backgroundColor: Colors.black45),
-                    icon: const Icon(Icons.fullscreen_exit_rounded),
-                    onPressed: () => Navigator.of(context).maybePop(),
-                  ),
-                ),
-              ),
-            ]),
+          const SizedBox(height: 10),
+          Padding(
+            padding: const EdgeInsets.only(left: 18),
+            child: Text('The live picture, monitoring and meters are in the web UI (Settings › Web access).',
+                style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
           ),
-        ),
+        ]),
       ),
-      transitionsBuilder: (_, a, _, child) => FadeTransition(opacity: a, child: child),
-    )).then((_) {
-      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-      if (mounted) setState(() => _fullScreen = false);
-    });
+    );
   }
 
   // ----------------------------------------------------------------- panel
@@ -577,45 +371,6 @@ class _LiveViewState extends State<LiveView> with WidgetsBindingObserver {
       ],
     ]);
   }
-}
-
-class _Blink extends StatefulWidget {
-  const _Blink({required this.child});
-  final Widget child;
-
-  @override
-  State<_Blink> createState() => _BlinkState();
-}
-
-class _BlinkState extends State<_Blink> with SingleTickerProviderStateMixin {
-  late final AnimationController _c =
-      AnimationController(vsync: this, duration: const Duration(milliseconds: 1200))..repeat(reverse: true);
-
-  @override
-  void dispose() {
-    _c.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => FadeTransition(opacity: Tween(begin: 1.0, end: 0.3).animate(_c), child: widget.child);
-}
-
-/// The recording tally (REC-13): a red frame round the picture while recording.
-class _Tally extends StatelessWidget {
-  const _Tally({required this.radius});
-  final double radius;
-
-  @override
-  Widget build(BuildContext context) => IgnorePointer(
-        child: Container(
-          key: const Key('tally'),
-          decoration: BoxDecoration(
-            border: Border.all(color: kRec, width: 4),
-            borderRadius: BorderRadius.circular(radius),
-          ),
-        ),
-      );
 }
 
 /// Storage you can trust (REC-12): free space, the time left at the mode's rate, the disk's

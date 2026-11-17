@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../phone.dart';
 import '../remote_client.dart';
 import 'recorder/common.dart';
 
@@ -78,7 +79,6 @@ class _SystemSectionsState extends State<SystemSections> {
     }
     final r = await runOp(context, client, 'web.set_password', {'password': a.text}, 'Password changed');
     if (r != null && mounted) setState(() => _web = asMap(r));
-    client.media.refresh();
   }
 
   Future<void> _setRequired(bool required) async {
@@ -91,13 +91,12 @@ class _SystemSectionsState extends State<SystemSections> {
     if (!mounted) return;
     final r = await runOp(context, client, 'web.set_auth', {'required': required}, required ? 'Password required' : 'Open access');
     if (r != null && mounted) setState(() => _web = asMap(r));
-    client.media.refresh();
   }
 
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
-      listenable: Listenable.merge([client.topic('pairing'), client.topic('controllers'), client.media]),
+      listenable: Listenable.merge([client.topic('pairing'), client.topic('controllers')]),
       builder: (context, _) => Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         ..._webSection(context),
         ..._btSection(context),
@@ -110,26 +109,26 @@ class _SystemSectionsState extends State<SystemSections> {
     final w = _web ?? const {};
     final open = w['auth'] == 'open';
     final token = w['token'] as String? ?? '';
-    final media = client.media;
     return [
       const _Header('Web access'),
       for (final u in List<String>.from(w['urls'] as List? ?? const []))
         ListTile(
           leading: const Icon(Icons.public),
           title: SelectableText(u),
-          subtitle: const Text('Open it in any browser on the same network'),
-          trailing: IconButton(
-            tooltip: 'Copy',
-            icon: const Icon(Icons.copy_rounded),
-            onPressed: () => Clipboard.setData(ClipboardData(text: u)),
-          ),
+          subtitle: const Text('Live picture, gallery, screen and apps: in a browser on the same network'),
+          trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+            IconButton(
+              tooltip: 'Copy',
+              icon: const Icon(Icons.copy_rounded),
+              onPressed: () => Clipboard.setData(ClipboardData(text: u)),
+            ),
+            IconButton(
+              tooltip: 'Open in the browser',
+              icon: const Icon(Icons.open_in_new_rounded),
+              onPressed: () => Phone.openUrl(u),
+            ),
+          ]),
         ),
-      ListTile(
-        leading: Icon(media.ready ? Icons.wifi_rounded : Icons.wifi_off_rounded, color: media.ready ? kOk : kWarn),
-        title: Text(media.ready ? 'Media over Wi-Fi: ${media.base}' : 'No Wi-Fi link to the Pi'),
-        subtitle: media.ready ? const Text('Preview, thumbnails and playback') : Text(media.error ?? 'Looking…'),
-        trailing: IconButton(tooltip: 'Check again', icon: const Icon(Icons.refresh_rounded), onPressed: media.refresh),
-      ),
       SwitchListTile(
         secondary: const Icon(Icons.lock_outline),
         title: const Text('Require a password'),

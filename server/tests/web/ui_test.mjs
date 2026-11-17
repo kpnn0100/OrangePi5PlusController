@@ -945,12 +945,25 @@ test("touchpad_moves_the_pointer", ["INP-04", "INP-01"], async () => {
   await page.close();
 });
 
-test("wifi_monitor_system_show_server_state", ["WIFI-01", "STAT-01", "STAT-02", "CON-05", "ADM-01", "ADM-03"], async () => {
+test("wifi_monitor_system_show_server_state", ["WIFI-01", "WIFI-08", "STAT-01", "STAT-02", "CON-05", "ADM-01", "ADM-03"], async () => {
   const wifi = await op("wifi.status");
   const page = await newPage();
   await go(page, "wifi");
   if (wifi.connected) {
     check(await until(() => page.$eval(".view", (e, s) => e.textContent.includes(s), wifi.ssid), 5000), "SSID not shown");
+  }
+  // WIFI-08: the hotspot card - read only here: starting it would take a board on Wi-Fi off its network
+  // (tests/test_hotspot.py runs it against a fake NetworkManager)
+  const hs = await op("wifi.hotspot");
+  if (hs.supported) {
+    check(await until(() => page.$eval(".view", (e, n) => e.textContent.includes("Hotspot") && e.textContent.includes(n), hs.ssid), 5000),
+          "hotspot card not shown");
+    const button = hs.active ? "Stop" : "Start";
+    check(await page.evaluate((b) => [...document.querySelectorAll(".view button")].some((x) => x.textContent.trim() === b), button),
+          `hotspot ${button} button missing`);
+    if (hs.password) {
+      check(!(await page.$eval(".view", (e, p) => e.textContent.includes(p), hs.password)), "hotspot password shown before Show");
+    }
   }
   await go(page, "monitor");
   check(await until(() => page.$eval(".view", (e) => e.textContent.includes("CPU") && e.textContent.includes("Memory")), 6000), "stats not shown");

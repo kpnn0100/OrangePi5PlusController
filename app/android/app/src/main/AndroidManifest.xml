@@ -12,18 +12,15 @@
         tools:targetApi="s" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
 
-    <!-- Wi-Fi media link to the Pi's web server (live preview, thumbnails, playback,
-         downloads) and the developer transport (tcp:HOST:PORT). Control stays on Bluetooth. -->
-    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- No INTERNET permission: the app reaches the machine over Bluetooth only (CON-06). Debug
+         builds get it from src/debug for the developer transport (tcp:HOST:PORT). -->
 
     <uses-feature android:name="android.hardware.bluetooth" android:required="true" />
 
     <application
         android:label="Arstro Remote"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher"
-        android:usesCleartextTraffic="true">
-        <!-- cleartext: the Pi's web server is plain http on the local network -->
+        android:icon="@mipmap/ic_launcher">
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -52,6 +49,11 @@
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
+        </intent>
+        <!-- the web address is handed to the phone's browser -->
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="http"/>
         </intent>
     </queries>
 </manifest>
