@@ -82,6 +82,7 @@ export default {
           on ? null : h("button.btn.sm.ghost", { onclick: () => editHotspot() }, "Settings"),
           on ? h("button.btn.sm", { onclick: (e) => stopHotspot(e.currentTarget) }, "Stop")
              : h("button.btn.sm.primary", { onclick: (e) => startHotspot(e.currentTarget) }, "Start")),
+        hs.problem && !on ? h("div", { style: { color: "var(--warn)", fontSize: "13px", marginTop: "12px" } }, hs.problem) : null,
         h("dl.kv", { style: { marginTop: "14px" } },
           h("dt", null, "Password"),
           h("dd", null, pw, hs.password ? h("span", { style: { marginLeft: "10px", whiteSpace: "nowrap" } },

@@ -4,7 +4,8 @@
 Installed as `nmcli` in a directory put first on PATH; its state is a JSON file
 (`FAKE_NM_STATE`). One Wi-Fi device `wlan0`, one saved network `Home` it is connected to.
 Every call is appended to the state's `calls` (so a test can check what the server ran);
-`fail_up` makes the next `connection up` of an access point fail like a radio that refuses.
+`fail_up` makes the next `connection up` of an access point fail like a radio that refuses,
+`drop_after_up` makes it succeed and the access point go down a moment later.
 """
 
 import fcntl
@@ -133,6 +134,9 @@ def main(argv):
             st["active"] = None
             out.append("Error: Connection activation failed: 802.1X supplicant took too long to authenticate.")
             rc = 4
+        elif cons[u]["props"].get("802-11-wireless.mode") == "ap" and st.get("drop_after_up"):
+            st["drop_after_up"] = False     # "activated", then down a moment later (its dnsmasq failed)
+            st["active"] = None
         else:
             st["active"] = u
     elif args[:2] == ["connection", "down"]:

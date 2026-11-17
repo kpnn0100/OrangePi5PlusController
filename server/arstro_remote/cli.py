@@ -324,6 +324,8 @@ def print_hotspot(h):
         print("Hotspot  : not possible - %s has no access point mode" % (h.get("device") or "no Wi-Fi device"))
         return
     print("Hotspot  : %s" % ("on" if h.get("active") else "off"))
+    if h.get("problem"):
+        print("Problem  : %s" % h["problem"])
     print("Name     : %s  (%s)" % (h.get("ssid"), h.get("band")))
     print("Password : %s" % (h.get("password") or "(made when it first starts)"))
     if h.get("active"):

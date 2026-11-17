@@ -145,6 +145,31 @@ void main() {
     log.done();
   });
 
+  // covers: WIFI-08
+  testWidgets('hotspot: what keeps it from starting is shown before Start', (tester) async {
+    await setSize(tester, sizes['small phone']!);
+    final log = ErrorLog();
+    final asked = <(String, Map<String, dynamic>)>[];
+    final client = await connectedClient();
+    final fixture = client.requestOverride!;
+    const why = 'Another DNS server on this machine listens on every address (port 53) - usually the dnsmasq service';
+    client.requestOverride = (op, p) async {
+      asked.add((op, p));
+      if (op == 'wifi.hotspot') return {...asMap(await fixture(op, p)), 'problem': why};
+      return fixture(op, p);
+    };
+    final prefs = await SharedPreferences.getInstance();
+    await tester.pumpWidget(ArstroApp(client: client, settings: Settings(prefs)));
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.descendant(of: find.byType(NavigationBar), matching: find.text('Wi-Fi')));
+    await tester.pump(const Duration(milliseconds: 500));
+    log.found(find.byKey(const Key('hotspot-problem')), 'the reason it cannot start');
+    expect(tester.widget<Text>(find.byKey(const Key('hotspot-problem'))).data, why);
+    log.check('problem');
+    await tester.pump(const Duration(seconds: 5));
+    log.done();
+  });
+
   // covers: CON-06
   test('the release app reaches the machine over Bluetooth only', () {
     final manifest = File('android/app/src/main/AndroidManifest.xml').readAsStringSync();

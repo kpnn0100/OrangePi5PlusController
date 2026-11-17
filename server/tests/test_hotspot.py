@@ -24,6 +24,15 @@ from instance import SERVER, Instance
 
 FAKE = tempfile.mkdtemp(prefix="arstro-nm-")
 STATE = os.path.join(FAKE, "state.json")
+PROC = os.path.join(FAKE, "proc")                  # the server's /proc/net (ARSTRO_PROC_NET)
+UDP_HEAD = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+# a dnsmasq service with the stock configuration: DNS on every address
+DNS_EVERYWHERE = "   0: 00000000:0035 00000000:0000 07 00000000:00000000 00:00000000 00000000   108        0 4711 2\n"
+
+
+def proc_udp(rows=""):
+    with open(os.path.join(PROC, "udp"), "w") as f:
+        f.write(UDP_HEAD + rows)
 
 
 def nm():
@@ -53,6 +62,9 @@ def setup():
     os.chmod(os.path.join(FAKE, "nmcli"), 0o755)
     os.environ["PATH"] = FAKE + os.pathsep + os.environ["PATH"]
     os.environ["FAKE_NM_STATE"] = STATE
+    os.makedirs(PROC)
+    proc_udp("   1: 0100007F:0035 00000000:0000 07 00000000:00000000 00:00000000 00000000   108        0 4712 2\n")
+    os.environ["ARSTRO_PROC_NET"] = PROC              # DNS on 127.0.0.1 only: no conflict
     t = Instance(["system", "connection"], config={"wifi_poll_sec": 3})
     t.start()
     t.c.call("wifi.status")
@@ -142,6 +154,37 @@ def a_failed_start_returns_to_the_network(t):
     check(resp["ok"] is False and "did not start" in resp["error"], resp)
     st = t.c.call("wifi.status")
     check(st["connected"] and st["ssid"] == "Home" and not st.get("hotspot"), st)
+
+
+@test("WIFI-08")
+def a_hotspot_that_goes_down_at_once_is_a_failure_not_a_success(t):
+    nm_set(drop_after_up=True)                        # NetworkManager: "activated", then down
+    resp = t.c.request("wifi.hotspot.start", band="5", timeout=60)
+    check(resp["ok"] is False and "went down as it started" in resp["error"], resp)
+    check("try 2.4 GHz" in resp["error"], "no 5 GHz hint: %s" % resp["error"])
+    st = t.c.call("wifi.status")
+    check(st["connected"] and st["ssid"] == "Home" and not st.get("hotspot"), st)
+    t.c.call("wifi.hotspot.start", band="2.4", timeout=60)     # (keeps 2.4 GHz for the next tests)
+    t.c.call("wifi.hotspot.stop", timeout=60)
+
+
+@test("WIFI-08")
+def a_dns_server_on_every_address_is_named_before_the_network_is_left(t):
+    proc_udp(DNS_EVERYWHERE)
+    try:
+        h = t.c.call("wifi.hotspot")
+        check(h["problem"] and "port 53" in h["problem"] and "setup_hotspot_dns.sh" in h["problem"], h)
+        calls = len(nm()["calls"])
+        resp = t.c.request("wifi.hotspot.start", timeout=60)
+        check(resp["ok"] is False and "cannot start" in resp["error"] and "dnsmasq" in resp["error"], resp)
+        ran = [c for c in nm()["calls"][calls:] if "up" in c or "modify" in c or "add" in c]
+        check(not ran, "the network was touched: %s" % ran)
+        check(t.c.call("wifi.status")["ssid"] == "Home", "left the network")
+        rc, out = cli(t, "wifi", "hotspot")
+        check("port 53" in out, out)
+    finally:
+        proc_udp()
+    check(t.c.call("wifi.hotspot")["problem"] is None, "problem stays after the fix")
 
 
 @test("WIFI-08")

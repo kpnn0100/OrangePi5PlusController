@@ -86,7 +86,7 @@ Other events: `stats` `{data}` (after `stats.subscribe`), `term.exit` `{term, co
 | `wifi.disconnect` | | |
 | `wifi.forget` | `uuid` or `name` | |
 | `wifi.radio` | `enabled` | |
-| `wifi.hotspot` | | `{ssid, band, has_password, password, device, supported, active, ip, clients, web?, connected_to}` - the hotspot's settings (with its password, to the asking controller only) and whether it runs (WIFI-08) |
+| `wifi.hotspot` | | `{ssid, band, has_password, password, device, supported, active, ip, clients, web?, connected_to, problem}` - `problem`: why a start cannot work now (e.g. a DNS server on every address), else null; the hotspot's settings (with its password, to the asking controller only) and whether it runs (WIFI-08) |
 | `wifi.hotspot.start` | `ssid?, password?, band?` (`2.4` / `5`; each kept for next time; no password ever = a random one) | `{message, hotspot}` - the machine leaves its Wi-Fi network while it runs; a failed start reconnects it |
 | `wifi.hotspot.stop` | | `{message, status, hotspot}` - back to the saved networks |
 | `term.list` | | `{terminals}` |

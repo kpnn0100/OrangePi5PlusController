@@ -11,6 +11,7 @@ import os
 import secrets
 import socket
 import subprocess
+import time
 
 from . import paths
 
@@ -240,7 +241,7 @@ def forget(uuid):
 HOTSPOT_PROFILE = "Arstro Hotspot"      # the NetworkManager profile the server owns
 BANDS = {"bg": "2.4 GHz", "a": "5 GHz"}
 _PASSWORD_CHARS = "abcdefghjkmnpqrstuvwxyz23456789"   # no 0/o, 1/l/i: easy to type on a phone
-ARP = "/proc/net/arp"
+PROC_NET = os.environ.get("ARSTRO_PROC_NET") or "/proc/net"     # tests point it at a fake one
 _profiles = {}                          # uuid -> {mode, ssid, band}: profiles rarely change
 
 
@@ -277,11 +278,38 @@ def _ap_profile(dev):
 def _clients(dev):
     """Devices that joined the hotspot: complete entries of the kernel's ARP table on `dev`."""
     try:
-        with open(ARP) as f:
+        with open(os.path.join(PROC_NET, "arp")) as f:
             rows = f.read().splitlines()[1:]
     except OSError:
         return None
     return sum(1 for r in rows if len(r.split()) >= 6 and r.split()[5] == dev and r.split()[2] == "0x2")
+
+
+def dns_conflict():
+    """True when a program listens for DNS (port 53) on every address - usually a dnsmasq service with
+    its stock configuration. NetworkManager's own dnsmasq for the hotspot (10.42.0.1:53) then cannot
+    start and the hotspot goes down the moment it comes up."""
+    for name in ("udp", "udp6", "tcp", "tcp6"):
+        try:
+            with open(os.path.join(PROC_NET, name)) as f:
+                rows = f.read().splitlines()[1:]
+        except OSError:
+            continue
+        for r in rows:
+            f = r.split()
+            if len(f) < 4:
+                continue
+            addr, _, port = f[1].rpartition(":")
+            if port == "0035" and set(addr) == {"0"} and (name.startswith("udp") or f[3] == "0A"):
+                return True
+    return False
+
+
+def dns_problem():
+    script = os.path.join(paths.install_dir(), "bin", "scripts", "setup_hotspot_dns.sh")
+    return ("another DNS server on this machine listens on every address (port 53) - usually the dnsmasq "
+            "service - so the hotspot cannot hand out addresses. Fix it once: sudo %s (install.sh does it "
+            "too)" % script)
 
 
 def hotspot_file():
@@ -343,12 +371,14 @@ def hotspot(with_password=False):
     dev = wifi_device()
     st = _settings_public(hotspot_settings(), with_password)
     st.update({"device": dev, "supported": bool(dev) and _supports_ap(dev), "active": False,
-               "ip": None, "clients": None})
+               "ip": None, "clients": None, "problem": None})
     if dev:
         live = status()
         if live.get("hotspot"):
             st.update({k: v for k, v in live["hotspot"].items() if v is not None})
         st["connected_to"] = live.get("ssid") if live.get("connected") else None
+        if not st["active"] and dns_conflict():
+            st["problem"] = dns_problem()[0].upper() + dns_problem()[1:]
     return st
 
 
@@ -369,6 +399,8 @@ def hotspot_start(ssid=None, password=None, band=None, timeout=40):
     password = password or cur["password"] or "".join(secrets.choice(_PASSWORD_CHARS) for _ in range(12))
     band = _band(band) or cur["band"]
     _check(ssid, password)
+    if dns_conflict():                  # it would come up and go down at once: leave the network alone
+        raise WifiError("The hotspot cannot start: " + dns_problem())
     if not radio_enabled():
         set_radio(True)
     uuid = next((n["uuid"] for n in saved_networks() if n["name"] == HOTSPOT_PROFILE), None)
@@ -389,9 +421,24 @@ def hotspot_start(ssid=None, password=None, band=None, timeout=40):
                timeout=timeout + 10)
     except WifiError as e:
         _nmcli(["--wait", "30", "device", "connect", dev], timeout=40, check=False)   # back to its network
-        raise WifiError("The hotspot did not start: %s" % _friendly(str(e)))
+        raise WifiError("The hotspot did not start: %s" % _friendly(str(e)) + _band_hint(band))
+    # NetworkManager reports "activated" a moment before the addresses part may fail: make sure it stays up
+    end = time.time() + 2.5
+    while time.time() < end:
+        time.sleep(0.5)
+        if not _ap_profile(dev):
+            _nmcli(["--wait", "30", "device", "connect", dev], timeout=40, check=False)
+            why = dns_problem() if dns_conflict() else \
+                "NetworkManager stopped it at once (journalctl -u NetworkManager says why)" + _band_hint(band)
+            log.warning("hotspot %r on %s (%s) went down at once", ssid, dev, BANDS[band])
+            raise WifiError("The hotspot went down as it started: " + why)
     log.info("hotspot %r on %s (%s)", ssid, dev, BANDS[band])
     return {"message": "Hotspot %s is on" % ssid, "hotspot": hotspot(with_password=True)}
+
+
+def _band_hint(band):
+    return (" - 5 GHz: many Wi-Fi cards (Intel's among them) start a hotspot there only where they know the "
+            "country, and never on radar channels: try 2.4 GHz") if band == "a" else ""
 
 
 def hotspot_stop(timeout=30):

@@ -173,6 +173,11 @@ class _HotspotCardState extends State<HotspotCard> {
           ),
         ]),
         const SizedBox(height: 10),
+        if (!on && hs['problem'] is String) ...[
+          Text(hs['problem'] as String, key: const Key('hotspot-problem'),
+              style: theme.textTheme.bodySmall?.copyWith(color: kWarn)),
+          const SizedBox(height: 8),
+        ],
         if (!on)
           Text('Where there is no router: the Pi makes its own Wi-Fi network. Join it from a laptop or this phone, '
               'then open the web address shown here. The Pi leaves its current Wi-Fi network while it runs.',

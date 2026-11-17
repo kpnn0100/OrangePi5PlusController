@@ -33,7 +33,7 @@
 #   --activate            make this slot the default for the `arstro-remote` command and
 #                         give it the Bluetooth link (the other slots lose it)
 #   --no-deps             do not install packages
-#   --no-perms            do not set up device permissions (udev rules, groups)
+#   --no-perms            do not set up device permissions (udev rules, groups) or the hotspot's DNS
 #   --no-start            install only
 #   --uninstall           stop and remove this slot (config and logs stay; --purge removes them)
 #   --force-own-session   install into the slot that hosts THIS shell anyway (it gets killed)
@@ -232,6 +232,15 @@ fi
 for g in bluetooth netdev; do
     getent group "$g" >/dev/null && ! id -nG | tr ' ' '\n' | grep -qx "$g" && warn "$(id -un) is not in group '$g' (sudo usermod -aG $g $(id -un))"
 done
+# the hotspot (WIFI-08) cannot hand out addresses while a dnsmasq service holds port 53 on every address
+if [ "$PERMS" = 1 ] && has_mod connection && ! bash "$SRC/scripts/setup_hotspot_dns.sh" --check; then
+    say "Hotspot: the dnsmasq service leaves the Wi-Fi to NetworkManager"
+    if need_sudo "the hotspot next to the dnsmasq service"; then
+        sudo bash "$SRC/scripts/setup_hotspot_dns.sh" | sed 's/^/   /' || warn "the hotspot will not start (run: sudo $SRC/scripts/setup_hotspot_dns.sh)"
+    else
+        warn "no sudo - the hotspot will not start until: sudo $SRC/scripts/setup_hotspot_dns.sh"
+    fi
+fi
 
 # ------------------------------------------------------------------ 3. code
 say "Installing slot $SLOT_UP into $APP_DIR"
@@ -243,7 +252,8 @@ find "$APP_DIR.new" -name '__pycache__' -prune -exec rm -rf {} +
 install -m 755 "$SRC/scripts/arstro-remote-launcher" "$APP_DIR.new/bin/arstro-remote-launcher"
 install -m 755 "$SRC/install.sh" "$APP_DIR.new/bin/install.sh"
 mkdir -p "$APP_DIR.new/bin/scripts"
-install -m 755 "$SRC/scripts/install_deps.sh" "$SRC/scripts/setup_io_perms.sh" "$SRC/scripts/arstro-remote-launcher" "$APP_DIR.new/bin/scripts/"
+install -m 755 "$SRC/scripts/install_deps.sh" "$SRC/scripts/setup_io_perms.sh" "$SRC/scripts/setup_hotspot_dns.sh" \
+    "$SRC/scripts/arstro-remote-launcher" "$APP_DIR.new/bin/scripts/"
 python3 - "$APP_DIR.new" <<'EOF'
 import compileall, sys
 compileall.compile_dir(sys.argv[1] + "/arstro_remote", quiet=1)
