@@ -5,6 +5,7 @@ import com.arstro.arstro_remote_client.features.CallFeature
 import com.arstro.arstro_remote_client.features.CameraFeature
 import com.arstro.arstro_remote_client.features.ClipboardFeature
 import com.arstro.arstro_remote_client.features.ContactsFeature
+import com.arstro.arstro_remote_client.features.DeviceFeature
 import com.arstro.arstro_remote_client.features.FilesFeature
 import com.arstro.arstro_remote_client.features.FindFeature
 import com.arstro.arstro_remote_client.features.MessagesFeature
@@ -21,7 +22,7 @@ object Features {
     val all: List<Feature> by lazy {
         listOf<Feature>(
             StatusFeature, ScreenFeature, CameraFeature, CallFeature, MicFeature, MessagesFeature, ContactsFeature,
-            FindFeature, FilesFeature, NotificationsFeature, ClipboardFeature, AppsFeature, ToolsFeature, ShellFeature,
+            FindFeature, FilesFeature, NotificationsFeature, ClipboardFeature, AppsFeature, ToolsFeature, DeviceFeature, ShellFeature,
         )
     }
 

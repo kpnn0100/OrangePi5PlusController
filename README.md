@@ -142,10 +142,12 @@ server is down. Agents and scripts: `arstro-remote relay forward <id> 8080 --lis
 [docs/relay/AGENT_API.md](docs/relay/AGENT_API.md). Design and security: [docs/relay/RELAY.md](docs/relay/RELAY.md).
 
 **Share this phone (Android): Arstro Remote Client.** A second app (`client_app/`, apart from the
-Pi remote) makes the phone itself a device of the device manager: on first start a wizard lets you
-pick features (screen view and control, camera, internet calls, find my phone, messages, files,
-notifications and more), asks for exactly their permissions, and starts sharing; each feature has
-its own switch in the app. Open the phone from the device list like any machine. Build it with
+Pi remote) manages the phone from a browser, like an Arstro machine: it serves its web UI on
+`http://<phone>:8080/` (and `https://<phone>:8443/` for live video), behind a password shown in the
+app. On first start a wizard lets you pick features (front and back camera, find and ring the phone,
+screen view and control, device controls, messages, files, notifications and more), asks for exactly
+their permissions, starts the server and shows the address and password; each feature has its own
+switch in the app. Optionally the phone also joins your device manager. Android 12 and later. Build it with
 `scripts/build_apk.sh --client`. [docs/phone/PHONE.md](docs/phone/PHONE.md).
 
 **Every device on your phone (Android): Arstro Devices.** A third app (`devices_app/`) is the device

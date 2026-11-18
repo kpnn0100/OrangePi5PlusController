@@ -25,6 +25,7 @@ class _PhonePageState extends State<PhonePage> {
   String? _storedUrl, _storedName; // what the fields were last filled with
   bool _busy = false;
   String? _key; // shown only while "Show" is on
+  String? _password; // the web password, shown only while "Show" is on
 
   @override
   void initState() {
@@ -70,7 +71,7 @@ class _PhonePageState extends State<PhonePage> {
 
   Future<void> _toggleService(bool on) => _guard(() async {
         final s = api.state;
-        if (on && s != null && !s.tokenSet) {
+        if (on && s != null && s.relayOn && !s.tokenSet) {
           ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(content: Text('Set the join token of your device manager first (below).')));
         }
@@ -94,6 +95,68 @@ class _PhonePageState extends State<PhonePage> {
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Saved')));
         }
       });
+
+  Future<void> _showPassword() => _guard(() async {
+        if (_password != null) {
+          setState(() => _password = null);
+          return;
+        }
+        final p = await api.webPassword();
+        if (mounted) setState(() => _password = p);
+      });
+
+  Future<void> _copy(String text, String what) async {
+    await Clipboard.setData(ClipboardData(text: text));
+    if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$what copied')));
+  }
+
+  Future<void> _changePassword() async {
+    final field = TextEditingController();
+    String? error;
+    final pw = await showDialog<String>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setLocal) => AlertDialog(
+          title: const Text('New web password'),
+          content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Text('Every browser logged in now has to log in again. Leave it empty for a random one.',
+                style: _small),
+            const SizedBox(height: 12),
+            TextField(
+              key: const Key('web-password-field'),
+              controller: field,
+              autocorrect: false,
+              enableSuggestions: false,
+              decoration: InputDecoration(hintText: '6 to 64 characters', errorText: error),
+            ),
+          ]),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () {
+                final t = field.text.trim();
+                if (t.isNotEmpty && (t.length < 6 || t.length > 64)) {
+                  setLocal(() => error = '6 to 64 characters');
+                  return;
+                }
+                Navigator.pop(context, t);
+              },
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      ),
+    );
+    field.dispose();
+    if (pw == null) return;
+    await _guard(() async {
+      final p = await api.setWebPassword(pw.isEmpty ? null : pw);
+      if (mounted) {
+        setState(() => _password = p);
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Password changed')));
+      }
+    });
+  }
 
   Future<void> _showKey() => _guard(() async {
         if (_key != null) {
@@ -164,9 +227,13 @@ class _PhonePageState extends State<PhonePage> {
                       children: [
                         _sharing(s),
                         const SizedBox(height: 12),
-                        _keyCard(s),
+                        _web(s),
                         const SizedBox(height: 12),
                         _server(s),
+                        if (s.relayOn) ...[
+                          const SizedBox(height: 12),
+                          _keyCard(s),
+                        ],
                         const SizedBox(height: 12),
                         _features(s),
                         const SizedBox(height: 16),
@@ -202,8 +269,8 @@ class _PhonePageState extends State<PhonePage> {
     return SectionCard(
       title: 'Share this phone',
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('Open this phone from any browser through your Arstro device manager, '
-            'end-to-end encrypted with its access key.',
+        const Text('Open this phone from a browser on the same Wi-Fi (or on its hotspot) at the address below, '
+            'and through your Arstro device manager if you set one up.',
             style: _body),
         const SizedBox(height: 6),
         SwitchRow(
@@ -212,7 +279,7 @@ class _PhonePageState extends State<PhonePage> {
             const SizedBox(width: 10),
             Flexible(child: Text(s.summary)),
           ]),
-          subtitle: s.running && s.error != null ? Text(s.error!, style: const TextStyle(color: Arstro.err)) : null,
+          subtitle: s.running && s.relayOn && s.error != null && !s.web.listening ? Text(s.error!, style: const TextStyle(color: Arstro.err)) : null,
           value: s.enabled || s.running,
           onChanged: _busy ? null : _toggleService,
         ),
@@ -278,10 +345,123 @@ class _PhonePageState extends State<PhonePage> {
     );
   }
 
+  Widget _web(PhoneState s) {
+    final w = s.web;
+    final mono = Arstro.monoStyle(size: 13, color: Arstro.text);
+    return SectionCard(
+      title: 'Web access',
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        SwitchRow(
+          title: Text('Web server on port ${w.port}'),
+          subtitle: Text(w.on
+              ? 'Any browser on the same network can open the login page. The password protects the rest.'
+              : 'Off: the phone answers only through the device manager.'),
+          value: w.on,
+          onChanged: _busy ? null : (on) => _guard(() => api.setWeb(on)),
+        ),
+        if (w.on && !s.running)
+          const Padding(
+            padding: EdgeInsets.only(top: 4),
+            child: Text('Turn on sharing above to start it.', style: TextStyle(fontSize: 13, color: Arstro.warn)),
+          ),
+        if (w.error != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text('Cannot listen: ${w.error}', style: const TextStyle(fontSize: 13, color: Arstro.err)),
+          ),
+        if (w.on && w.listening) ...[
+          const Divider(),
+          if (w.addresses.isEmpty)
+            const Text('No network now: join a Wi-Fi network or turn on the hotspot.', style: _small),
+          for (final a in w.addresses)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              child: Row(children: [
+                SizedBox(width: 92, child: Text(a.label, style: _small)),
+                Expanded(
+                  child: SelectableText(w.url(a), key: Key('web-url-${a.kind}'), style: mono),
+                ),
+                IconButton(
+                  tooltip: 'Copy',
+                  visualDensity: VisualDensity.compact,
+                  icon: const Icon(Icons.copy_outlined, size: 18),
+                  onPressed: () => _copy(w.url(a), 'Address'),
+                ),
+              ]),
+            ),
+          if (w.https && w.best != null) ...[
+            const SizedBox(height: 4),
+            Text('Live camera and screen video, calls and the clipboard need the secure address '
+                '${w.url(w.best!, secure: true)} - the browser warns once about the phone\'s own certificate.',
+                style: _small),
+            if (w.fingerprint != null) ...[
+              const SizedBox(height: 6),
+              SelectableText('Certificate SHA-256  ${w.fingerprint}', style: Arstro.monoStyle(size: 11, color: Arstro.muted)),
+            ],
+          ],
+          if (s.relayOn == false && w.addresses.every((a) => a.kind == 'mobile') && w.addresses.isNotEmpty)
+            const Text('On mobile data other devices usually cannot reach the phone: use Wi-Fi, '
+                'the hotspot or a device manager.', style: TextStyle(fontSize: 13, color: Arstro.warn)),
+        ],
+        const Divider(),
+        const FieldLabel('Password'),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+          decoration: BoxDecoration(
+            color: Arstro.surface2,
+            border: Border.all(color: Arstro.line2),
+            borderRadius: BorderRadius.circular(Arstro.rButton),
+          ),
+          child: SelectableText(_password ?? '••••••••••', key: const Key('web-password'),
+              style: Arstro.monoStyle(size: 13, color: _password == null ? Arstro.text2 : Arstro.text)),
+        ),
+        const SizedBox(height: 12),
+        Wrap(spacing: 8, runSpacing: 8, children: [
+          OutlinedButton.icon(
+            style: Arstro.small,
+            onPressed: _showPassword,
+            icon: Icon(_password == null ? Icons.visibility_outlined : Icons.visibility_off_outlined, size: 16),
+            label: Text(_password == null ? 'Show' : 'Hide'),
+          ),
+          OutlinedButton.icon(
+              style: Arstro.small,
+              onPressed: () => _guard(() async => _copy(await api.webPassword(), 'Password')),
+              icon: const Icon(Icons.copy_outlined, size: 16),
+              label: const Text('Copy')),
+          OutlinedButton.icon(
+              style: Arstro.small,
+              onPressed: _changePassword,
+              icon: const Icon(Icons.edit_outlined, size: 16),
+              label: const Text('Change')),
+        ]),
+      ]),
+    );
+  }
+
   Widget _server(PhoneState s) {
+    if (!s.relayOn) {
+      return SectionCard(
+        title: 'Device manager',
+        child: SwitchRow(
+          title: const Text('Also through a device manager'),
+          subtitle: const Text('Reach the phone from anywhere through your own Arstro device manager, '
+              'end-to-end encrypted with an access key.'),
+          value: false,
+          onChanged: _busy ? null : (on) => _guard(() => api.setRelayOn(on)),
+        ),
+      );
+    }
     return SectionCard(
       title: 'Device manager',
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        SwitchRow(
+          title: const Text('Also through a device manager'),
+          subtitle: Text('${s.relayState == 'online' ? 'Online' : s.relayState == 'connecting' ? 'Connecting…' : 'Offline'}'
+              '${s.error != null ? ' - ${s.error}' : ''}'),
+          value: true,
+          onChanged: _busy ? null : (on) => _guard(() => api.setRelayOn(on)),
+        ),
+        const SizedBox(height: 8),
         const FieldLabel('Address'),
         TextField(
           controller: _url,

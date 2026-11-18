@@ -3,10 +3,12 @@
 // Phone → viewer: text {"t": "config", "codec": "avc1.PPCCLL", width, height, rotation} (again on
 // every format change), then binary  flags u8 (bit0 = key frame) ‖ pts_us u64 BE ‖ Annex-B access
 // unit (SPS/PPS in front of every key frame). Decoded with WebCodecs into a canvas (the page is
-// always a secure context behind the device manager, so VideoDecoder exists in current browsers).
+// a secure context behind the device manager and on https://<phone>:8443/). On plain
+// http://<phone>:8080/ browsers hide WebCodecs: with opts.snapshot the view shows still pictures
+// instead (a new one as soon as the last arrived) and turns control messages into ops.
 // Viewer → phone: text JSON ({"t": "keyframe"}, {"t": "quality", max}, control messages).
 
-import { h, wsUrl } from "./core.js";
+import { h, wsUrl, op } from "./core.js";
 
 const HEAD = 9;
 
@@ -65,6 +67,14 @@ export class VideoView {
 
   /** Open (or re-open with another path, e.g. a new camera). */
   start(path) {
+    if (!videoSupported() && this.opts.snapshot) {
+      if (path) this.path = path;
+      this.wanted = true;
+      this.stills = true;
+      this.note();
+      if (!this.polling) this.poll();
+      return;
+    }
     if (!videoSupported()) {
       this.setState("unsupported", "This browser can't decode the phone's video. Use a current Chrome, Edge, Safari or Firefox.");
       return;
@@ -72,6 +82,53 @@ export class VideoView {
     if (path && path !== this.path) { this.path = path; this.close(); }
     this.wanted = true;
     if (!this.ws) this.connect();
+  }
+
+  /** Plain http: a note that links to the secure address, where the video is live. */
+  note() {
+    if (this.noteEl) return;
+    const secure = location.protocol === "http:" && location.port === "8080"
+      ? `https://${location.hostname}:8443${location.pathname}${location.hash}` : null;
+    this.noteEl = h("div.ov.bl", null, h(secure ? "a.glass" : "span.glass", secure ? { href: secure } : null,
+      h("span", null, secure ? "Still pictures · live video on https" : "Still pictures")));
+    this.box.append(this.noteEl);
+  }
+
+  async poll() {
+    this.polling = true;
+    let fails = 0;
+    if (this.state !== "live") this.setState("connecting");
+    while (this.wanted && this.stills) {
+      const path = this.path;
+      const t0 = performance.now();
+      try {
+        const r = await fetch(this.opts.snapshot(path), { cache: "no-store" });
+        if (!r.ok) {
+          let m = `HTTP ${r.status}`;
+          try { const d = await r.json(); if (d.error) m = d.error; } catch (e) { /* not JSON */ }
+          throw new Error(m);
+        }
+        const bmp = await createImageBitmap(await r.blob());
+        if (!this.wanted || path !== this.path) { bmp.close?.(); continue; }
+        if (this.canvas.width !== bmp.width) this.canvas.width = bmp.width;
+        if (this.canvas.height !== bmp.height) this.canvas.height = bmp.height;
+        this.ctx.drawImage(bmp, 0, 0);
+        this.opts.onConfig?.({ width: bmp.width, height: bmp.height, rotation: 0, stills: true });
+        bmp.close?.();
+        this.received++;
+        this.shown++;
+        fails = 0;
+        this.canvas.classList.add("on");
+        this.setState("live");
+      } catch (e) {
+        fails++;
+        this.setState("reconnecting", e.message || "");
+        await new Promise((res) => setTimeout(res, Math.min(5000, 800 * fails)));
+      }
+      const wait = (this.opts.stillsMs || 400) - (performance.now() - t0);
+      if (wait > 0) await new Promise((res) => setTimeout(res, wait));
+    }
+    this.polling = false;
   }
 
   stop() {
@@ -84,6 +141,7 @@ export class VideoView {
   destroy() {
     this.stop();
     this.canvas.remove();
+    this.noteEl?.remove();
     const list = window.phoneDebug?.videos;
     if (list) { const i = list.indexOf(this); if (i >= 0) list.splice(i, 1); }
   }
@@ -135,6 +193,11 @@ export class VideoView {
 
   /** A text message to the phone; false when not connected. */
   send(obj) {
+    if (this.stills && this.opts.ops && obj && obj.t && obj.t !== "keyframe" && obj.t !== "quality") {
+      const { t, ...args } = obj;
+      op(`${this.opts.ops}.${t}`, args).catch((e) => this.opts.onMessage?.({ t: "error", error: e.message }));
+      return true;
+    }
     if (!this.ws || this.ws.readyState !== 1) return false;
     this.ws.send(JSON.stringify(obj));
     return true;

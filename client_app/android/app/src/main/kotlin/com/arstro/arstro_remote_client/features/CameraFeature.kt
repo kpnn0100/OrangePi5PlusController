@@ -84,6 +84,10 @@ object CameraFeature : Feature("camera", "Camera") {
     private var recordDone: CountDownLatch? = null
     @Volatile private var recordError: String? = null
     @Volatile private var photoBusy = false
+    @Volatile private var lastPhoto = 0L
+    private var photoFacing: String? = null            // the camera is bound with imageCapture for this facing
+    private const val KEEP_MS = 4000L
+    private val idleCheck = Runnable { closeIfIdle() }
     @Volatile private var encoder: AvcEncoder? = null
     @Volatile private var rotation = 0
     private var targetSize = Size(1280, 720)
@@ -101,7 +105,9 @@ object CameraFeature : Feature("camera", "Camera") {
     override fun routes() = mapOf(
         "GET /api/camera/photo" to route { c, req ->
             val jpeg = photo(c, req.param("facing"))
-            Response.bytes(jpeg, "image/jpeg", 200, listOf("Cache-Control" to "no-store"))
+            // ?max=N: a smaller picture, upright (the still-picture view on plain http asks one after another)
+            val max = req.param("max")?.toIntOrNull()?.coerceIn(160, 4096)
+            Response.bytes(if (max != null) Jpeg.shrink(jpeg, max) else jpeg, "image/jpeg", 200, listOf("Cache-Control" to "no-store"))
         },
     )
 
@@ -176,6 +182,8 @@ object CameraFeature : Feature("camera", "Camera") {
 
     private fun checkFacing(want: String) {
         val f = facing
+        // open only for the last photos (still pictures): free to switch
+        if (f != null && f != want && recording == null && hub.count == 0) return
         if (f != null && f != want) {
             val what = when {
                 recording != null -> "recording with the $f camera"
@@ -205,6 +213,7 @@ object CameraFeature : Feature("camera", "Camera") {
     /** Binds `useCase` to the camera of facing `f` (opens it when closed). Main thread. */
     private fun bind(app: Context, f: String, vararg useCases: UseCase) {
         val p = provider ?: throw OpError("the camera is not ready - try again", 503)
+        photoFacing = null
         val o = owner ?: CamOwner().also { owner = it }
         o.resume()
         try {
@@ -219,6 +228,9 @@ object CameraFeature : Feature("camera", "Camera") {
     /** Closes the camera when nobody uses it any more. Main thread. */
     private fun closeIfIdle() {
         if (hub.count > 0 || recording != null || photoBusy) return
+        // photos one after another (still pictures): keep the camera open a little
+        val since = System.currentTimeMillis() - lastPhoto
+        if (since < KEEP_MS) { mainHandler.removeCallbacks(idleCheck); mainHandler.postDelayed(idleCheck, KEEP_MS - since + 50); return }
         closeCamera()
         ctx?.releaseForeground(FG)
     }
@@ -228,6 +240,7 @@ object CameraFeature : Feature("camera", "Camera") {
         owner?.pause()
         camera = null
         facing = null
+        photoFacing = null
         preview = null
         imageCapture = null
         videoCapture = null
@@ -409,10 +422,13 @@ object CameraFeature : Feature("camera", "Camera") {
             var error: String? = null
             onMain {
                 checkFacing(f)
+                if (facing != null && facing != f) closeCamera()      // kept open for photos of the other camera
                 val ic = imageCapture ?: ImageCapture.Builder().setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
                     .setTargetRotation(currentTarget).build().also { imageCapture = it }
-                if (facing == null || camera == null) bind(c.app, f, ic)
+                if (photoFacing == f && facing == f && camera != null) { /* bound for the last photo */ }
+                else if (facing == null || camera == null) bind(c.app, f, ic)
                 else bind(c.app, f, *listOfNotNull<UseCase>(preview, ic, videoCapture).toTypedArray())
+                photoFacing = f
                 ic.takePicture(ImageCapture.OutputFileOptions.Builder(out).build(), ContextCompat.getMainExecutor(c.app),
                     object : ImageCapture.OnImageSavedCallback {
                         override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) { latch.countDown() }
@@ -427,6 +443,7 @@ object CameraFeature : Feature("camera", "Camera") {
             return out.toByteArray()
         } finally {
             photoBusy = false
+            lastPhoto = System.currentTimeMillis()
             try { onMain { closeIfIdle() } } catch (e: Exception) { }
         }
     }

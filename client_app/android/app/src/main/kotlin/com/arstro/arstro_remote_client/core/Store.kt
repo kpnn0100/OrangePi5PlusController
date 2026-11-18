@@ -26,6 +26,12 @@ class Store(context: Context) {
             return if (ID_RE.matches(id)) id else "android$tail"
         }
 
+        const val WEB_PORT = 8080
+        const val TLS_PORT = 8443
+        private const val EASY = "abcdefghjkmnpqrstuvwxyz23456789"
+
+        fun newPassword(): String = (1..10).map { EASY[E2e.randomBytes(1)[0].toInt().and(0xff) % EASY.length] }.joinToString("")
+
         fun defaultName(): String {
             val m = Build.MANUFACTURER.orEmpty().replaceFirstChar { it.uppercase() }
             val model = Build.MODEL.orEmpty()
@@ -58,6 +64,44 @@ class Store(context: Context) {
     var name: String
         get() = p.getString("name", null)?.takeIf { it.isNotBlank() } ?: defaultName()
         set(v) = p.edit().putString("name", v.trim().filter { !it.isISOControl() }.take(64)).apply()
+
+    /** Reach the phone through a device manager as well (off: only on the phone's own addresses).
+     *  On for phones set up before 2.0 that had a join token. */
+    var relayOn: Boolean
+        get() = p.getBoolean("relay_on", token.isNotEmpty())
+        set(v) = p.edit().putBoolean("relay_on", v).apply()
+
+    // ------------------------------------------------------------------ the phone's own web server
+    /** http://<phone>:8080/ and https://<phone>:8443/ (PHN-20). On unless turned off. */
+    var webOn: Boolean
+        get() = p.getBoolean("web_on", true)
+        set(v) = p.edit().putBoolean("web_on", v).apply()
+
+    /** The web login password: made on first use (10 easy-to-read characters), changeable in the app. */
+    var webPassword: String
+        get() = ensure("web_password") { newPassword() }
+        set(v) = p.edit().putString("web_password", v).remove("web_sessions").commit().let { }
+
+    /** Logged-in browsers: sha256(token) -> expiry ms (the tokens themselves are never stored). */
+    var webSessions: Map<String, Long>
+        get() = (p.getStringSet("web_sessions", null) ?: emptySet()).mapNotNull {
+            val i = it.indexOf(':'); if (i <= 0) null else it.substring(0, i) to (it.substring(i + 1).toLongOrNull() ?: 0L)
+        }.toMap()
+        set(v) = p.edit().putStringSet("web_sessions", v.map { "${it.key}:${it.value}" }.toSet()).apply()
+
+    /** The phone's TLS identity (SelfSigned), made once. */
+    val tls: SelfSigned.Identity
+        @Synchronized get() {
+            val k = p.getString("tls_key", null)
+            val c = p.getString("tls_cert", null)
+            if (k != null && c != null) try {
+                return SelfSigned.Identity(java.util.Base64.getDecoder().decode(k), java.util.Base64.getDecoder().decode(c))
+            } catch (e: Exception) { }
+            val id = SelfSigned.create(name)
+            p.edit().putString("tls_key", java.util.Base64.getEncoder().encodeToString(id.keyPkcs8))
+                .putString("tls_cert", java.util.Base64.getEncoder().encodeToString(id.certDer)).commit()
+            return id
+        }
 
     // ------------------------------------------------------------------ switches
     /** The service runs (and starts at boot) while this is on. */

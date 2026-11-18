@@ -31,6 +31,8 @@ export default {
     const stage = h("div.stage.screen-stage", { tabindex: "0", role: "application", "aria-label": "The phone's screen" },
       msg, h("div.ov.tl", null, pill), h("div.ov.br", null, fsBtn));
     const video = new VideoView(stage, {
+      snapshot: () => "api/screen/shot?" + q({ format: "jpeg", max: pref.get("screen.quality", 720) * 16 / 9 | 0 }),
+      ops: "screen",
       onState: () => render(),
       onConfig: (cfg) => { fitStage(cfg.width, cfg.height); render(); },
       onMessage: (m) => { if (m.t === "error" && m.error) toast(m.error, "err"); },

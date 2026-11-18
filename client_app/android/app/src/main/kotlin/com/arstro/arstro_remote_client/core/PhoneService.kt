@@ -28,8 +28,9 @@ import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.Executors
 
 /**
- * "Share this phone" (docs/phone/PHONE.md): the foreground service that makes the phone a device of
- * the device manager. It runs the relay agent (RelayAgent -> Router, nothing listens on a port), starts
+ * "Share this phone" (docs/phone/PHONE.md): the foreground service. It runs the phone's own web server
+ * (LocalServer -> Router, ports 8080 / 8443, password login) and, when turned on, the relay agent of the
+ * device manager (RelayAgent -> the same Router), starts
  * the features that are on and ready, re-checks readiness, and shows "Sharing this phone · online ·
  * N viewers" with a Stop action. It is the features' PhoneContext.
  *
@@ -75,6 +76,11 @@ class PhoneService : Service(), PhoneContext {
         private set
     lateinit var router: Router
         private set
+    /** The phone's own web server: http://<phone>:8080/, https://<phone>:8443/ (PHN-20). */
+    lateinit var web: LocalServer
+        private set
+    private var webSig: String? = null
+    private val webThread = Executors.newSingleThreadExecutor { r -> Thread(r, "web-start") }
     private val bus = EventHub { level, msg -> log(level, msg) }
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor { r -> Thread(r, "phone-features") }
@@ -107,6 +113,7 @@ class PhoneService : Service(), PhoneContext {
             val changed = !first && n != current
             first = false
             current = n
+            main.postDelayed({ updateNotification(); notifyListeners() }, 1500)   // the phone's address changed
             if (changed && instance === this@PhoneService) {
                 log(LogLevel.INFO, "the network changed - connecting again")
                 agent.networkChanged()
@@ -139,6 +146,11 @@ class PhoneService : Service(), PhoneContext {
         router = Router(this, { Features.all }, gate, AssetSource { path ->
             try { assets.open("phone/$path") } catch (e: Exception) { null }
         }, ::info, bus) { level, msg -> log(level, msg) }
+        web = LocalServer(router, { store.webPassword }, object : LocalServer.SessionStore {
+            override fun load() = store.webSessions
+            override fun save(sessions: Map<String, Long>) { store.webSessions = sessions }
+        }) { level, msg -> log(level, msg) }
+        web.onViewers = { main.post { updateWake(); updateNotification(); notifyListeners() } }
         agent = RelayAgent(router, onChange = { main.post { onAgentChange() } }) { level, msg -> log(level, msg) }
         Transports.onFallback = { msg -> log(LogLevel.INFO, msg) }
         store.listen(prefs)
@@ -172,6 +184,11 @@ class PhoneService : Service(), PhoneContext {
         main.removeCallbacks(check)
         store.unlisten(prefs)
         try { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(network) } catch (_: RuntimeException) {}
+        if (::web.isInitialized) {
+            val w = web
+            webThread.execute { w.stop() }
+        }
+        webThread.shutdown()
         if (::agent.isInitialized) {
             val a = agent
             Thread({ a.stop() }, "relay-stop").start()
@@ -197,6 +214,7 @@ class PhoneService : Service(), PhoneContext {
     private fun agentConfig(): AgentConfig = AgentConfig(
         url = store.url, token = store.token, id = store.id, name = store.name, secret = store.secret,
         keyRaw = store.keyRaw, version = appVersion(this), hostname = Build.MODEL ?: "Android", platform = platform(),
+        enabled = store.relayOn,
     )
 
     /** Apply the settings and the switches: the agent's configuration, the features that run, the
@@ -204,12 +222,28 @@ class PhoneService : Service(), PhoneContext {
     fun refresh() {
         if (instance !== this) return
         val key = store.key
-        val sig = listOf(store.url, store.token, store.name, store.id).joinToString("\u0000")
+        val sig = listOf(store.url, store.token, store.name, store.id, store.relayOn).joinToString("\u0000")
         if (sig != agentSig || key != keySig) {
             val keyChanged = keySig != null && key != keySig
             agentSig = sig
             keySig = key
             agent.configure(agentConfig(), closeChannels = keyChanged)
+        }
+        val ws = "${store.webOn}:${store.webPassword.hashCode()}"
+        if (ws != webSig) {
+            val first = webSig == null
+            webSig = ws
+            val on = store.webOn
+            webThread.execute {
+                if (!first) web.dropSessions()           // a new password (or off): everybody logs in again
+                if (on) {
+                    val tls = try { store.tls.serverSocketFactory() } catch (e: Exception) {
+                        log(LogLevel.ERROR, "web: no https (${e.javaClass.simpleName})"); null
+                    }
+                    if (web.ports.isEmpty()) web.start(Store.WEB_PORT, Store.TLS_PORT, tls)
+                } else web.stop()
+                main.post { updateNotification(); notifyListeners() }
+            }
         }
         updateWake()
         val fs = Features.all.joinToString(",") {
@@ -369,6 +403,12 @@ class PhoneService : Service(), PhoneContext {
 
     private fun notice(): String {
         if (!::agent.isInitialized) return "Sharing this phone · starting"
+        val local = if (store.webOn && web.ports.isNotEmpty()) {
+            val ip = NetAddr.best()
+            val v = web.viewers
+            "On ${if (ip != null) "http://$ip:${Store.WEB_PORT}" else "port ${Store.WEB_PORT}"}" + (if (v > 0) " · $v viewer${if (v == 1) "" else "s"}" else "")
+        } else null
+        if (!store.relayOn) return local ?: "Sharing this phone · web access is off"
         val viewers = agent.viewers().size
         val state = when (agent.state) {
             "online" -> "online"
@@ -377,7 +417,7 @@ class PhoneService : Service(), PhoneContext {
             else -> "offline"
         }
         val v = if (agent.state == "online") " · $viewers viewer${if (viewers == 1) "" else "s"}" else ""
-        return "Sharing this phone · $state$v"
+        return if (local != null) "$local · device manager $state" else "Sharing this phone · $state$v"
     }
 
     private fun buildNotification(): Notification {
@@ -417,7 +457,7 @@ class PhoneService : Service(), PhoneContext {
      *  its pings and its pipe requests, and the device manager would list it offline. With the setting
      *  off, only while someone is connected (a stream must not stall when the screen goes off). */
     private fun updateWake() {
-        if (store.awake || agent.viewers().isNotEmpty()) holdWake() else releaseWake()
+        if (store.awake || agent.viewers().isNotEmpty() || (::web.isInitialized && web.viewers > 0)) holdWake() else releaseWake()
     }
 
     @SuppressLint("WakelockTimeout")      // held for as long as the phone is shared; released in onDestroy

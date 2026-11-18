@@ -29,6 +29,8 @@ MANUAL = {
     "SEC-01": "Pair a new phone outside and inside the pairing window (`server/tests/bt_pairing_security_test.sh`).",
     "SEC-02": "`server/tests/bt_pairing_security_test.sh`: an untrusted device is refused.",
     "CON-01": "Walk out of Bluetooth range and back: the app reconnects and the shell resumes (also `reconnect_live_test.dart`).",
+    "PHN-23": "On an Android 12 phone (or the API 31 emulator), open http://<phone>:8080/ from another computer: Camera and Screen show still pictures and the link to https; on https://<phone>:8443/ they are live.",
+    "PHN-24": "On an Android 12 phone, Device page: ringer, Do Not Disturb, Bluetooth on / off, an alarm and a timer appear in the clock app, screen timeout, wallpaper, read a sensor.",
     "WIFI-08": "Start the hotspot from the app over Bluetooth, join it from a laptop and open the web address it shows; stop it: the machine is back on its Wi-Fi.",
 }
 
@@ -84,6 +86,14 @@ def scan():
             elif f.endswith((".mjs", ".js")):
                 for m in re.finditer(r'test\("([^"]+)",\s*\[([^\]]*)\]', src):
                     add(ids(m.group(2)), sub + "/" + f, m.group(1))
+    kt = os.path.join(ROOT, "client_app", "android", "app", "src", "test")   # the phone app's JVM tests
+    for dirpath, _, files in sorted(os.walk(kt)) if os.path.isdir(kt) else []:
+        for f in sorted(files):
+            if not f.endswith(".kt"):
+                continue
+            src = open(os.path.join(dirpath, f), encoding="utf-8").read()
+            for m in re.finditer(r"//\s*covers:\s*(.+)\n\s*@Test\s+fun\s+(\w+)", src):
+                add(ids(m.group(1)), os.path.relpath(os.path.join(dirpath, f), ROOT), m.group(2))
     for app in ("app", "devices_app"):                                       # Flutter widget / unit tests
         dart = os.path.join(ROOT, app, "test")
         for f in sorted(os.listdir(dart)) if os.path.isdir(dart) else []:

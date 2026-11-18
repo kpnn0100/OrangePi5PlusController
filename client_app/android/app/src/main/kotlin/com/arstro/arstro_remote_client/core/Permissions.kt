@@ -42,6 +42,7 @@ object Permissions {
         Manifest.permission.ACCESS_COARSE_LOCATION to "Location",
         "android.permission.ACCESS_BACKGROUND_LOCATION" to "Location all the time",
         Manifest.permission.READ_PHONE_STATE to "Phone state",
+        "android.permission.BLUETOOTH_CONNECT" to "Nearby devices (Bluetooth)",
         Manifest.permission.READ_EXTERNAL_STORAGE to "Storage",
         Manifest.permission.WRITE_EXTERNAL_STORAGE to "Storage (write)",
     )
@@ -53,6 +54,8 @@ object Permissions {
     /** Whether Android has this runtime permission on this version (else it counts as granted). */
     fun applies(perm: String): Boolean = when (perm) {
         "android.permission.POST_NOTIFICATIONS" -> Build.VERSION.SDK_INT >= 33
+        // switching Bluetooth: Android 12 asks for "Nearby devices"; from 13 on apps cannot switch it at all
+        "android.permission.BLUETOOTH_CONNECT" -> Build.VERSION.SDK_INT in 31..32
         "android.permission.ACCESS_BACKGROUND_LOCATION" -> Build.VERSION.SDK_INT >= 29
         Manifest.permission.READ_EXTERNAL_STORAGE -> Build.VERSION.SDK_INT <= 32
         Manifest.permission.WRITE_EXTERNAL_STORAGE -> Build.VERSION.SDK_INT <= 29

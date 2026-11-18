@@ -90,6 +90,8 @@ class PhoneBridge(private val activity: Activity, messenger: BinaryMessenger) : 
                 "token_set" to store.token.isNotEmpty(),
                 "relay_version" to agent?.relayVersion,
             ),
+            "relay_on" to store.relayOn,
+            "web" to webState(svc),
             "key_id" to store.keyId,
             "first_run" to store.firstRun,
             "awake" to store.awake,
@@ -98,6 +100,22 @@ class PhoneBridge(private val activity: Activity, messenger: BinaryMessenger) : 
             "sdk" to Build.VERSION.SDK_INT,
             "manufacturer" to (Build.MANUFACTURER ?: ""),
             "default_url" to Store.DEFAULT_URL,
+        )
+    }
+
+    private fun webState(svc: PhoneService?): Map<String, Any?> {
+        val web = svc?.web
+        val listening = web != null && web.ports.isNotEmpty()
+        return mapOf(
+            "on" to store.webOn,
+            "listening" to listening,
+            "port" to Store.WEB_PORT,
+            "tls_port" to Store.TLS_PORT,
+            "https" to (web?.ports?.contains(Store.TLS_PORT) == true),
+            "addresses" to NetAddr.all().map { mapOf("ip" to it.ip, "kind" to it.kind, "iface" to it.iface) },
+            "viewers" to (web?.viewers ?: 0),
+            "error" to web?.error,
+            "fingerprint" to (if (listening) try { store.tls.fingerprint } catch (e: Exception) { null } else null),
         )
     }
 
@@ -125,6 +143,29 @@ class PhoneBridge(private val activity: Activity, messenger: BinaryMessenger) : 
                 "request" -> request(call, result)
                 "setRelay" -> setRelay(call, result)
                 "key" -> result.success(mapOf("key" to store.key, "key_id" to store.keyId))
+                "webPassword" -> result.success(mapOf("password" to store.webPassword))
+                "setWebPassword" -> {
+                    val pw = call.argument<String>("password")?.trim()
+                    if (pw != null && pw.isNotEmpty() && (pw.length < 6 || pw.length > 64)) {
+                        return result.error("bad_password", "The password must have 6 to 64 characters", null)
+                    }
+                    store.webPassword = if (pw.isNullOrEmpty()) Store.newPassword() else pw
+                    refreshService()                 // logs every browser out
+                    result.success(mapOf("password" to store.webPassword))
+                    push()
+                }
+                "setWeb" -> {
+                    store.webOn = call.argument<Boolean>("on") != false
+                    refreshService()
+                    result.success(state())
+                    push()
+                }
+                "setRelayOn" -> {
+                    store.relayOn = call.argument<Boolean>("on") == true
+                    refreshService()
+                    result.success(state())
+                    push()
+                }
                 "rotateKey" -> {
                     store.rotateKey()
                     refreshService()               // a new key drops the viewers with the old one
@@ -174,7 +215,7 @@ class PhoneBridge(private val activity: Activity, messenger: BinaryMessenger) : 
             if (!ok) return result.error("bad_url", "The address must look like https://server/path", null)
             store.url = url
         }
-        call.argument<String>("token")?.let { if (it.isNotBlank()) store.token = it }
+        call.argument<String>("token")?.let { if (it.isNotBlank()) { store.token = it; store.relayOn = true } }
         call.argument<String>("name")?.let { if (it.isNotBlank()) store.name = it }
         refreshService()
         result.success(state())

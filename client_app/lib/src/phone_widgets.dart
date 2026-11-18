@@ -81,7 +81,9 @@ class PhoneDot extends StatelessWidget {
     final s = state;
     final (color, soft) = s == null || !s.running
         ? (Arstro.muted, null)
-        : switch (s.relayState) {
+        : s.web.on && s.web.listening
+            ? (Arstro.ok, Arstro.okSoft)
+            : switch (s.relayState) {
             'online' => (Arstro.ok, Arstro.okSoft),
             'connecting' => (Arstro.warn, Arstro.warnSoft),
             _ => (Arstro.err, Arstro.errSoft),

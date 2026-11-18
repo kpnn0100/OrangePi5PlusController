@@ -72,6 +72,20 @@ class PhoneApi extends ChangeNotifier {
     return k;
   }
 
+  /// The phone's own web server (http://phone-address:8080/): its password, on / off.
+  Future<String> webPassword() async =>
+      '${(await _methods.invokeMethod<Map<Object?, Object?>>('webPassword'))?['password'] ?? ''}';
+
+  /// A new password (null = a random one); every browser has to log in again.
+  Future<String> setWebPassword(String? password) async {
+    final r = await _methods.invokeMethod<Map<Object?, Object?>>('setWebPassword', {'password': password});
+    await refresh();
+    return '${r?['password'] ?? ''}';
+  }
+
+  Future<PhoneState?> setWeb(bool on) => _call('setWeb', {'on': on});
+  Future<PhoneState?> setRelayOn(bool on) => _call('setRelayOn', {'on': on});
+
   Future<PhoneState?> start() => _call('start');
   Future<PhoneState?> stop() => _call('stop');
   Future<PhoneState?> finishFirstRun() => _call('finishFirstRun');
@@ -128,6 +142,67 @@ class PhoneFeature {
 List<PhoneNeed> _needs(Object? v) =>
     v is List ? [for (final e in v) if (e is Map) PhoneNeed.fromMap(e)] : const [];
 
+/// One address of the phone (Wi-Fi, its hotspot, ...).
+class PhoneAddress {
+  const PhoneAddress(this.ip, this.kind);
+  final String ip;
+  final String kind; // wifi | hotspot | ethernet | usb | mobile | other
+
+  String get label => const {
+        'wifi': 'Wi-Fi',
+        'hotspot': 'Hotspot',
+        'ethernet': 'Ethernet',
+        'usb': 'USB',
+        'mobile': 'Mobile data',
+      }[kind] ??
+      'Network';
+}
+
+/// The phone's own web server (PHN-20).
+class WebAccess {
+  const WebAccess({
+    this.on = true,
+    this.listening = false,
+    this.port = 8080,
+    this.tlsPort = 8443,
+    this.https = false,
+    this.addresses = const [],
+    this.viewers = 0,
+    this.error,
+    this.fingerprint,
+  });
+
+  final bool on;
+  final bool listening;
+  final int port;
+  final int tlsPort;
+  final bool https;
+  final List<PhoneAddress> addresses;
+  final int viewers;
+  final String? error;
+  final String? fingerprint;
+
+  /// The address to open first: not mobile data (the carrier does not let others in).
+  PhoneAddress? get best => addresses.where((a) => a.kind != 'mobile').firstOrNull ?? addresses.firstOrNull;
+
+  String url(PhoneAddress a, {bool secure = false}) => secure ? 'https://${a.ip}:$tlsPort/' : 'http://${a.ip}:$port/';
+
+  factory WebAccess.fromMap(Map<Object?, Object?> m) => WebAccess(
+        on: m['on'] != false,
+        listening: m['listening'] == true,
+        port: (m['port'] as int?) ?? 8080,
+        tlsPort: (m['tls_port'] as int?) ?? 8443,
+        https: m['https'] == true,
+        addresses: [
+          for (final a in (m['addresses'] as List?) ?? const [])
+            if (a is Map) PhoneAddress('${a['ip']}', '${a['kind'] ?? 'other'}')
+        ],
+        viewers: (m['viewers'] as int?) ?? 0,
+        error: m['error'] as String?,
+        fingerprint: m['fingerprint'] as String?,
+      );
+}
+
 class PhoneState {
   const PhoneState({
     required this.running,
@@ -148,7 +223,13 @@ class PhoneState {
     required this.sdk,
     required this.manufacturer,
     required this.defaultUrl,
+    this.relayOn = false,
+    this.web = const WebAccess(),
   });
+
+  /// Also reachable through a device manager.
+  final bool relayOn;
+  final WebAccess web;
 
   final bool running;
   final bool enabled;
@@ -220,12 +301,20 @@ class PhoneState {
       sdk: (m['sdk'] as int?) ?? 0,
       manufacturer: '${m['manufacturer'] ?? ''}',
       defaultUrl: '${m['default_url'] ?? ''}',
+      relayOn: m['relay_on'] == true,
+      web: WebAccess.fromMap((m['web'] as Map?) ?? const {}),
     );
   }
 
   /// "Online over HTTP · 2 viewers", "Connecting…", "Offline".
   String get summary {
     if (!running) return 'Not sharing';
+    if (web.on && web.listening) {
+      final a = web.best;
+      final v = web.viewers;
+      return '${a == null ? 'On, no network' : 'On at ${a.ip}:${web.port}'}${v > 0 ? ' · $v viewer${v == 1 ? '' : 's'}' : ''}';
+    }
+    if (!relayOn) return web.on ? 'Starting…' : 'Web access is off';
     switch (relayState) {
       case 'online':
         final how = transport == 'http' ? 'HTTP' : 'WebSocket';
@@ -257,5 +346,7 @@ const featureInfo = <String, String>{
   'clipboard': 'Put text on the clipboard. Reading it works only while this app is open (an Android rule).',
   'apps': 'List the installed apps and open one.',
   'tools': 'Volume, media keys, speak a text, vibrate, torch, brightness, open a link.',
+  'device': 'Ringer mode and Do Not Disturb, Bluetooth (Android 12), alarms and timers, screen timeout, '
+      'wallpaper, the sensors and facts about the phone.',
   'shell': "Run commands in this app's own sandbox (no root).",
 };

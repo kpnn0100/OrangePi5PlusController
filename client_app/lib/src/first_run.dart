@@ -7,8 +7,8 @@ import 'theme.dart';
 import 'widgets.dart';
 
 /// The first-run wizard of "Share this phone" (PHN-02): welcome → pick features → allow what they
-/// need → device manager → start sharing → the access key. Skippable: everything can be changed
-/// later on the app's main page.
+/// need → start sharing → how to open it (address and password). Skippable: everything (also a device
+/// manager) can be changed later on the app's main page.
 class FirstRunWizard extends StatefulWidget {
   const FirstRunWizard({super.key});
 
@@ -25,14 +25,11 @@ class FirstRunWizard extends StatefulWidget {
 }
 
 class _FirstRunWizardState extends State<FirstRunWizard> {
-  static const _steps = 6;
+  static const _steps = 5;
   final api = PhoneApi.instance;
   int _step = 0;
   final Set<String> _picked = {};
-  final _url = TextEditingController();
-  final _token = TextEditingController();
-  final _name = TextEditingController();
-  PhoneKey? _key;
+  String? _password;
   bool _busy = false;
 
   @override
@@ -44,8 +41,6 @@ class _FirstRunWizardState extends State<FirstRunWizard> {
       if (s == null || !mounted) return;
       setState(() {
         _picked.addAll(s.features.where((f) => f.on).map((f) => f.id));
-        _url.text = s.url.isEmpty ? s.defaultUrl : s.url;
-        _name.text = s.name;
       });
     });
   }
@@ -53,9 +48,6 @@ class _FirstRunWizardState extends State<FirstRunWizard> {
   @override
   void dispose() {
     api.removeListener(_changed);
-    _url.dispose();
-    _token.dispose();
-    _name.dispose();
     super.dispose();
   }
 
@@ -82,10 +74,8 @@ class _FirstRunWizardState extends State<FirstRunWizard> {
             await api.setFeature(f.id, _picked.contains(f.id));
           }
         case 3:
-          await api.setRelay(url: _url.text.trim(), token: _token.text.trim(), name: _name.text.trim());
-          _token.clear();
-        case 4:
-          _key = await api.key();
+          if (api.state?.running != true) await api.start();
+          _password = await api.webPassword();
       }
       if (_step == _steps - 1) {
         await _finish();
@@ -136,7 +126,8 @@ class _FirstRunWizardState extends State<FirstRunWizard> {
                       onPressed: _busy ? null : _next,
                       child: Text(switch (_step) {
                         0 => 'Set up',
-                        5 => 'Done',
+                        3 => api.state?.running == true ? 'Next' : 'Start sharing',
+                        4 => 'Done',
                         _ => 'Next',
                       }),
                     ),
@@ -156,15 +147,16 @@ class _FirstRunWizardState extends State<FirstRunWizard> {
     switch (_step) {
       case 0:
         return [
-          Text('Reach this phone from anywhere', style: theme.textTheme.headlineSmall),
+          Text('Manage this phone from a browser', style: theme.textTheme.headlineSmall),
           const SizedBox(height: 12),
-          const Text('Arstro Remote Client can make this phone a device of your own Arstro device manager. '
-              'From any browser you pick the phone, give its access key, and see its screen, camera, '
-              'messages, files and more - only the features you turn on.',
+          const Text('Arstro Remote Client runs a small web server on this phone (port 8080, like an Arstro '
+              'machine). From a browser on the same Wi-Fi you log in with a password and check the front '
+              'and back camera, ring and find the phone, see its screen, messages, files and more - only '
+              'the features you turn on.',
               style: TextStyle(fontSize: 15, height: 1.55)),
           const SizedBox(height: 12),
-          Text('Everything goes through an end-to-end encrypted channel: the server in between sees '
-              'nothing. Android shows its own camera, microphone and screen-sharing signs while they are used.',
+          Text('Android shows its own camera, microphone and screen-sharing signs while they are used. '
+              'To reach the phone from anywhere, add your Arstro device manager later on the main page.',
               style: muted),
           const SizedBox(height: 12),
           Text('Not now? Tap Skip - everything here can also be set up later on the app\'s main page.',
@@ -206,33 +198,9 @@ class _FirstRunWizardState extends State<FirstRunWizard> {
         ];
       case 3:
         return [
-          Text('Your device manager', style: theme.textTheme.titleLarge),
-          const SizedBox(height: 4),
-          Text('Its address and its join token (the device manager prints it when it starts, or shows '
-              'it with "python3 -m arstro_relay admin token").', style: muted),
-          const SizedBox(height: 12),
-          const FieldLabel('Address'),
-          TextField(controller: _url, keyboardType: TextInputType.url, autocorrect: false),
-          const SizedBox(height: 16),
-          const FieldLabel('Join token'),
-          TextField(
-            controller: _token,
-            obscureText: true,
-            autocorrect: false,
-            enableSuggestions: false,
-            decoration: InputDecoration(
-              helperText: (s?.tokenSet ?? false) ? 'Set. Type a new one to replace it.' : null,
-            ),
-          ),
-          const SizedBox(height: 16),
-          const FieldLabel('Name in the device list'),
-          TextField(controller: _name),
-        ];
-      case 4:
-        return [
           Text('Start sharing', style: theme.textTheme.titleLarge),
           const SizedBox(height: 4),
-          Text('The phone stays reachable in the background and after a restart; a notification shows it, '
+          Text('The web server keeps running in the background and after a restart; a notification shows it, '
               'with a Stop button.', style: muted),
           const SizedBox(height: 16),
           Row(children: [
@@ -240,64 +208,57 @@ class _FirstRunWizardState extends State<FirstRunWizard> {
             const SizedBox(width: 10),
             Expanded(child: Text(s?.summary ?? '')),
           ]),
-          if (s?.running == true && s?.error != null) ...[
-            const SizedBox(height: 6),
-            Text(s!.error!, style: const TextStyle(color: Arstro.err)),
-          ],
-          const SizedBox(height: 16),
-          if (s?.running != true)
-            OutlinedButton.icon(
-              onPressed: _busy
-                  ? null
-                  : () async {
-                      try {
-                        await api.start();
-                      } on PlatformException catch (e) {
-                        if (mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message ?? e.code)));
-                        }
-                      }
-                    },
-              icon: const Icon(Icons.play_arrow),
-              label: const Text('Start sharing'),
-            ),
         ];
       default:
+        final w = s?.web;
+        final a = w?.best;
         return [
-          Text('The access key', style: theme.textTheme.titleLarge),
+          Text('Open it in a browser', style: theme.textTheme.titleLarge),
           const SizedBox(height: 4),
-          Text('In the device manager, pick "${s?.name ?? 'this phone'}" and give this key. Keep it like a '
-              'password; you can see, copy or replace it any time on the app\'s main page.', style: muted),
-          const SizedBox(height: 12),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
-            decoration: BoxDecoration(
-              color: Arstro.surface2,
-              border: Border.all(color: Arstro.line2),
-              borderRadius: BorderRadius.circular(Arstro.rButton),
-            ),
-            child: SelectableText(_key?.key ?? '', style: Arstro.monoStyle(size: 13)),
-          ),
+          Text('On a computer or another phone on the same Wi-Fi (or on this phone\'s hotspot), open this '
+              'address and log in with the password. Both are on the app\'s main page too.', style: muted),
+          const SizedBox(height: 16),
+          const FieldLabel('Address'),
+          _box(a == null || w == null ? 'Join a Wi-Fi network first' : w.url(a), key: const Key('wizard-url')),
+          if (a != null && w != null && w.https) ...[
+            const SizedBox(height: 6),
+            Text('For live video and calls: ${w.url(a, secure: true)} (accept the certificate warning once).',
+                style: const TextStyle(fontSize: 13, color: Arstro.muted, height: 1.45)),
+          ],
+          const SizedBox(height: 16),
+          const FieldLabel('Password'),
+          _box(_password ?? '', key: const Key('wizard-password')),
           const SizedBox(height: 8),
           Align(
             alignment: Alignment.centerLeft,
             child: OutlinedButton.icon(
               style: Arstro.small,
               onPressed: () async {
-                final k = _key?.key;
-                if (k == null) return;
-                await Clipboard.setData(ClipboardData(text: k));
+                final p = _password;
+                if (p == null) return;
+                await Clipboard.setData(ClipboardData(text: p));
                 if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Access key copied')));
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Password copied')));
                 }
               },
               icon: const Icon(Icons.copy_outlined, size: 16),
-              label: const Text('Copy'),
+              label: const Text('Copy password'),
             ),
           ),
         ];
     }
   }
+
+  Widget _box(String text, {Key? key}) => Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+        decoration: BoxDecoration(
+          color: Arstro.surface2,
+          border: Border.all(color: Arstro.line2),
+          borderRadius: BorderRadius.circular(Arstro.rButton),
+        ),
+        child: SelectableText(text, key: key, style: Arstro.monoStyle(size: 14)),
+      );
 
   Widget _needRow(ThemeData theme, String title, bool ok, VoidCallback onAllow, {String? detail}) {
     return Padding(

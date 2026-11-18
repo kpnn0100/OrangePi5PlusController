@@ -21,6 +21,7 @@ export default {
     const stage = h("div.stage.cam-stage", null, msg, h("div.ov.tl", null, pill, recPill), h("div.ov.br", null, fsBtn));
     const video = new VideoView(stage, {
       rotate: true,
+      snapshot: () => "api/camera/photo?" + q({ facing, max: 1280 }),
       onState: () => render(),
       onConfig: (cfg) => {
         const side = [90, 270].includes(((Number(cfg.rotation) || 0) % 360 + 360) % 360);

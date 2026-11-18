@@ -94,9 +94,14 @@ object ScreenFeature : Feature("screen", "Screen view & control") {
     )
 
     override fun routes() = mapOf(
-        "GET /api/screen/shot" to route { c, _ ->
+        "GET /api/screen/shot" to route { c, req ->
             remember(c)
-            Response.bytes(shot(c.app), "image/png", 200, listOf("Cache-Control" to "no-store"))
+            // ?format=jpeg&max=N: smaller and faster (the still-picture view on plain http)
+            if (req.param("format") == "jpeg") {
+                val max = req.param("max")?.toIntOrNull()?.coerceIn(240, 4096) ?: 1280
+                Response.bytes(shot(c.app) { b -> val f = Jpeg.fit(b, max); Jpeg.compress(f, 75).also { if (f !== b) f.recycle() } },
+                               "image/jpeg", 200, listOf("Cache-Control" to "no-store"))
+            } else Response.bytes(shot(c.app), "image/png", 200, listOf("Cache-Control" to "no-store"))
         },
     )
 
@@ -538,7 +543,9 @@ object ScreenFeature : Feature("screen", "Screen view & control") {
 
     // ------------------------------------------------------------------------------------- screenshot
 
-    private fun shot(app: Context): ByteArray {
+    private fun shot(app: Context, encode: (Bitmap) -> ByteArray = { b ->
+        ByteArrayOutputStream().also { b.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
+    }): ByteArray {
         val vd: VirtualDisplay
         synchronized(lock) {
             vd = display ?: throw OpError("screen capture not running - open the screen once", 409)
@@ -590,10 +597,7 @@ object ScreenFeature : Feature("screen", "Screen view & control") {
             reconfigure()
         }
         val b = bmp ?: throw OpError("the screen sent no picture - try again", 504)
-        val out = ByteArrayOutputStream()
-        b.compress(Bitmap.CompressFormat.PNG, 100, out)
-        b.recycle()
-        return out.toByteArray()
+        return try { encode(b) } finally { b.recycle() }
     }
 
     private fun toBitmap(img: Image): Bitmap {

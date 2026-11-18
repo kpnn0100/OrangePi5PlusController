@@ -85,6 +85,8 @@ const P = {
   up: '<path d="m6 15 6-6 6 6"/>',
   down: '<path d="m6 9 6 6 6-6"/>',
   x: '<path d="M6 6l12 12M18 6 6 18"/>',
+  gauge: '<path d="M4.5 17.5a8.5 8.5 0 1 1 15 0"/><path d="m12 13.5 3.5-4.5"/><circle cx="12" cy="14" r="1.2"/>',
+  logout: '<path d="M14.5 4.5h-8a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h8"/><path d="M11 12h9.5M17 8.5l3.5 3.5-3.5 3.5"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
   trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/>',
@@ -393,7 +395,12 @@ export class PhoneError extends Error {
   constructor(message, status) { super(message); this.status = status; }
 }
 
+/** Served by the phone's own web server (http://<phone>:8080/): a login session, not an access key. */
+export const local = { on: false };
+
 function httpError(status, body, what) {
+  // the login ended (a new password, logged out elsewhere): back to the login page
+  if (status === 401 && local.on) { location.href = "login"; return new PhoneError("Log in again", 401); }
   if (body && body.error) return new PhoneError(body.error, status);
   if (status === 401) return new PhoneError("The access key expired in this browser - open the phone again from the device list.", 401);
   if (status === 502 || status === 503 || status === 504) return new PhoneError("The phone is not reachable right now.", status);

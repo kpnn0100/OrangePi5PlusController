@@ -1,8 +1,9 @@
 # Arstro on Android: the phone as a device (PHN-01..)
 
-The **Arstro Remote Client** app (`client_app/`, package `com.arstro.arstro_remote_client`)
-**shares this phone**: a foreground service makes the phone a device of the device manager, exactly
-like an Arstro Remote machine (`docs/relay/`). It is its own app, apart from Arstro Remote (`app/`,
+The **Arstro Remote Client** app (`client_app/`, package `com.arstro.arstro_remote_client`, 2.0+,
+target Android 12 and later) **shares this phone**: a foreground service runs a web server on the
+phone's own addresses - `http://<phone>:8080/` like an Arstro Remote machine, `https://<phone>:8443/`
+for live video - and, optionally, makes the phone a device of the device manager (`docs/relay/`). It is its own app, apart from Arstro Remote (`app/`,
 the remote control of a Pi): a phone can have either or both, and only the client asks for the
 phone's sensitive permissions. From any browser you
 open the device list, pick the phone, give its access key, and get the phone's own web UI:
@@ -11,16 +12,42 @@ screen view and control, camera, internet calls, find my phone, messages, files 
 ```
  browser (device manager viewer) ══ end-to-end encrypted channel ══ phone: PhoneService
                                                                        ├─ RelayAgent  (relay/PROTOCOL.md, device side)
-   B/d/<phone id>/8080/            http / ws streams ───────────────► ├─ Router      (in-process: no local port)
+   B/d/<phone id>/8080/            http / ws streams ───────────────► ├─ Router      (in-process; also behind LocalServer :8080 / :8443)
                                                                        │    ├─ assets/phone/   the web UI
                                                                        │    ├─ POST /api/op/<op>, GET /api/..., /ws/...
                                                                        │    └─ Features    screen, camera, call, ...
  the app's page (Flutter)  ──────────── MethodChannel arstro/phone ──┘    (each: permissions, ops, routes, sockets)
 ```
 
-**No local server.** The relay agent hands every http / ws stream of a channel straight to the
-in-process `Router`. Nothing listens on a port, so other apps on the phone cannot use the
-features (a local port would let any app drive the accessibility-based remote control). The
+## On the network (PHN-20..23)
+
+`LocalServer` (core, pure JVM) listens on port **8080** (HTTP) and **8443** (HTTPS) on every address
+and hands requests and WebSockets to the same `Router` the relay agent uses. Everything but the login
+needs a login, because any app on the phone and anyone on the network can reach the port:
+
+| Route | What |
+|---|---|
+| `GET /login`, `POST /login` (form `password`) | the login page; success: `303 ./` + cookie `arstro_phone` (HttpOnly, SameSite=Strict, `Secure` on https, 30 days) |
+| `POST /api/login` `{"password"}` | `{ok, token, expires_days}` - send `Authorization: Bearer <token>` (agents, curl) |
+| `GET /logout`, `POST /api/logout` | ends the session |
+| `GET /api/ping` | `{ok, app: "arstro-phone", login: bool}` (no login needed) |
+| anything else | `401` without a login (`GET /` from a browser: `303 login`), else the Router |
+
+* **Password**: made at random on first use (10 characters, no look-alikes), shown / copied / changed in
+  the app; a change drops every session. Only SHA-256 hashes of session tokens are stored.
+* **Lockout**: 5 wrong passwords per address, then 30 s, doubling up to 15 min (`429`, `Retry-After`).
+* **WebSockets** need the login and an `Origin` equal to `Host` (no cross-site sockets).
+* **HTTPS**: `SelfSigned` makes an EC P-256 key and a self-signed certificate once (kept in the app's
+  private settings); the app shows its SHA-256 fingerprint to compare with the browser's warning page.
+  Browsers allow WebCodecs, `getUserMedia` and the async clipboard only in secure contexts.
+* **Plain http** (no WebCodecs): the camera and screen views poll still pictures
+  (`/api/camera/photo?facing=&max=1280`, `/api/screen/shot?format=jpeg&max=N`, about 4 per second once the
+  camera is open; it stays open 4 s after a photo) and send screen control as ops (PHN-23).
+* The notification and the app show the address (Wi-Fi first, then the hotspot; mobile data last -
+  carriers do not let others in). Switch: *Web server on port 8080* (on by default).
+
+The relay agent (optional since 2.0: *Also through a device manager*, on once a join token is saved)
+hands every http / ws stream of a channel straight to the same in-process `Router`. The
 device advertises `web: 8080` and its `ready` says `ports: [8080]`: only port 8080 reaches the
 router (another port: "port N is not allowed on this device"), and `tcp` streams are refused
 ("tcp is not available on a phone") - so the relay client's `forward` does not work with a phone;
@@ -54,6 +81,7 @@ agents use `http` (docs/relay/AGENT_API.md).
 | `clipboard` | Clipboard | - | - | - |
 | `apps` | Apps | - | `OVERLAY` (open from background) | - |
 | `tools` | Audio & tools (volume, media keys, speak, torch, vibrate, brightness, open URL) | - | `OVERLAY`, `WRITE_SETTINGS` (brightness) | - |
+| `device` | Device controls (ringer, Do Not Disturb, Bluetooth, alarm / timer, screen timeout, wallpaper, sensors, facts) | `BLUETOOTH_CONNECT` (Android 12 only) | `DND` | - |
 | `shell` | Shell (the app's sandbox) | - | - | - |
 
 Plus, for the service itself: `POST_NOTIFICATIONS`, `BATTERY_UNRESTRICTED` (ignore battery
@@ -120,8 +148,8 @@ All paths are relative to the device root (`B/d/<id>/8080/`). JSON bodies; error
 | `GET /api/files/list?path=P` | `{path, parent, entries: [{name, path, dir, size, mtime}]}` |
 | `GET /api/files/download?path=P` | the file (`Content-Disposition: attachment`, `Content-Length`, `Range` → 206) |
 | `PUT /api/files/upload?dir=D&name=N[&overwrite=1]` | raw body (`Content-Length` required) → `{ok, path}` |
-| `GET /api/camera/photo?facing=back\|front` | a JPEG taken now |
-| `GET /api/screen/shot` | a PNG of the screen now (for agents) |
+| `GET /api/camera/photo?facing=back\|front[&max=N]` | a JPEG taken now (`max`: long side at most N, upright) |
+| `GET /api/screen/shot[?format=jpeg&max=N]` | a PNG (or a smaller JPEG) of the screen now |
 
 **Ops** (`POST /api/op/<op>`):
 
@@ -163,6 +191,13 @@ All paths are relative to the device root (`B/d/<id>/8080/`). JSON bodies; error
 | `tools.vibrate` | `ms?` | |
 | `tools.brightness` | `level (0..1) \| auto` | |
 | `tools.open_url` | `url` | |
+| `device.info` | | `{manufacturer, model, android, sdk, security_patch, build, abis, screen: {width, height, dpi}, uptime_s, ringer, dnd, bluetooth, screen_timeout_s, can: {dnd, write_settings, bluetooth}}` |
+| `device.ringer` / `device.dnd` | `mode?` (`normal\|vibrate\|silent` / `off\|priority\|alarms\|none`) | `{mode}` (set needs DND access) |
+| `device.bluetooth` | `on?` | `{on, name}` (switching: Android 12 only; 13+ opens the settings and answers 409) |
+| `device.alarm` / `device.timer` | `hour, minute, label?` / `seconds, label?` | set in the clock app without its UI |
+| `device.screen_timeout` | `seconds?` (15..1800) | `{seconds}` (set needs *Modify system settings*) |
+| `device.wallpaper` | `path, which?: both\|home\|lock` | `{set: true}` |
+| `device.sensors` / `device.sensor` | / `type` | `[{type, name, vendor, kind, unit, wakeup}]` / `{type, name, values, unit, accuracy}` |
 | `shell.run` | `cmd, timeout_s?` | `{code, out}` (runs as the app, in its sandbox) |
 | `features.list` | | the `features` of `/api/info` |
 
@@ -203,7 +238,9 @@ browser's microphone, same format) played on the phone's earpiece / speaker; tex
 | `state` | | `{running, relay: {state, error, url, name, id, transport}, key_id, first_run, features: [{id, title, on, ready, missing: [{name, kind: permission\|special}]}]}` |
 | `setFeature` | `id, on` | state |
 | `request` | `id` (feature) or `name` (one permission / special access) | after the user answered: state |
-| `setRelay` | `url, token?, name?` | state |
+| `setRelay` | `url, token?, name?` | state (a token also turns `relay_on` on) |
+| `setRelayOn` / `setWeb` | `on` | state (`relay_on`; `web: {on, listening, port, tls_port, https, addresses: [{ip, kind, iface}], viewers, error, fingerprint}`) |
+| `webPassword` / `setWebPassword` | / `password?` (empty: a random one) | `{password}` |
 | `key` / `rotateKey` | | `{key, key_id}` |
 | `start` / `stop` | | state (the service) |
 | `finishFirstRun` | | state |

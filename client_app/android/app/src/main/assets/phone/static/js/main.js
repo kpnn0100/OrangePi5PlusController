@@ -3,7 +3,7 @@
 // (#/<page>) and the /ws event connection. Pages are loaded when first opened (fewer requests
 // over the device manager's channel).
 
-import { h, clear, icon, store, events, getJson, toast, closeAllSheets, feature, featureReady, featureReason, onEvent,
+import { h, local, clear, icon, store, events, getJson, toast, closeAllSheets, feature, featureReady, featureReason, onEvent,
          pref, VERSION, errText, batteryPct } from "./core.js";
 
 const VIEWS = [
@@ -20,6 +20,7 @@ const VIEWS = [
   { id: "clipboard", title: "Clipboard", icon: "clipboard", feature: "clipboard", load: () => import("./views/clipboard.js") },
   { id: "apps", title: "Apps", icon: "apps", feature: "apps", load: () => import("./views/apps.js") },
   { id: "tools", title: "Tools", icon: "sliders", feature: "tools", load: () => import("./views/tools.js") },
+  { id: "device", title: "Device", icon: "gauge", feature: "device", load: () => import("./views/device.js") },
   { id: "shell", title: "Shell", icon: "terminal", feature: "shell", load: () => import("./views/shell.js") },
   { id: "features", title: "Features", icon: "toggles", load: () => import("./views/features.js") },
 ];
@@ -57,6 +58,11 @@ function buildShell() {
 
   const nav = h("div.nav-list");
   const themeBtn = h("button.btn.ghost.sm.theme-btn", { onclick: cycleTheme, "aria-label": "Theme" });
+  // on the phone's own web server: log out (through the device manager the access key is the login)
+  const logoutBtn = h("a.btn.ghost.sm.hidden", { href: "logout", "aria-label": "Log out", title: "Log out" }, icon("logout"), "Log out");
+  fetch("api/ping", { cache: "no-store" }).then((r) => r.ok ? r.json() : null).then((d) => {
+    if (d && d.app === "arstro-phone") { local.on = true; logoutBtn.classList.remove("hidden"); }
+  }).catch(() => {});
   const side = h("nav.side", { "aria-label": "Phone" },
     h("div.brand", null,
       h("div.logo", null, icon("phone")),
@@ -66,7 +72,7 @@ function buildShell() {
       h("button.btn.ghost.icon.sm.drawer-x", { "aria-label": "Close menu", onclick: () => setDrawer(false) }, icon("x"))),
     h("div.brand-status", null, conn(), battery()),
     nav,
-    h("div.side-foot", null, themeBtn, h("span.muted", null, "v" + VERSION)));
+    h("div.side-foot", null, themeBtn, logoutBtn, h("span.muted", null, "v" + VERSION)));
   const title = h("div.topbar-title.ellipsis");
   const top = h("header.topbar", null,
     h("button.btn.ghost.icon.menu-btn", { "aria-label": "Menu", onclick: () => setDrawer(true) }, icon("menu")),
