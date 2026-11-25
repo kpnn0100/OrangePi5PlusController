@@ -213,6 +213,10 @@ HDMI RX (`rk_hdmirx`, V4L2) → GStreamer tee in the worker:
   `mpph264enc` keeps one frame in the encoder at a time and waits ~20 ms per 1080p frame for
   its packet: 7-9 fps for a 4K -> 1080p copy, against ~100 fps this way (the VPU alone: ~190
   fps at 1080p). The elements stay as the fallback when the library cannot be loaded.
+* **MagicYUV from a RAW** (the default lossless copy): the same lanes on the CPU only (no GPU
+  encoder) when FFmpeg 9 is set up, else - and always while the take is still being recorded - one
+  FFmpeg fed by `jobs.transcode_magicyuv` (frames re-laid into planes in Python when that FFmpeg
+  cannot take the capture format). Decodes 3-4x faster than FFV1 in players and editors.
 * **FFV1 from a RAW** (`recorder/ffv1lanes.py`): three FFmpeg 9 *lanes* encode at once - two on
   the CPU, one on the GPU (Vulkan) - each fed by its own thread that reads the lane's frames
   from the RAW with O_DIRECT into one reused buffer; frames go to whichever lane has room. All

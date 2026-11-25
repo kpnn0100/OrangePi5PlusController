@@ -1,4 +1,4 @@
-"""Background conversions (GAL-04/05): HQ H.265, H.264 "share" MP4, FFV1.
+"""Background conversions (GAL-04/05): HQ H.265, H.264 "share" MP4, FFV1, MagicYUV.
 
 Each job runs in its own low-priority process (`python3 -m arstro_remote.recorder.transcode`),
 so a slow CPU encode never competes with the capture for the GIL, and a crash
@@ -31,12 +31,16 @@ CODECS = {
     "h265-x265": ("H.265 HQ (x265)", "_H265.mov"),
     "ffv1": ("FFV1 lossless", "_FFV1.mkv"),
     "ffv1-gpu": ("FFV1 lossless (GPU)", "_FFV1.mkv"),
+    "magicyuv": ("MagicYUV lossless", "_MAGICYUV.mkv"),
 }
+# lossless copies: the same frames byte for byte, checked against the RAW (GAL-08)
+LOSSLESS = ("ffv1", "ffv1-gpu", "magicyuv")
 X265_CRF = {"high": 18, "higher": 14, "max": 10}
 VPU_QP = {"high": 22, "higher": 18, "max": 14}
 X265_PRESETS = ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow"]
 
 # raw HDMI RX pixel format -> (4:2:0 format, format keeping the source chroma, FFV1 format)
+# (MagicYUV is made with FFmpeg only: transcode_magicyuv / the lanes)
 FORMATS = {
     "NV12": ("I420", "I420", "I420"),
     "NV21": ("I420", "I420", "I420"),
@@ -57,7 +61,7 @@ def _base(path):
     """REC_x_H265.mov -> REC_x (the take's base name, without variant suffixes)."""
     import re
     root = os.path.splitext(path)[0]
-    return re.sub(r"(?:_(?:H265|FFV1|H264)(?:_\d+p)?)+$", "", root)
+    return re.sub(r"(?:_(?:H265|FFV1|MAGICYUV|H264)(?:_\d+p)?)+$", "", root)
 
 
 def output_path(src, codec, scale=None):
@@ -224,6 +228,8 @@ def _transcode(args):
     if args.codec == "ffv1-gpu":
         return transcode_ffv1_gpu(args)
     if not args.input.lower().endswith(".arh"):
+        if args.codec == "magicyuv":         # GStreamer's Matroska muxer takes no MagicYUV
+            return transcode_media_magicyuv(args)
         return transcode_media(args)
 
     def emit(**kw):
@@ -236,10 +242,12 @@ def _transcode(args):
         return 2
     v, a = reader.video, reader.audio if not args.no_audio else None
     fps = reader.fps
-    if args.codec == "ffv1" and not args.follow and args.lanes != "gst":
+    if args.codec in ("ffv1", "magicyuv") and not args.follow and args.lanes != "gst":
         code = transcode_ffv1_lanes(args, reader, emit)
         if code is not None:
             return code
+    if args.codec == "magicyuv":             # while recording, or where the lanes can't run
+        return transcode_magicyuv(args, reader, emit)
     out = args.output or output_path(args.input, args.codec, args.scale)
     part = out + ".part"
     mux = _mux(args.codec)
@@ -423,7 +431,8 @@ def _raw_audio_to(reader, fd, follow, stop):
 
 def transcode_ffv1_lanes(args, reader, emit):
     """FFV1 of a RAW take on the CPU and the GPU at once (ffv1lanes.py): two CPU lanes and the
-    GPU. Returns None when that can't run here (no FFmpeg 9 from setup_gpu.sh - the system's
+    GPU. MagicYUV (args.codec) the same way on two CPU lanes - there is no GPU encoder for it.
+    Returns None when that can't run here (no FFmpeg 9 from setup_gpu.sh - the system's
     cannot convert NV16 - or frames it can't take): the GStreamer encoder makes the copy then.
     With --cpus (a retry after a failure: less peak current) one CPU lane only."""
     from . import ffv1lanes, gpu
@@ -432,15 +441,18 @@ def transcode_ffv1_lanes(args, reader, emit):
     if not g or v["format"] not in gpu.FFMPEG_PIXFMT or not _default_layout(v):
         return None
     exe, env = g
-    kinds = ((["cpu"] if args.cpus else ["cpu", "cpu", "gpu"]) if args.lanes == "auto"
-             else [k for k in args.lanes.split(",") if k in ffv1lanes.DEPTH])
+    codec = args.codec
+    kinds = ((["cpu"] if args.cpus else ["cpu", "cpu"] if codec == "magicyuv" else ["cpu", "cpu", "gpu"])
+             if args.lanes == "auto" else [k for k in args.lanes.split(",") if k in ffv1lanes.DEPTH])
+    if codec == "magicyuv":
+        kinds = [k for k in kinds if k == "cpu"]
     if not kinds:
         return None
     try:
         threads = len(os.sched_getaffinity(0))
     except (AttributeError, OSError):
         threads = os.cpu_count() or 4
-    out = args.output or output_path(args.input, "ffv1")
+    out = args.output or output_path(args.input, codec)
     part = out + ".part"
     tc = source_timecode(args.input, reader)
     audio_r = audio_w = None
@@ -454,7 +466,7 @@ def transcode_ffv1_lanes(args, reader, emit):
 
     def spawn(kind):
         return ffv1lanes.Lane(kind, ffv1lanes.lane_cmd(kind, exe, v, gpu.PLANAR[v["format"]],
-                                                       gpu.FFMPEG_PIXFMT[v["format"]], threads), env)
+                                                       gpu.FFMPEG_PIXFMT[v["format"]], threads, codec), env)
     try:
         for k in kinds:
             lanes.append(spawn(k))
@@ -545,7 +557,7 @@ def transcode_ffv1_lanes(args, reader, emit):
                 emit(note=f"the {lane.kind.upper()} encoder stopped ({lane.dead}); another made its frames")
     if not result["error"]:
         os.replace(part, out)
-        emit(note="FFV1 on " + " + ".join(f"{k.upper()} ({n} frames)" for k, n in made().items()))
+        emit(note=CODECS[codec][0].split(" ")[0] + " on " + " + ".join(f"{k.upper()} ({n} frames)" for k, n in made().items()))
         emit(state="done", frames=written, output=out, seconds=round(time.monotonic() - t0, 1),
              damaged=_damage(reader))
         return 0
@@ -557,6 +569,181 @@ def transcode_ffv1_lanes(args, reader, emit):
         emit(state="cancelled", error="cancelled")
         return 3
     emit(state="failed", error=result["error"])
+    return 2
+
+
+def _ffmpeg_for_raw(v):
+    """(ffmpeg, env, input pixel format, convert here?) for raw frames of this RAW: the FFmpeg 9
+    build (setup_gpu.sh) takes the capture formats as they are; any other FFmpeg gets the frames
+    re-laid into planes here (the system FFmpeg 5.1 cannot convert NV16) - both lossless."""
+    import shutil
+    from . import gpu
+    g = gpu.ffmpeg()
+    if g and v["format"] in gpu.FFMPEG_PIXFMT and _default_layout(v):
+        return g[0], g[1], gpu.FFMPEG_PIXFMT[v["format"]], False
+    exe = g[0] if g else shutil.which("ffmpeg")
+    return exe, (g[1] if g else dict(os.environ)), gpu.PLANAR.get(v["format"]), True
+
+
+def transcode_magicyuv(args, reader, emit):
+    """MagicYUV of a RAW take with one FFmpeg (GAL-04): also while the take is still being recorded
+    (--follow), and where the lanes cannot run. Every core (frame threads); audio as PCM and the
+    take's timecode like the FFV1 copies. The lossless check (GAL-08) proves it afterwards."""
+    from . import gpu, verify as vf
+    v, a = reader.video, (reader.audio if not args.no_audio else None)
+    exe, env, inpix, convert = _ffmpeg_for_raw(v)
+    planar = gpu.PLANAR.get(v["format"])
+    if not exe or not planar:
+        emit(state="failed", error="no FFmpeg on this machine" if not exe else f"MagicYUV can't take {v['format']} frames")
+        return 2
+    try:
+        threads = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        threads = os.cpu_count() or 4
+    out = args.output or output_path(args.input, "magicyuv")
+    part = out + ".part"
+    tc = source_timecode(args.input, reader)
+    cmd = [exe, "-hide_banner", "-nostdin", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", inpix,
+           "-s", f"{v['width']}x{v['height']}", "-framerate", f"{v['fps_n']}/{v['fps_d']}", "-i", "pipe:0"]
+    audio_r = audio_w = None
+    if a:
+        audio_r, audio_w = os.pipe()
+        cmd += ["-f", "s16le", "-ar", str(a["rate"]), "-ac", str(a["channels"]), "-i", f"pipe:{audio_r}",
+                "-map", "0:v", "-map", "1:a", "-c:a", "pcm_s16le"]
+    cmd += ["-vf", f"format={planar}", "-c:v", "magicyuv", "-pred", "left", "-threads", str(threads),
+            *(["-timecode", tc["tc"]] if tc else []), "-f", "matroska", part]
+    try:
+        proc = subprocess.Popen(cmd, env=env, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.PIPE, pass_fds=(audio_r,) if audio_r else ())
+    except OSError as e:
+        emit(state="failed", error=f"can't start FFmpeg: {e}")
+        return 2
+    if audio_r:
+        os.close(audio_r)
+    stop = threading.Event()
+    result = {"error": None}
+    err = collections.deque(maxlen=6)
+
+    def on_term(*_):
+        result["error"] = "cancelled"
+        stop.set()
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    signal.signal(signal.SIGTERM, on_term)
+    signal.signal(signal.SIGINT, on_term)
+
+    def drain():
+        for line in proc.stderr:
+            err.append(line.decode(errors="replace").rstrip())
+            print("[ffmpeg] " + err[-1], file=sys.stderr, flush=True)
+    threading.Thread(target=drain, daemon=True).start()
+    if audio_w is not None:
+        threading.Thread(target=_raw_audio_to, args=(reader, audio_w, args.follow, stop), daemon=True).start()
+
+    def planes(data):
+        p = vf.raw_planes(v["format"], bytes(data), v)
+        return b"".join(p[k] for k in (("G", "B", "R") if planar == "gbrp" else ("Y", "U", "V")))
+
+    t0, written, last = time.monotonic(), 0, 0.0
+    emit(state="running", frames=0, total=reader.estimate_frames(), fps=0, output=out, live=bool(args.follow))
+    try:
+        for _pts, _seq, data, _rep in arh.cfr_frames(reader, args.follow, stop=stop):
+            proc.stdin.write(planes(data) if convert else data)
+            written += 1
+            if time.monotonic() - last >= 0.5:
+                last = time.monotonic()
+                dt = last - t0
+                emit(state="running", frames=written, total=max(reader.estimate_frames(), written),
+                     fps=round(written / dt, 2) if dt > 0 else 0)
+        if stop.is_set():
+            raise RuntimeError(result["error"] or "cancelled")
+        proc.stdin.close()
+        code = proc.wait()
+        if code != 0:
+            raise RuntimeError("MagicYUV failed: " + ("; ".join(err) or f"FFmpeg exit code {code}"))
+    except BrokenPipeError:
+        proc.wait()
+        result["error"] = result["error"] or "MagicYUV failed: " + ("; ".join(err) or "FFmpeg stopped")
+    except (RuntimeError, OSError, vf.Mismatch) as e:
+        result["error"] = result["error"] or str(e)
+    finally:
+        stop.set()
+        if proc.poll() is None:
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+    if not result["error"]:
+        os.replace(part, out)
+        emit(state="done", frames=written, output=out, seconds=round(time.monotonic() - t0, 1),
+             damaged=_damage(reader))
+        return 0
+    try:
+        os.remove(part)
+    except OSError:
+        pass
+    if result["error"] == "cancelled":
+        emit(state="cancelled", error="cancelled")
+        return 3
+    emit(state="failed", error=result["error"])
+    return 2
+
+
+def transcode_media_magicyuv(args):
+    """MagicYUV of an already encoded clip with FFmpeg: decoded, audio as PCM. Lossless only of
+    what the clip holds (no check against a RAW)."""
+    import shutil
+    from . import gpu
+    g = gpu.ffmpeg()
+    exe, env = (g if g else (shutil.which("ffmpeg"), dict(os.environ)))
+
+    def emit(**kw):
+        print(json.dumps(kw), flush=True)
+    if not exe:
+        emit(state="failed", error="no FFmpeg on this machine")
+        return 2
+    out = args.output or output_path(args.input, "magicyuv")
+    part = out + ".part"
+    total = 0
+    try:
+        p = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_packets", "-show_entries",
+                            "stream=nb_read_packets", "-of", "csv=p=0", args.input], capture_output=True, text=True,
+                           timeout=120)
+        total = int((p.stdout or "0").strip().split(",")[0] or 0)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    cmd = [exe, "-hide_banner", "-nostdin", "-v", "error", "-y", "-i", args.input, "-map", "0:v:0",
+           *([] if args.no_audio else ["-map", "0:a?", "-c:a", "pcm_s16le"]),
+           "-c:v", "magicyuv", "-pred", "left", "-threads", "0", "-progress", "pipe:1", "-f", "matroska", part]
+    t0 = time.monotonic()
+    emit(state="running", frames=0, total=total, fps=0, output=out)
+    try:
+        proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    except OSError as e:
+        emit(state="failed", error=f"can't start FFmpeg: {e}")
+        return 2
+    signal.signal(signal.SIGTERM, lambda *_: proc.kill())
+    frames = 0
+    for line in proc.stdout:
+        if line.startswith("frame="):
+            frames = int(line.split("=", 1)[1] or 0)
+            dt = time.monotonic() - t0
+            emit(state="running", frames=frames, total=max(total, frames), fps=round(frames / dt, 2) if dt > 0 else 0)
+    code = proc.wait()
+    if code == 0:
+        os.replace(part, out)
+        emit(state="done", frames=frames, output=out, seconds=round(time.monotonic() - t0, 1))
+        return 0
+    try:
+        os.remove(part)
+    except OSError:
+        pass
+    if code < 0:
+        emit(state="cancelled", error="cancelled")
+        return 3
+    emit(state="failed", error="MagicYUV failed: " + (proc.stderr.read().strip()[-300:] or f"exit code {code}"))
     return 2
 
 
@@ -817,7 +1004,7 @@ def _audio_tail(codec):
 
 
 def _mux(codec):
-    if codec == "ffv1":
+    if codec in ("ffv1", "magicyuv"):
         return "matroskamux"
     if codec == "h264-vpu":
         return "mp4mux faststart=true"
@@ -847,13 +1034,13 @@ def add_transcode_args(sp):
                     help="run on the first N CPUs only (0 = all): less peak current on a weak supply; "
                          "on big.LITTLE boards the little cores come first")
     sp.add_argument("--lanes", default="auto",
-                    help="FFV1 from a RAW: encoders working together, e.g. cpu,gpu (auto: cpu,cpu,gpu when "
+                    help="FFV1 / MagicYUV from a RAW: encoders working together, e.g. cpu,gpu (auto: cpu,cpu,gpu when "
                          "GPU encoding is set up, one cpu with --cpus) or gst (the GStreamer encoder)")
 
 
 # ---------------------------------------------------------------- job manager (UI side)
 
-VERIFIED_SUFFIX = ".verified.json"      # next to an FFV1 file proven identical to its RAW (GAL-08)
+VERIFIED_SUFFIX = ".verified.json"      # next to a lossless copy proven identical to its RAW (GAL-08)
 MAX_ATTEMPTS = 3                        # a failed or interrupted job runs again, up to this (GAL-10)
 RETRY_DELAY = 10                        # s, times the attempt number
 GENTLE_CPUS = 6                         # FFV1 on CPU after a failure: fewer cores, less peak current
@@ -861,7 +1048,7 @@ EXIT_LOCKED = 4                         # the worker's code for "another job mak
 
 
 def verify_wanted(codec, src, opts):
-    return codec in ("ffv1", "ffv1-gpu", "verify") and src.lower().endswith(".arh") and bool(opts.get("verify"))
+    return (codec in LOSSLESS or codec == "verify") and src.lower().endswith(".arh") and bool(opts.get("verify"))
 
 
 def _mb(n):
@@ -1111,7 +1298,7 @@ class JobManager:
                "--quality", o.get("quality", "high"), "--preset", o.get("preset", "fast"),
                "--chroma", o.get("chroma", "420"), "--scale", o.get("scale") or "source",
                "-o", job.output]
-        if job.attempt > 1 and job.codec == "ffv1":
+        if job.attempt > 1 and job.codec in ("ffv1", "magicyuv"):
             cmd += ["--cpus", str(GENTLE_CPUS)]
         if o.get("bitrate"):
             cmd += ["--bitrate", str(o["bitrate"]), "--rc", o.get("rc", "vbr")]
@@ -1140,7 +1327,7 @@ class JobManager:
         return env
 
     def _spawn_verify(self, job):
-        """Phase 2 of an FFV1 job (or a standalone check): decode and compare with the RAW."""
+        """Phase 2 of a lossless job (or a standalone check): decode and compare with the RAW."""
         cmd = [sys.executable, "-m", "arstro_remote.recorder.verify", job.src, job.output]
         try:
             log = open(job.output + ".verify.log", "w")

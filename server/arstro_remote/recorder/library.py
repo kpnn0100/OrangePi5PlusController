@@ -1,7 +1,7 @@
 """Recordings library for the gallery (GAL-01).
 
 Files of one take share a base name (REC_20260927_021350): the .arh raw file and its
-_H265.mov / _H264.mp4 / _FFV1.mkv copies, or a live-recorded .mp4/.mkv. Each file is
+_H265.mov / _H264.mp4 / _FFV1.mkv / _MAGICYUV.mkv copies, or a live-recorded .mp4/.mkv. Each file is
 classified by its content (ARH header, or the codec ffprobe reports), not only its name.
 Probing runs ffprobe in a subprocess, so the server process never loads GStreamer.
 """
@@ -16,12 +16,13 @@ from datetime import datetime
 
 from . import arh, takes as takes_mod
 
-RAW, H265, H264, FFV1, OTHER = "RAW", "H.265", "H.264", "FFV1", "VIDEO"
-KINDS = (RAW, H265, H264, FFV1, OTHER)
+RAW, H265, H264, FFV1, MAGICYUV, OTHER = "RAW", "H.265", "H.264", "FFV1", "MagicYUV", "VIDEO"
+KINDS = (RAW, H265, H264, FFV1, MAGICYUV, OTHER)
+LOSSLESS = (FFV1, MAGICYUV)             # copies the lossless check (GAL-08) can prove
 EXTENSIONS = (".arh", ".mp4", ".mkv", ".mov")
-_BASE = re.compile(r"^(.*?)(?:_(?:H265|FFV1|H264)(?:_\d+p)?)*\.(?:arh|mp4|mkv|mov)$", re.I)
+_BASE = re.compile(r"^(.*?)(?:_(?:H265|FFV1|MAGICYUV|H264)(?:_\d+p)?)*\.(?:arh|mp4|mkv|mov)$", re.I)
 _STAMP = re.compile(r"(\d{8})_(\d{6})")
-ORDER = {RAW: 0, H265: 1, H264: 2, FFV1: 3, OTHER: 4}
+ORDER = {RAW: 0, H265: 1, H264: 2, MAGICYUV: 3, FFV1: 4, OTHER: 5}
 
 
 def clip_id(filename):
@@ -84,7 +85,7 @@ def _probe_media(path, item):
         return
     codec = v.get("codec_name", "")
     item["codec"] = codec
-    item["kind"] = {"hevc": H265, "h264": H264, "ffv1": FFV1}.get(codec, OTHER)
+    item["kind"] = {"hevc": H265, "h264": H264, "ffv1": FFV1, "magicyuv": MAGICYUV}.get(codec, OTHER)
     item["width"], item["height"] = int(v.get("width") or 0), int(v.get("height") or 0)
     rate = v.get("avg_frame_rate") or v.get("r_frame_rate") or "0/1"
     try:
@@ -102,7 +103,7 @@ def _probe_media(path, item):
 
 
 def _verified(path):
-    """For an FFV1 file: the lossless check against its RAW (GAL-08), or None."""
+    """For an FFV1 / MagicYUV file: the lossless check against its RAW (GAL-08), or None."""
     try:
         with open(path + ".verified.json") as f:
             v = json.load(f)
@@ -176,7 +177,7 @@ class Library:
                     item["kind"] = RAW if n.lower().endswith(".arh") else H265
             item["recording"] = live
             item["busy"] = live or os.path.abspath(p) in busy
-            item["verified"] = _verified(p) if item["kind"] == FFV1 else None
+            item["verified"] = _verified(p) if item["kind"] in LOSSLESS else None
             if live:
                 item["problem"] = "recording…"
             item["url"] = "/api/media/" + n

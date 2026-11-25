@@ -72,6 +72,7 @@ class _SettingsBodyState extends State<_SettingsBody> {
         final caps = asMap(rec['caps']);
         if (st.isEmpty) return const Center(child: CircularProgressIndicator());
         final h265 = asMap(st['h265']), raw = asMap(st['raw']), audio = asMap(st['audio']);
+        final magic = (raw['lossless_codec'] ?? 'magicyuv') == 'magicyuv' && caps['magicyuv'] == true;
         final inputs = [
           ...asList(rec['audio_inputs']),
           if (rec['audio_inputs'] == null) {'id': 'hdmi', 'name': 'HDMI input'},
@@ -124,7 +125,7 @@ class _SettingsBodyState extends State<_SettingsBody> {
               ])
             else ...[
               const _Group('Extra copies'),
-              // REC-04: one sub-section per kind of copy - H.264, H.265, FFV1 - its switch in the
+              // REC-04: one sub-section per kind of copy - H.264, H.265, lossless - its switch in the
               // header, its options inside (tap the header; switching a copy on opens it too)
               _Card([
                 _CopySection(
@@ -179,18 +180,32 @@ class _SettingsBodyState extends State<_SettingsBody> {
                 ),
                 _CopySection(
                   id: 'ffv1',
-                  title: 'FFV1',
-                  what: 'Lossless: the exact picture at a fraction of the RAW size',
-                  summary: '${raw['ffv1_engine'] == 'gpu' ? 'GPU' : 'CPU'}'
+                  title: 'Lossless',
+                  what: 'The exact picture at a fraction of the RAW size',
+                  summary: '${magic ? 'MagicYUV' : 'FFV1 ${raw['ffv1_engine'] == 'gpu' ? 'GPU' : 'CPU'}'}'
                       ' · ${raw['ffv1_replace_raw'] != false ? 'replaces the RAW' : 'keeps the RAW'}',
                   on: raw['ffv1'] == true,
-                  onChanged: caps['ffv1'] == true || caps['gpu_ffv1'] == true ? (v) => _set({'raw': {'ffv1': v}}) : null,
+                  onChanged: caps['ffv1'] == true || caps['gpu_ffv1'] == true || caps['magicyuv'] == true
+                      ? (v) => _set({'raw': {'ffv1': v}})
+                      : null,
                   open: _openCopies,
                   children: [
-                    _Row('Engine', 'GPU is slower but leaves the CPU free',
-                        _seg<String>({'cpu': 'CPU', 'gpu': 'GPU'}, raw['ffv1_engine'] as String?,
-                            (v) => _set({'raw': {'ffv1_engine': v}}),
-                            disabled: {if (caps['ffv1'] != true) 'cpu', if (caps['gpu_ffv1'] != true) 'gpu'})),
+                    _Row(
+                        'Codec',
+                        magic
+                            ? '3-4x faster to make and to play back or edit; about 20% bigger'
+                            : 'Smallest lossless files; slow to play back or edit',
+                        _seg<String>({'magicyuv': 'MagicYUV', 'ffv1': 'FFV1'}, magic ? 'magicyuv' : 'ffv1',
+                            (v) => _set({'raw': {'lossless_codec': v}}),
+                            disabled: {
+                              if (caps['magicyuv'] != true) 'magicyuv',
+                              if (caps['ffv1'] != true && caps['gpu_ffv1'] != true) 'ffv1'
+                            })),
+                    if (!magic)
+                      _Row('Engine', 'GPU is slower but leaves the CPU free',
+                          _seg<String>({'cpu': 'CPU', 'gpu': 'GPU'}, raw['ffv1_engine'] as String?,
+                              (v) => _set({'raw': {'ffv1_engine': v}}),
+                              disabled: {if (caps['ffv1'] != true) 'cpu', if (caps['gpu_ffv1'] != true) 'gpu'})),
                     _SwitchRow(
                         'Delete RAW after a verified copy',
                         'Every frame and audio sample is compared byte for byte first; if anything differs the RAW stays',

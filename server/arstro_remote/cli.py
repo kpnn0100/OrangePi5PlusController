@@ -523,7 +523,7 @@ def cmd_rec(ctl, a):
             if pins:
                 print("GPIO     : " + ", ".join(pins))
             caps = st.get("caps") or {}
-            print("Encoders : " + ", ".join(k for k in ("vpu_h264", "vpu_h265", "x265", "ffv1", "gpu_ffv1") if caps.get(k)))
+            print("Encoders : " + ", ".join(k for k in ("vpu_h264", "vpu_h265", "x265", "ffv1", "gpu_ffv1", "magicyuv") if caps.get(k)))
             if st.get("last"):
                 l = st["last"]
                 print("Last     : %s%s" % (l.get("file"), " (%s)" % l["reason"] if l.get("reason") else ""))
@@ -1841,7 +1841,7 @@ def build_parser():
     lr = rs.add_parser("lut-rm", help="delete a .cube LUT you added")
     lr.add_argument("lut", help="cube:<name>")
     rs.add_parser("settings")
-    se = rs.add_parser("set", help="change settings, e.g. mode=raw h265.bitrate=60 raw.ffv1=true")
+    se = rs.add_parser("set", help="change settings, e.g. mode=raw h265.bitrate=60 raw.ffv1=true raw.lossless_codec=magicyuv")
     se.add_argument("assignments", nargs="+")
     ed = rs.add_parser("edid")
     ed.add_argument("value", choices=["4k60", "4k30", "1080p", "keep"])
@@ -1872,13 +1872,13 @@ def build_parser():
     g = sub.add_parser("gallery", help="recordings")
     gs = g.add_subparsers(dest="gal_cmd")
     gl = gs.add_parser("list")
-    gl.add_argument("--kind", choices=["RAW", "H.265", "H.264", "FFV1", "VIDEO"])
+    gl.add_argument("--kind", choices=["RAW", "H.265", "H.264", "FFV1", "MagicYUV", "VIDEO"])
     sh = gs.add_parser("show")
     sh.add_argument("take")
     gs.add_parser("targets")
     cv = gs.add_parser("convert")
     cv.add_argument("file")
-    cv.add_argument("--to", required=True, help="h264-vpu, h265-vpu, h265-x265, ffv1, ffv1-gpu")
+    cv.add_argument("--to", required=True, help="h264-vpu, h265-vpu, h265-x265, ffv1, ffv1-gpu, magicyuv")
     cv.add_argument("--quality", choices=["high", "higher", "max"], default="high")
     cv.add_argument("--bitrate", type=float, help="Mbit/s instead of constant quality (H.264/H.265)")
     cv.add_argument("--rc", choices=["vbr", "cbr"], default="vbr")
@@ -1886,9 +1886,9 @@ def build_parser():
     cv.add_argument("--preset", default="fast", help="x265 speed preset")
     cv.add_argument("--wait", action="store_true", help="wait and show progress")
     cv.add_argument("--keep-raw", action="store_true",
-                    help="FFV1 from RAW: keep the RAW (default follows raw.ffv1_replace_raw: check, then delete)")
-    vf = gs.add_parser("verify", help="compare a take's FFV1 with its RAW byte for byte")
-    vf.add_argument("file", help="the FFV1 (or RAW) file of the take")
+                    help="FFV1 / MagicYUV from RAW: keep the RAW (default follows raw.ffv1_replace_raw: check, then delete)")
+    vf = gs.add_parser("verify", help="compare a take's lossless copy (FFV1 or MagicYUV) with its RAW byte for byte")
+    vf.add_argument("file", help="the FFV1 / MagicYUV (or RAW) file of the take")
     vf.add_argument("--delete-raw", action="store_true", help="delete the RAW if every frame and sample match")
     vf.add_argument("--wait", action="store_true", help="wait and show progress")
     nt = gs.add_parser("note", help="mark a take good, add notes, fix its slate (GAL-13)")
@@ -1919,7 +1919,7 @@ def build_parser():
     dw.add_argument("--out", help="file or folder (several files: a folder, default here)")
     dw.add_argument("--day", help="every take of this day, YYYY-MM-DD")
     dw.add_argument("--month", help="every take of this month, YYYY-MM")
-    dw.add_argument("--kind", choices=["RAW", "H.265", "H.264", "FFV1", "VIDEO"],
+    dw.add_argument("--kind", choices=["RAW", "H.265", "H.264", "FFV1", "MagicYUV", "VIDEO"],
                     help="only this format of the chosen takes")
     dw.add_argument("--zip", nargs="?", const="", metavar="FILE",
                     help="one ZIP instead of separate files (default name: the server's)")

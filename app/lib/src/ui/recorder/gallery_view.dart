@@ -19,7 +19,7 @@ class GalleryView extends StatefulWidget {
   State<GalleryView> createState() => _GalleryViewState();
 }
 
-const _kinds = {'all': 'All', 'RAW': 'RAW', 'H.265': 'H.265', 'H.264': 'H.264', 'FFV1': 'FFV1', 'VIDEO': 'Other'};
+const _kinds = {'all': 'All', 'RAW': 'RAW', 'H.265': 'H.265', 'H.264': 'H.264', 'MagicYUV': 'MagicYUV', 'FFV1': 'FFV1', 'VIDEO': 'Other'};
 
 /// The board's date of a take ("2026-09-30", GAL-01) - published by the server; computed from
 /// `created` for a server that predates it.
@@ -573,7 +573,7 @@ class _JobRow extends StatelessWidget {
             if (job['live'] == true) 'following the recording',
           ].join(' · ')
         : v.isNotEmpty
-            ? '${v['detail']}${v['ok'] == true ? (v['raw_deleted'] == true ? ' · the FFV1 is now the original' : '') : ' · the RAW is kept'}'
+            ? '${v['detail']}${v['ok'] == true ? (v['raw_deleted'] == true ? ' · the lossless copy is now the original' : '') : ' · the RAW is kept'}'
             : (job['error'] as String? ?? '');
     final tag = switch (state) {
       'running' => Tag('$pct%', color: const Color(0xFF8FB3E0)),
@@ -740,7 +740,7 @@ class _TakeSheetState extends State<_TakeSheet> {
     final choice = await showDialog<String>(
       context: context,
       builder: (c) => AlertDialog(
-        title: const Text('Check the FFV1 copy'),
+        title: Text('Check the ${i['kind']} copy'),
         content: Text('Every frame and audio sample of ${i['id']} is compared byte for byte with ${raw['id']}. '
             '${size(raw['size'] as num?)} could be freed. If anything differs, nothing is deleted.'),
         actions: [
@@ -811,7 +811,7 @@ class _TakeSheetState extends State<_TakeSheet> {
           },
           itemBuilder: (_) => [
             if (i['recording'] != true) const PopupMenuItem(value: 'convert', child: Text('Convert…')),
-            if (i['kind'] == 'FFV1' && asList(_take?['items']).any((x) => x['kind'] == 'RAW'))
+            if ((i['kind'] == 'FFV1' || i['kind'] == 'MagicYUV') && asList(_take?['items']).any((x) => x['kind'] == 'RAW'))
               PopupMenuItem(value: 'verify', enabled: !locked, child: const Text('Check against the RAW…')),
             PopupMenuItem(value: 'delete', enabled: !locked, child: Text(locked ? 'Delete (in use)' : 'Delete this file')),
           ],
@@ -994,7 +994,8 @@ class _TakeInfoState extends State<_TakeInfo> {
 // ------------------------------------------------------------------ convert
 List<Map<String, dynamic>>? _targetsCache;
 
-const _targetKind = {'h264-vpu': 'H.264', 'h265-vpu': 'H.265', 'h265-x265': 'H.265', 'ffv1': 'FFV1', 'ffv1-gpu': 'FFV1'};
+const _targetKind = {'h264-vpu': 'H.264', 'h265-vpu': 'H.265', 'h265-x265': 'H.265', 'ffv1': 'FFV1', 'ffv1-gpu': 'FFV1', 'magicyuv': 'MagicYUV'};
+const _lossless = {'ffv1', 'ffv1-gpu', 'magicyuv'}; // conversions that can replace the RAW (GAL-08)
 
 Future<void> showConvert(BuildContext context, RemoteClient client, Map<String, dynamic> item, {String? preselect}) async {
   try {
@@ -1091,7 +1092,7 @@ class _ConvertSheetState extends State<_ConvertSheet> {
               ),
           ]),
         ],
-        if (t != null && '$_sel'.startsWith('ffv1') && widget.item['kind'] == 'RAW')
+        if (t != null && _lossless.contains(_sel) && widget.item['kind'] == 'RAW')
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
             title: const Text('Delete the RAW when the copy is verified'),
@@ -1112,7 +1113,7 @@ class _ConvertSheetState extends State<_ConvertSheet> {
                     'scale': _scale,
                     'preset': _preset,
                     if (double.tryParse(_bitrate.text) != null) 'bitrate': double.parse(_bitrate.text),
-                    if ('$_sel'.startsWith('ffv1') && widget.item['kind'] == 'RAW') 'replace_raw': _replaceRaw,
+                    if (_lossless.contains(_sel) && widget.item['kind'] == 'RAW') 'replace_raw': _replaceRaw,
                   };
                   final job = await runOp(context, widget.client, 'gallery.convert', args);
                   if (!context.mounted) return;

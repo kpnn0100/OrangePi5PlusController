@@ -71,7 +71,7 @@ def get(folder, take):
     usable = [i for i in items if not i.get("recording") and not str(i.get("problem") or "").startswith("can't")]
     if not usable:
         return None
-    usable.sort(key=lambda i: {"H.264": 0, "H.265": 1, "FFV1": 2, "VIDEO": 3, "RAW": 4}.get(i["kind"], 9))
+    usable.sort(key=lambda i: {"H.264": 0, "H.265": 1, "MagicYUV": 2, "FFV1": 3, "VIDEO": 4, "RAW": 5}.get(i["kind"], 9))
     out = os.path.join(thumb_dir(), take["id"] + ".jpg")
     newest = max(i["mtime"] for i in usable)
     with _lock_for(take["id"]):

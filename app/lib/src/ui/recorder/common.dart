@@ -114,7 +114,7 @@ class Tag extends StatelessWidget {
 Color? kindColor(String kind) => switch (kind) {
       'H.265' => const Color(0xFF8FB3E0),
       'H.264' => kOk,
-      'FFV1' => kWarn,
+      'FFV1' || 'MagicYUV' => kWarn,
       _ => null,
     };
 

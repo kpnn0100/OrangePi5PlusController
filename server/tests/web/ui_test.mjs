@@ -233,7 +233,7 @@ test("record_button_starts_and_stops_for_everyone", ["REC-03", "ARC-03", "UX-02"
 
 test("gallery_take_convert_play_delete", ["GAL-01", "GAL-02", "GAL-03", "GAL-04", "GAL-05", "GAL-06", "GAL-07", "GAL-12"], async () => {
   check(recorded, "needs the recording of the previous test");
-  const takeId = recorded.replace(/\.[^.]+$/, "").replace(/_(H265|H264.*|FFV1)$/, "");
+  const takeId = recorded.replace(/\.[^.]+$/, "").replace(/_(H265|H264.*|FFV1|MAGICYUV)$/, "");
   const page = await newPage();
   await go(page, "gallery");
   const card = await until(() => page.evaluateHandle((id) =>
@@ -312,7 +312,7 @@ test("gallery_take_convert_play_delete", ["GAL-01", "GAL-02", "GAL-03", "GAL-04"
 });
 
 test("extra_copies_by_codec", ["REC-04", "ARC-03"], async () => {
-  // one collapsible sub-section per kind of copy - H.264, H.265, FFV1 - switch in the header
+  // one collapsible sub-section per kind of copy - H.264, H.265, lossless - switch in the header
   const before = await op("recorder.settings.get");
   const page = await newPage();
   try {
@@ -321,7 +321,7 @@ test("extra_copies_by_codec", ["REC-04", "ARC-03"], async () => {
     await page.click(".mode-card");
     await page.waitForSelector(".sheet.show .copy-head");
     const names = await page.evaluate(() => [...document.querySelectorAll(".sheet.show .copy-head b")].map((b) => b.textContent));
-    check(JSON.stringify(names) === JSON.stringify(["H.264", "H.265", "FFV1"]), "copy sections: " + names);
+    check(JSON.stringify(names) === JSON.stringify(["H.264", "H.265", "Lossless"]), "copy sections: " + names);
     const isOpen = () => page.evaluate(() => document.querySelector(".sheet.show .copy-sec").classList.contains("open"));
     const wasOpen = await isOpen();
     await page.click('.sheet.show .copy-head[data-copy="h264"] .txt');
@@ -348,10 +348,21 @@ test("verified_ffv1_replaces_the_raw", ["GAL-08", "REC-04", "ARC-03"], async () 
   const before = await op("recorder.settings.get");
   const page = await newPage();
   try {
-    await op("recorder.settings.set", { settings: { mode: "raw", raw: { ffv1: true, ffv1_engine: "cpu", when: "after", hq: false, ffv1_replace_raw: false } } });
+    await op("recorder.settings.set", { settings: { mode: "raw", raw: { ffv1: true, lossless_codec: "ffv1", ffv1_engine: "cpu", when: "after", hq: false, ffv1_replace_raw: false } } });
     await go(page, "recorder");
     await page.click(".mode-card");
     await page.waitForSelector(".sheet.show");
+    // the lossless codec is picked in the sheet: MagicYUV on the server, then back to FFV1 for this take
+    const pick = (label) => page.evaluate((l) => {
+      const row = [...document.querySelectorAll(".sheet.show .set-row")].find((r) => r.textContent.startsWith("Codec"));
+      const b = row && [...row.querySelectorAll("button")].find((x) => x.textContent === l);
+      if (b) b.click();
+      return !!b;
+    }, label);
+    check(await until(() => pick("MagicYUV"), 3000), "no MagicYUV / FFV1 codec choice in the settings sheet");
+    check(await until(async () => (await op("recorder.settings.get")).raw.lossless_codec === "magicyuv", 3000), "MagicYUV not saved");
+    check(await until(() => pick("FFV1"), 3000), "no way back to FFV1");
+    check(await until(async () => (await op("recorder.settings.get")).raw.lossless_codec === "ffv1", 3000), "FFV1 not saved");
     // the switch lives in the sheet; turn it on from the web and see it on the server
     const on = await page.evaluate(() => {
       const row = [...document.querySelectorAll(".sheet.show .set-row")].find((r) => r.textContent.includes("Delete RAW after a verified copy"));
@@ -445,7 +456,7 @@ test("live_meters_overlays_scope_and_tally", ["REC-10", "REC-13", "REC-12"], asy
     await op("recorder.stop");
     check(await until(() => page.$(".preview:not(.tally)"), 10000), "tally still on after the stop");
     const last = (await op("recorder.status")).last;
-    if (last && last.file) await op("gallery.delete_take", { take: last.file.replace(/\.[^.]+$/, "").replace(/_(H265|H264.*|FFV1)$/, "") }).catch(() => {});
+    if (last && last.file) await op("gallery.delete_take", { take: last.file.replace(/\.[^.]+$/, "").replace(/_(H265|H264.*|FFV1|MAGICYUV)$/, "") }).catch(() => {});
   } finally {
     if ((await op("recorder.status")).recording.active) await op("recorder.stop").catch(() => {});
     await op("recorder.settings.set", { settings: { mode: before.mode, monitor: { ...MON_OFF, ...before.monitor } } });
@@ -626,7 +637,7 @@ test("gallery_take_notes_markers_and_csv", ["GAL-13", "REC-15", "REC-11", "REC-0
     const mark = await until(() => op("recorder.mark", { label: "boom in shot" }).catch(() => null), 10000, 300);
     check(mark && mark.tc, "no marker");
     await sleep(1200);
-    take = (await op("recorder.stop")).file.replace(/\.[^.]+$/, "").replace(/_(H265|H264.*|FFV1)$/, "");
+    take = (await op("recorder.stop")).file.replace(/\.[^.]+$/, "").replace(/_(H265|H264.*|FFV1|MAGICYUV)$/, "");
     await go(page, "gallery");
     const card = `.take[data-take="${take}"]`;
     check(await until(() => page.$(card), 15000), "new take not listed");
@@ -669,7 +680,7 @@ test("gallery_take_notes_markers_and_csv", ["GAL-13", "REC-15", "REC-11", "REC-0
   } finally {
     if ((await op("recorder.status")).recording.active) {
       const f = (await op("recorder.stop").catch(() => ({}))).file;
-      take = take || (f && f.replace(/\.[^.]+$/, "").replace(/_(H265|H264.*|FFV1)$/, ""));
+      take = take || (f && f.replace(/\.[^.]+$/, "").replace(/_(H265|H264.*|FFV1|MAGICYUV)$/, ""));
     }
     if (take) await op("gallery.delete_take", { take }).catch(() => {});
     await op("recorder.settings.set", { settings: { mode: before.mode, slate: before.slate } }).catch(() => {});

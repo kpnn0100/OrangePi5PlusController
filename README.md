@@ -107,7 +107,7 @@ arstro-remote rec status | start | stop            # recorder
 arstro-remote rec slate --scene 12A --shot 3 --take 1   # names the next takes; rec mark [label] while recording
 arstro-remote rec disktest                         # can the storage disk keep up with the mode?
 arstro-remote gallery note TAKE --good --notes "..."; gallery csv --day 2026-10-27   # the editor's sheet
-arstro-remote rec set mode=raw raw.ffv1=true       # settings (shared with app and web)
+arstro-remote rec set mode=raw raw.ffv1=true raw.lossless_codec=magicyuv   # settings (shared with app and web)
 arstro-remote gallery list                         # recordings, by month and day
 arstro-remote gallery download --day 2026-09-30 --zip   # a whole day as one ZIP
 arstro-remote gallery convert REC_<take>.arh --to h264-vpu --scale 720 --wait

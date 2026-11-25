@@ -209,13 +209,17 @@ class FrameReader:
         os.close(self.fd)
 
 
-def lane_cmd(kind, exe, v, planar, pixfmt, threads):
-    """FFmpeg reading raw frames on stdin, writing FFV1 in Matroska on stdout."""
+def lane_cmd(kind, exe, v, planar, pixfmt, threads, codec="ffv1"):
+    """FFmpeg reading raw frames on stdin, writing FFV1 (or MagicYUV, CPU only) in Matroska on stdout."""
     cmd = [exe, "-hide_banner", "-nostdin", "-v", "error"]
     if kind == "gpu":
         cmd += ["-init_hw_device", "vulkan=vk:0", "-filter_hw_device", "vk"]
     cmd += ["-f", "rawvideo", "-pix_fmt", pixfmt, "-s", f"{v['width']}x{v['height']}",
             "-framerate", f"{v['fps_n']}/{v['fps_d']}", "-i", "pipe:0"]
+    if codec == "magicyuv":
+        # every frame on its own (intra only), like FFV1 here: lanes' packets join into one stream
+        return cmd + ["-vf", f"format={planar}", "-c:v", "magicyuv", "-pred", "left",
+                      "-threads", str(threads), "-f", "matroska", "pipe:1"]
     if kind == "gpu":
         cmd += ["-vf", f"format={planar},hwupload", "-c:v", "ffv1_vulkan"]
     else:

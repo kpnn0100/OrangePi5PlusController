@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""FFV1 on several encoders at once, joined in frame order (GAL-04) - needs no server.
+"""FFV1 (and MagicYUV) on several encoders at once, joined in frame order (GAL-04) - needs no server.
 
     python3 tests/test_ffv1lanes.py [-k NAME]
 
@@ -52,8 +52,8 @@ def skip(c):
     return False
 
 
-def lane(c, kind="cpu", extra=(), cmd=None):
-    base = ffv1lanes.lane_cmd(kind, c.exe, V, "yuv422p", "yuv422p", 2)
+def lane(c, kind="cpu", extra=(), cmd=None, codec="ffv1"):
+    base = ffv1lanes.lane_cmd(kind, c.exe, V, "yuv422p", "yuv422p", 2, codec)
     return ffv1lanes.Lane(kind, cmd or base[:-3] + list(extra) + base[-3:], c.env)
 
 
@@ -100,6 +100,19 @@ def frames_from_several_encoders_join_losslessly(c):
     dec, j = join(c, lanes)
     identical(c, dec)
     for x in lanes:      # a GPU lane only stays when its FFV1 header is the CPU lanes' own
+        check(not x.dead and x.made > 0, "%s lane: %s frames, %s" % (x.kind, x.made, x.dead))
+
+
+@test("GAL-04", "GAL-08")
+def magicyuv_from_several_encoders_joins_losslessly(c):
+    """MagicYUV goes through the same lanes (CPU only): every frame back identical, in order."""
+    if skip(c):
+        return
+    lanes = [lane(c, codec="magicyuv"), lane(c, codec="magicyuv")]
+    dec, j = join(c, lanes)
+    identical(c, dec)
+    check(b"V_MS/VFW/FOURCC" in j.ref.tracks or b"MAGY" in j.ref.tracks, "not a MagicYUV track")
+    for x in lanes:
         check(not x.dead and x.made > 0, "%s lane: %s frames, %s" % (x.kind, x.made, x.dead))
 
 

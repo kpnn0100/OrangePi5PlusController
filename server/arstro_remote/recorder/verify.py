@@ -1,8 +1,9 @@
-"""Bit-exact check of an FFV1 copy against its RAW .arh source (GAL-08).
+"""Bit-exact check of a lossless copy (FFV1 or MagicYUV) against its RAW .arh source (GAL-08).
 
     python3 -m arstro_remote.recorder.verify TAKE.arh TAKE_FFV1.mkv
+    python3 -m arstro_remote.recorder.verify TAKE.arh TAKE_MAGICYUV.mkv
 
-FFV1 is lossless by design, so this does not test the codec: it proves the *whole copy*
+FFV1 and MagicYUV are lossless by design, so this does not test the codec: it proves the *whole copy*
 before the RAW may be deleted - no chroma or colour conversion on the way, no missing or
 duplicated frame, nothing truncated, and every audio sample. The FFV1 video is decoded in
 its own (native) pixel format, the RAW frames - as the constant-rate sequence the encoder got
@@ -20,7 +21,9 @@ import sys
 
 from . import arh
 
-# native FFV1 decode formats for each HDMI RX format (what our encoders store)
+# lossless codecs whose copy may replace the RAW, and their native decode formats for each
+# HDMI RX format (what our encoders store; MagicYUV keeps RGB as planar GBR)
+CODECS = {"ffv1": "FFV1", "magicyuv": "MagicYUV"}
 NATIVE = {"NV12": ("yuv420p",), "NV21": ("yuv420p",), "NV16": ("yuv422p",), "NV61": ("yuv422p",),
           "YUY2": ("yuv422p",), "UYVY": ("yuv422p",), "NV24": ("yuv444p",),
           "BGR": ("bgr0", "gbrp"), "RGB": ("bgr0", "gbrp")}
@@ -70,7 +73,7 @@ def decoded_planes(pix, data, w, h):
     if pix == "gbrp":
         n = w * h
         return {"G": data[:n], "B": data[n:2 * n], "R": data[2 * n:3 * n]}
-    raise Mismatch("unexpected FFV1 pixel format %s" % pix)
+    raise Mismatch("unexpected pixel format %s in the copy" % pix)
 
 
 def frame_bytes(pix, w, h):
@@ -83,7 +86,7 @@ def probe(path):
                           "stream=codec_type,codec_name,pix_fmt,width,height,sample_fmt,sample_rate,channels",
                           "-of", "json", path], capture_output=True, text=True, timeout=60)
     if out.returncode:
-        raise Mismatch("the FFV1 file can't be read: %s" % out.stderr.strip()[:200])
+        raise Mismatch("the copy can't be read: %s" % out.stderr.strip()[:200])
     streams = json.loads(out.stdout or "{}").get("streams", [])
     video = next((s for s in streams if s.get("codec_type") == "video"), None)
     audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
@@ -113,8 +116,8 @@ def verify(arh_path, mkv_path, progress=None):
         v, a = reader.video, reader.audio
         fmt, w, h = v["format"], v["width"], v["height"]
         video, audio = probe(mkv_path)
-        if not video or video.get("codec_name") != "ffv1":
-            raise Mismatch("%s has no FFV1 video" % mkv_path)
+        if not video or video.get("codec_name") not in CODECS:
+            raise Mismatch("%s has no lossless (FFV1 or MagicYUV) video" % mkv_path)
         pix = video.get("pix_fmt")
         if pix not in NATIVE.get(fmt, ()):
             raise Mismatch("the copy is %s but the RAW is %s: not a lossless copy of this source" % (pix, fmt))
@@ -137,11 +140,26 @@ def verify(arh_path, mkv_path, progress=None):
         return {"ok": False, "frames": 0, "audio_bytes": 0, "detail": "check failed: %s" % e}
 
 
+_PASSTHROUGH = []
+
+
+def _passthrough():
+    """Keep every decoded frame as it is: -fps_mode from FFmpeg 5.1, -vsync before (4.4 has no
+    -fps_mode and would decode nothing)."""
+    if not _PASSTHROUGH:
+        try:
+            out = subprocess.run(["ffmpeg", "-hide_banner", "-h", "long"], capture_output=True, text=True, timeout=30).stdout
+        except (OSError, subprocess.SubprocessError):
+            out = ""
+        _PASSTHROUGH.extend(["-fps_mode", "passthrough"] if "-fps_mode" in out else ["-vsync", "passthrough"])
+    return _PASSTHROUGH
+
+
 def _check_video(reader, mkv_path, fmt, pix, v, total, progress):
     w, h = v["width"], v["height"]
     size = frame_bytes(pix, w, h)
     cmd = ["ffmpeg", "-v", "error", "-nostdin", "-threads", "0", "-i", mkv_path, "-map", "0:v:0",
-           "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", pix, "pipe:1"]
+           *_passthrough(), "-f", "rawvideo", "-pix_fmt", pix, "pipe:1"]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=size * 2)
     n = 0
     try:
@@ -149,7 +167,11 @@ def _check_video(reader, mkv_path, fmt, pix, v, total, progress):
         for _pts, _seq, data, _rep in arh.cfr_frames(reader):
             got = proc.stdout.read(size)
             if len(got) < size:
-                raise Mismatch("the copy ends after %d frames, the RAW has more" % n)
+                why = ""
+                if n == 0:
+                    proc.wait()
+                    why = proc.stderr.read().decode(errors="replace").strip()[:200]
+                raise Mismatch("the copy ends after %d frames, the RAW has more%s" % (n, " (%s)" % why if why else ""))
             want = raw_planes(fmt, data, v)
             have = decoded_planes(pix, got, w, h)
             for name, plane in want.items():

@@ -21,7 +21,7 @@ DEFAULTS = {
         "container": "mov",         # mov (PCM audio, editors) | mkv (PCM) | mp4 (AAC audio, plays everywhere)
     },
     "raw": {
-        # extra copies of a RAW take (REC-04), made during or after recording - H.264, H.265, FFV1
+        # extra copies of a RAW take (REC-04), made during or after recording - H.264, H.265, lossless
         "h264": False,              # also make an H.264 MP4 share copy (VPU)
         "h264_quality": "high",     # high | higher | max
         "h264_scale": "source",     # source | 1080 | 720
@@ -30,10 +30,11 @@ DEFAULTS = {
         "hq_quality": "high",       # high | higher | max
         "x265_preset": "fast",
         "hq_chroma": "420",         # 420 (compatible) | source (keep 4:2:2 / 4:4:4)
-        "ffv1": False,              # also make a lossless FFV1 file
-        "ffv1_engine": "cpu",       # cpu (faster) | gpu (Vulkan: slower, ~0 CPU)
+        "ffv1": False,              # also make a lossless copy (the key keeps its old name)
+        "lossless_codec": "magicyuv",  # magicyuv (3-4x faster to make and to play, ~20% bigger) | ffv1
+        "ffv1_engine": "cpu",       # FFV1: cpu (faster) | gpu (Vulkan: slower, ~0 CPU)
         "when": "during",           # during | after : when the encodes start
-        "ffv1_replace_raw": True,   # check the FFV1 copy byte for byte, then delete the RAW (GAL-08)
+        "ffv1_replace_raw": True,   # check the lossless copy byte for byte, then delete the RAW (GAL-08)
     },
     "audio": {"record": True,
               "source": "hdmi"},    # hdmi | alsa:<card id> (a USB audio interface, REC-09)
@@ -77,6 +78,7 @@ SCHEMA = {
     ("raw", "hq_chroma"): ("420", "source"),
     ("raw", "ffv1"): (bool,),
     ("raw", "ffv1_engine"): ("cpu", "gpu"),
+    ("raw", "lossless_codec"): ("magicyuv", "ffv1"),
     ("raw", "when"): ("during", "after"),
     ("raw", "ffv1_replace_raw"): (bool,),
     ("audio", "record"): (bool,),

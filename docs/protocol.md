@@ -56,7 +56,7 @@ Pushed to every session whenever they change (whoever changed them), newest valu
 |---|---|
 | `recorder` | status: `available, caps, signal, capture, recording, preview, disk, mode, mode_text, last, simulate, camera, source` (`hdmi` \| `test:<spec>` \| `v4l2:<device>`), `source_title` ("HDMI input", "Test pattern" or the camera's name, CAM-04), and for film work: `storage` `{path, free, total, need, rate, seconds_left, speed, measured, ok, warning, testing}` (bytes, bytes/s; `ok` null = disk not measured, REC-12), `audio_inputs` `[{id: hdmi\|alsa:<card>, name, usb?}]` (REC-09), `monitor` `{analysis, zooms, lut, audio_source, luts: [{id, name, builtin}], lut_error, bands: [{from, to, colour, meaning}]}` (REC-13), `clock_synced` (true/false/null, REC-11), `take` `{next, tc, markers}` (`next`: what the slate makes of the next take's name, e.g. `S12A_SH3_T04` or `REC` - the date and time follow; the current take's start timecode and marker count, REC-15), `gpio` `{button: {pin, ok, error, presses}, tally: {pin, ok, error, on}}` (REC-16); `recording` also has `tc` and `av` `{video_s, frames, audio_s?, drift_ms?}` |
 | `recorder.settings` | the recording settings (see `recorder.settings.set`) |
-| `jobs` | list of jobs `{id, title, codec, state, source, output, progress, fps, eta, live, error, options, verify, attempt, max_attempts, note}`; `state`: queued, running, **verifying** (FFV1 being compared with its RAW), **retrying** (failed, runs again shortly - GAL-10), done, failed, cancelled; `note`: what happened on the way (RAW repaired, damage skipped, retries, resumed after a restart - GAL-09/10); `verify`: `{ok, frames, audio_bytes, detail, raw_deleted?}` or null; `codec` `verify` = an on-demand check |
+| `jobs` | list of jobs `{id, title, codec, state, source, output, progress, fps, eta, live, error, options, verify, attempt, max_attempts, note}`; `state`: queued, running, **verifying** (FFV1 / MagicYUV being compared with its RAW), **retrying** (failed, runs again shortly - GAL-10), done, failed, cancelled; `note`: what happened on the way (RAW repaired, damage skipped, retries, resumed after a restart - GAL-09/10); `verify`: `{ok, frames, audio_bytes, detail, raw_deleted?}` or null; `codec` `verify` = an on-demand check |
 | `gallery` | summary `{version, takes, files, size, folder}`; fetch `gallery.list` when `version` changes |
 | `wifi` | `{device, enabled, connected, ssid, signal, ip, state, connection, hotspot?}` - `hotspot` while the machine runs one (WIFI-08): `{active, ssid, band, ip, clients, web, profile}`, never its password; `connected` is false then |
 | `terminals` | shared shells `[{term, cols, rows, viewers, attached, opened_by, ephemeral, age, detached_for}]` |
@@ -117,12 +117,12 @@ Other events: `stats` `{data}` (after `stats.subscribe`), `term.exit` `{term, co
 | `camera.sources` | | `{sources: [{id: hdmi\|test\|v4l2:/dev/videoN, kind, title, device, available, modes?, note}], current}` - an unavailable camera's `note` says why (e.g. permission) |
 | `camera.select` | `source`, `mode?` (V4L2: `"MJPG 1280x720@30"`), `spec?` (test: `"1920x1080@30"`) | recorder status (`source`, `camera`); saved in config.json (CAM-01) |
 | `recorder.test_signal` | `present` (test source only) | status |
-| `gallery.list` | `kind?` (RAW, H.265, H.264, FFV1, VIDEO) | `{folder, version, takes}` |
+| `gallery.list` | `kind?` (RAW, H.265, H.264, FFV1, MagicYUV, VIDEO) | `{folder, version, takes}` |
 | `gallery.get` | `take` | one take `{id, title, created, day, month, size, duration, kinds, recording, items, slate, meta}` - `slate` "Scene 12A · Shot 3 · Take 4" or null, `meta` the sidecar's summary `{scene, shot, take, tc, rate, good, notes, markers: [{tc, frames, t, label}], drift_ms, audio_source, clock_synced, drops}` or null (REC-15, GAL-13); `day` (`YYYY-MM-DD`) and `month` (`YYYY-MM`) are the board's date of the take, so every controller groups alike (GAL-01); an H.265/H.264 item carries `mse` (its RFC 6381 codec string, e.g. `hvc1.1.6.L150.B0`, GAL-11) |
 | `gallery.bundle` | `takes?`, `files?`, `day?`, `month?`, `kind?` (default `all`) | `{id, name, url, files, size, skipped: [{file, why}], expires}`: the files to download together (GAL-12) - files still recorded or written are left out in `skipped`; `url` (`/api/bundle/<id>.zip`) serves them as one ZIP for an hour |
 | `gallery.targets` | | `{targets: [{id, title, available, description, options}]}`; `options.bitrate_max` (Mbit/s): 200 for the VPU targets |
-| `gallery.convert` | `file, target, quality?, scale?, preset?, bitrate?, rc?, chroma?, replace_raw?` | the new job (`bitrate` Mbit/s, 0.1 - `bitrate_max`; `rc` vbr / cbr); `replace_raw` (FFV1 from RAW, default = setting `raw.ffv1_replace_raw`): check the copy, then delete the RAW |
-| `gallery.verify` | `file` (the take's FFV1 or RAW), `delete_raw` | a *verify* job: decodes the FFV1 and compares every frame plane and audio sample with the RAW byte for byte; with `delete_raw` the RAW is deleted only if all of it is identical (GAL-08) |
+| `gallery.convert` | `file, target, quality?, scale?, preset?, bitrate?, rc?, chroma?, replace_raw?` | the new job (`bitrate` Mbit/s, 0.1 - `bitrate_max`; `rc` vbr / cbr); `replace_raw` (FFV1 / MagicYUV from RAW, default = setting `raw.ffv1_replace_raw`): check the copy, then delete the RAW |
+| `gallery.verify` | `file` (the take's FFV1 / MagicYUV or RAW), `delete_raw` | a *verify* job: decodes the lossless copy and compares every frame plane and audio sample with the RAW byte for byte; with `delete_raw` the RAW is deleted only if all of it is identical (GAL-08) |
 | `gallery.delete` | `file` | refused while it is recorded or converted |
 | `gallery.annotate` | `take`, any of `good` (bool), `notes`, `scene`, `shot`, `take_no` | the take's `meta` (GAL-13) |
 | `gallery.csv` | `takes?`, `day?`, `month?` | `{name, rows, csv}`: one row per file, Resolve's metadata columns (GAL-13) |
@@ -187,9 +187,9 @@ Other events: `stats` `{data}` (after `stats.subscribe`), `term.exit` `{term, co
 | `relay.rotate` | | `{key, key_id, closed}` - a new access key; every viewer is disconnected (RLY-02) |
 | `relay.kick` | | `{closed}` - disconnects every viewer (RLY-05) |
 
-Gallery items carry `verified` (`{raw, frames, checked}` for an FFV1 proven identical to its RAW, else null).
+Gallery items carry `verified` (`{raw, frames, checked}` for an FFV1 / MagicYUV copy proven identical to its RAW, else null).
 Take ids are `REC_YYYYMMDD_HHMMSS`; its files are `<take>.arh` (RAW), `<take>_H265.mp4|mov|mkv`,
-`<take>_H264[_720p|_1080p].mp4`, `<take>_FFV1.mkv`.
+`<take>_H264[_720p|_1080p].mp4`, `<take>_FFV1.mkv`, `<take>_MAGICYUV.mkv`.
 
 ## HTTP (web server, port 8080 for slot A, 8081 for B, ...)
 

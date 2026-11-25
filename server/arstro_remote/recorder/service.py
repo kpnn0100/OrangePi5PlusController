@@ -42,6 +42,8 @@ TARGETS = [   # (id, title, needs capability, description)
     ("ffv1", "FFV1 lossless · CPU", "ffv1",
      "Mathematically lossless .mkv, every core - and the GPU too when it is set up (~16 fps at 4K, else ~10)."),
     ("ffv1-gpu", "FFV1 lossless · GPU", "gpu_ffv1", "Same lossless file on the GPU: slower, leaves the CPU free."),
+    ("magicyuv", "MagicYUV lossless", "magicyuv",
+     "Lossless .mkv that is 3-4x faster to make and to play back or edit than FFV1; about 20% bigger."),
 ]
 
 
@@ -328,7 +330,7 @@ class RecorderService:
         mode = ("H.265 %d Mb/s %s%s" % (s["h265"]["bitrate"], s["h265"]["container"].upper(),
                                         " · AAC" if s["h265"]["container"] == "mp4" else " · PCM")
                 if s["mode"] == "h265" else "RAW" + "".join(
-                    " +" + {"h264-vpu": "H.264", "h265-vpu": "HQ", "h265-x265": "HQ", "ffv1": "FFV1", "ffv1-gpu": "FFV1"}[c]
+                    " +" + {"h264-vpu": "H.264", "h265-vpu": "HQ", "h265-x265": "HQ", "ffv1": "FFV1", "ffv1-gpu": "FFV1", "magicyuv": "MagicYUV"}[c]
                     for c, _ in self._planned_jobs()))
         return {
             "available": bool(self.proc and self.proc.poll() is None and self.caps),
@@ -372,7 +374,9 @@ class RecorderService:
             out.append((codec, {"quality": r["hq_quality"], "preset": r["x265_preset"],
                                 "chroma": r["hq_chroma"]}))
         replace = {"verify": bool(r.get("ffv1_replace_raw")), "replace_raw": bool(r.get("ffv1_replace_raw"))}
-        if r["ffv1"] and r.get("ffv1_engine") == "gpu" and caps.get("gpu_ffv1"):
+        if r["ffv1"] and r.get("lossless_codec") == "magicyuv" and caps.get("magicyuv"):
+            out.append(("magicyuv", dict(replace)))
+        elif r["ffv1"] and r.get("ffv1_engine") == "gpu" and caps.get("gpu_ffv1"):
             out.append(("ffv1-gpu", dict(replace)))
         elif r["ffv1"] and caps.get("ffv1"):
             out.append(("ffv1", dict(replace)))
@@ -531,7 +535,7 @@ class RecorderService:
             self._gallery_wake.set()
 
     def _delete_verified_raws(self):
-        """GAL-08: a RAW whose FFV1 copy was proven identical goes - once nothing else needs it."""
+        """GAL-08: a RAW whose lossless copy was proven identical goes - once nothing else needs it."""
         for src, job in list(self._raw_to_delete.items()):
             others = [j for j in self.jobs.jobs if j is not job and not j.finished and j.src == src]
             if others or (self.recording_path and os.path.abspath(src) == os.path.abspath(self.recording_path)):
@@ -873,7 +877,7 @@ class RecorderService:
             opts["rc"] = msg.get("rc") or "vbr"
             if opts["rc"] not in ("vbr", "cbr"):
                 raise OpError("rc must be vbr or cbr")
-        if target in ("ffv1", "ffv1-gpu") and path.lower().endswith(".arh"):
+        if target in jobs_mod.LOSSLESS and path.lower().endswith(".arh"):
             replace = msg.get("replace_raw")
             replace = self.settings["raw"].get("ffv1_replace_raw") if replace is None else bool(replace)
             opts["verify"] = opts["replace_raw"] = bool(replace)
@@ -886,14 +890,16 @@ class RecorderService:
         return job.describe()
 
     def op_gallery_verify(self, session, msg):
-        """Check a take's FFV1 copy against its RAW byte for byte; optionally delete the RAW."""
+        """Check a take's lossless copy (FFV1 or MagicYUV) against its RAW byte for byte; optionally
+        delete the RAW. The copy is the given file when it is one, else the take's first."""
         path = self._file_path(msg.get("file"))
         take = self._take(library.clip_id(os.path.basename(path)))
         items = take["items"]
         raw = next((i for i in items if i["kind"] == "RAW"), None)
-        ffv1 = next((i for i in items if i["kind"] == "FFV1"), None)
+        copies = [i for i in items if i["kind"] in library.LOSSLESS]
+        ffv1 = next((i for i in copies if i["id"] == os.path.basename(path)), copies[0] if copies else None)
         if not raw or not ffv1:
-            raise OpError("this take needs both a RAW and an FFV1 file to compare")
+            raise OpError("this take needs both a RAW and a lossless (FFV1 or MagicYUV) file to compare")
         if raw.get("recording") or ffv1.get("busy") or raw.get("busy"):
             raise OpError("wait until the recording / conversion of this take has finished")
         delete = bool(msg.get("delete_raw"))

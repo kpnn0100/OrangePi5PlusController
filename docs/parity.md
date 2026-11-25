@@ -26,7 +26,7 @@ and all three are updated live by the same state events (ARC-03).
 | Live preview | REC-02 | - ⁵ (Recorder › Live shows the signal, the tally and the record panel) | `rec preview FILE [--seconds N]` saves the stream ¹ | Recorder (WebCodecs / MSE) |
 | Preview quality | REC-02 | - ⁵ | `rec quality low\|medium\|high` | Recorder |
 | Start / stop recording | REC-03 | Record button | `rec start [--duration S]`, `rec stop` | Record button |
-| Recording settings (extra copies: H.264 / H.265 / FFV1, each a collapsible sub-section) | REC-04 | Settings sheet | `rec settings`, `rec set key=value ...` (`raw.h264=true raw.h264_scale=720 raw.h264_quality=high`) | Settings sheet |
+| Recording settings (extra copies: H.264 / H.265 / lossless (MagicYUV or FFV1), each a collapsible sub-section) | REC-04 | Settings sheet | `rec settings`, `rec set key=value ...` (`raw.h264=true raw.h264_scale=720 raw.h264_quality=high`) | Settings sheet |
 | EDID | REC-04 | Settings sheet | `rec edid 4k60\|4k30\|1080p\|keep` | Settings sheet |
 | Test source | REC-08 | Settings sheet › Source | `rec source --test WxH@FPS \| --hdmi` | Settings sheet › Source |
 | Audio for film: MOV/MKV with PCM, the audio input (HDMI or an audio interface), A/V sync per take | REC-09 | Settings sheet › H.265 › Container; › Audio › Input; Gallery › take sheet shows the A/V sync | `rec set h265.container=mov`, `rec inputs`, `rec input alsa:<card>`; sync in `gallery show` | Settings sheet › H.265 › Container; › Audio › Input; Live › Last recording and Gallery show the A/V sync when off by more than a frame |
@@ -43,9 +43,9 @@ and all three are updated live by the same state events (ARC-03).
 | Play | GAL-03 | - ⁵ | - ² (download and play locally) | Take dialog |
 | Download | GAL-03 | - ⁵ | `gallery download FILE [--out PATH]` | Take › download |
 | Download many at once (takes, a day, a month) | GAL-12 | - ⁵ | `gallery download TAKE... \| --day D \| --month M [--kind K] [--out DIR \| --zip [FILE]]` | Gallery › Select (or a heading's box) › Download ZIP - one streamed ZIP |
-| Convert (H.264 share + downscale, H.265 VPU/x265, FFV1 CPU/GPU) | GAL-04 | Take › Convert | `gallery targets`, `gallery convert FILE --to TARGET [--scale 720] [--quality Q] [--bitrate MBPS] [--wait]` | Take › Convert |
+| Convert (H.264 share + downscale, H.265 VPU/x265, FFV1 CPU/GPU, MagicYUV) | GAL-04 | Take › Convert | `gallery targets`, `gallery convert FILE --to TARGET [--scale 720] [--quality Q] [--bitrate MBPS] [--wait]` | Take › Convert |
 | Jobs: progress, cancel, clear | GAL-05 | Gallery › Conversions | `jobs`, `jobs cancel ID`, `jobs clear` | Gallery › Conversions |
-| Verified lossless FFV1 replaces the RAW (setting, per conversion, on demand) | GAL-08 | Settings sheet › *Delete RAW after a verified copy*; Convert switch; FFV1 › *Check against the RAW…* | `rec set raw.ffv1_replace_raw=true`, `gallery convert … --keep-raw`, `gallery verify FFV1 [--delete-raw] [--wait]` | Settings sheet; Convert switch; FFV1 › check button |
+| Verified lossless copy (FFV1 or MagicYUV) replaces the RAW (setting, per conversion, on demand) | GAL-08 | Settings sheet › *Delete RAW after a verified copy*; Convert switch; FFV1 / MagicYUV › *Check against the RAW…* | `rec set raw.ffv1_replace_raw=true`, `gallery convert … --keep-raw`, `gallery verify FFV1 [--delete-raw] [--wait]` | Settings sheet; Convert switch; FFV1 › check button |
 | Interrupted RAW repaired; conversions resumed and retried (state, attempt, note) | GAL-09, GAL-10 | automatic; Gallery shows the job state ³ | automatic; `jobs` shows `retrying`, the attempt and the note; `gallery list` / `gallery show` the item note | automatic; Gallery › Conversions shows *Retry n/3* and the note; the take shows the repair note |
 | Play H.265 (as it is, or converted to H.264 by the VPU) with seeking | GAL-11 | - ⁵ | `gallery stream FILE OUT.mp4 [--mode copy\|h264] [--start S]` ¹ | Take sheet: player with *H.265 original* / *H.264 · 15 fps*, seek bar, full screen |
 | Delete one format / whole take | GAL-06 | Take sheet | `gallery delete FILE`, `gallery delete-take TAKE [--yes]` | Take dialog |

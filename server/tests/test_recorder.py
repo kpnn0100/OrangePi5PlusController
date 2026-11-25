@@ -456,6 +456,7 @@ def a_day_downloads_as_one_zip(c):
 def raw_recording_with_ffv1_copy_after(c):
     # keep the RAW here (replacing it is GAL-08's test): a job is "done" only after its check
     c.a.call("recorder.settings.set", settings={"mode": "raw", "raw": {"hq": False, "ffv1": True,
+                                                                        "lossless_codec": "ffv1",
                                                                         "ffv1_engine": "cpu", "when": "after",
                                                                         "ffv1_replace_raw": False}})
     r = c.a.call("recorder.start", timeout=30)
@@ -544,29 +545,35 @@ def _record(c, seconds):
 
 @test("GAL-08", "REC-04", "ARC-03")
 def raw_is_deleted_only_after_a_verified_ffv1_copy(c):
-    """Record RAW from a 4:2:2 source (like the real camera) with FFV1 after + delete RAW:
-    the copy is checked byte for byte, then the RAW goes and the FFV1 is marked verified."""
+    """Record RAW from a 4:2:2 source (like the real camera) with a lossless copy after + delete
+    RAW, for MagicYUV and FFV1 (CPU, and GPU when set up): the copy is checked byte for byte, then
+    the RAW goes and the copy is marked verified."""
     caps = c.a.call("recorder.status")["caps"]
-    engines = ["cpu"] + (["gpu"] if caps.get("gpu_ffv1") else [])
+    engines = (["magicyuv"] if caps.get("magicyuv") else []) + ["cpu"] + (["gpu"] if caps.get("gpu_ffv1") else [])
     c.a.call("recorder.source", simulate="1280x720@30:NV16", timeout=60)
     try:
         check(wait_until(lambda: c.a.call("recorder.status")["signal"].get("present"), 20), "no test signal")
         for engine in engines:
             c.a.call("recorder.settings.set", settings={
                 "mode": "raw", "audio": {"record": True},
-                "raw": {"hq": False, "ffv1": True, "ffv1_engine": engine, "when": "after", "ffv1_replace_raw": True}})
+                "raw": {"hq": False, "ffv1": True, "when": "after", "ffv1_replace_raw": True,
+                        "lossless_codec": "magicyuv" if engine == "magicyuv" else "ffv1",
+                        "ffv1_engine": "cpu" if engine == "magicyuv" else engine}})
+            kind = "MagicYUV" if engine == "magicyuv" else "FFV1"
             take = _record(c, 3)
             done = wait_until(lambda: [j for j in _jobs_for(c, take) if j["state"] in ("done", "failed", "cancelled")
-                                       and j["codec"].startswith("ffv1")], 240, 1)
-            check(done, "%s FFV1 job did not finish" % engine)
+                                       and j["codec"] in ("ffv1", "ffv1-gpu", "magicyuv")], 240, 1)
+            check(done, "%s lossless job did not finish" % engine)
+            check(done[0]["codec"] == ("magicyuv" if engine == "magicyuv" else "ffv1-gpu" if engine == "gpu" else "ffv1"),
+                  done[0]["codec"])
             j = done[0]
             check(j["state"] == "done" and j["verify"] and j["verify"]["ok"], "%s: %s" % (engine, j))
             check(wait_until(lambda: j["verify"].get("raw_deleted") or any(
                 x["verify"] and x["verify"].get("raw_deleted") for x in _jobs_for(c, take)), 10), "RAW not deleted")
             t = c.a.call("gallery.get", take=take)
             kinds = [i["kind"] for i in t["items"]]
-            check("RAW" not in kinds and "FFV1" in kinds, kinds)
-            ffv1 = next(i for i in t["items"] if i["kind"] == "FFV1")
+            check("RAW" not in kinds and kind in kinds, kinds)
+            ffv1 = next(i for i in t["items"] if i["kind"] == kind)
             check(ffv1["verified"] and ffv1["verified"]["raw"] == take + ".arh", ffv1)
             check(not os.path.exists(os.path.join(c.tmp, take + ".arh")), "RAW file still on disk")
             print("      %s: %s" % (engine, j["verify"]["detail"]))
@@ -575,6 +582,41 @@ def raw_is_deleted_only_after_a_verified_ffv1_copy(c):
                                          for x in (c.b.state.get("jobs") or []) if x["id"] == j["id"]), 5),
                   "second controller did not see the verified job")
             c.a.call("gallery.delete_take", take=take)
+    finally:
+        c.a.call("recorder.settings.set", settings={"raw": c.orig_settings["raw"], "audio": {"record": False}})
+        c.a.call("recorder.source", simulate=c.source, timeout=60)
+        wait_until(lambda: c.a.call("recorder.status")["signal"].get("present"), 20)
+
+
+@test("GAL-08", "GAL-04", "REC-04")
+def magicyuv_made_while_recording_is_lossless(c):
+    """A MagicYUV copy made during the recording (it follows the growing RAW with one FFmpeg):
+    when the take ends the copy is checked byte for byte, the RAW is kept (replace off), and a
+    gallery conversion from the RAW gives the same verified result."""
+    if not c.a.call("recorder.status")["caps"].get("magicyuv"):
+        print("      skipped: no FFmpeg for MagicYUV")
+        return
+    c.a.call("recorder.source", simulate="1280x720@30:NV16", timeout=60)
+    try:
+        check(wait_until(lambda: c.a.call("recorder.status")["signal"].get("present"), 20), "no test signal")
+        c.a.call("recorder.settings.set", settings={
+            "mode": "raw", "audio": {"record": True},
+            "raw": {"hq": False, "h264": False, "ffv1": True, "lossless_codec": "magicyuv", "when": "during",
+                    "ffv1_replace_raw": False}})
+        take = _record(c, 3)
+        done = wait_until(lambda: [j for j in _jobs_for(c, take) if j["codec"] == "magicyuv"
+                                   and j["state"] in ("done", "failed", "cancelled")], 240, 1)
+        check(done and done[0]["state"] == "done", done)
+        check(done[0]["live"], "the copy was not made during the recording: %s" % done[0])
+        from arstro_remote.recorder import verify
+        raw, copy = os.path.join(c.tmp, take + ".arh"), os.path.join(c.tmp, take + "_MAGICYUV.mkv")
+        check(os.path.exists(raw), "RAW deleted although replace_raw was off")
+        r = verify.verify(raw, copy)
+        check(r["ok"], r)
+        print("      during: %s" % r["detail"])
+        kinds = c.a.call("gallery.get", take=take)["kinds"]
+        check("MagicYUV" in kinds and "RAW" in kinds, kinds)
+        c.a.call("gallery.delete_take", take=take)
     finally:
         c.a.call("recorder.settings.set", settings={"raw": c.orig_settings["raw"], "audio": {"record": False}})
         c.a.call("recorder.source", simulate=c.source, timeout=60)

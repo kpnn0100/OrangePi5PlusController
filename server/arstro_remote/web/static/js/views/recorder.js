@@ -23,7 +23,7 @@ export function fmtLeft(sec) {
 
 /** The take a recording file belongs to: REC_x.arh / S1_SH2_T3_x_H264.mp4 -> its id. */
 function takeIdOf(file) {
-  return String(file || "").replace(/\.[^.]+$/, "").replace(/_(H265|H264.*|FFV1)$/, "");
+  return String(file || "").replace(/\.[^.]+$/, "").replace(/_(H265|H264.*|FFV1|MAGICYUV)$/, "");
 }
 
 function prefOn() {
@@ -372,6 +372,7 @@ export function openSettings() {
     const scroll = body.parentElement ? body.parentElement.scrollTop : 0;
 
     const h265 = st.h265 || {}, raw = st.raw || {};
+    const magic = (raw.lossless_codec || "magicyuv") === "magicyuv" && !!caps.magicyuv;
     const cap = (q) => (q || "").charAt(0).toUpperCase() + (q || "").slice(1);
     // a copy's sub-section: header = chevron, name, what it is (or its options when on), switch
     const copySec = (key, title, what, summary, on, onToggle, disabled, options) => {
@@ -446,7 +447,7 @@ export function openSettings() {
           seg([["mov", "MOV"], ["mkv", "MKV"], ["mp4", "MP4"]], h265.container, (v) => set({ h265: { container: v } }))))
       : h("div", null,
         h("div.set-group-title", null, "Extra copies"),
-        // REC-04: one sub-section per kind of copy, H.264 - H.265 - FFV1; its switch in the header,
+        // REC-04: one sub-section per kind of copy, H.264 - H.265 - lossless; its switch in the header,
         // its options inside (the header opens them; switching a copy on opens it too)
         h("div.set-group.copies", null,
           copySec("h264", "H.264", "MP4 share copy that plays everywhere",
@@ -470,10 +471,16 @@ export function openSettings() {
                         (v) => set({ raw: { x265_preset: v } }))) : null,
              row("Chroma", "4:2:0 plays everywhere; source keeps 4:2:2 / 4:4:4",
                seg([["420", "4:2:0"], ["source", "Source"]], raw.hq_chroma, (v) => set({ raw: { hq_chroma: v } })))]),
-          copySec("ffv1", "FFV1", "Lossless: the exact picture at a fraction of the RAW size",
-            raw.ffv1 ? [raw.ffv1_engine === "gpu" ? "GPU" : "CPU", raw.ffv1_replace_raw ? "replaces the RAW" : "keeps the RAW"].join(" · ") : null,
-            raw.ffv1, (v) => set({ raw: { ffv1: v } }), !caps.ffv1 && !caps.gpu_ffv1,
-            [row("Engine", "GPU is slower but leaves the CPU free",
+          copySec("ffv1", "Lossless", "The exact picture at a fraction of the RAW size",
+            raw.ffv1 ? [magic ? "MagicYUV" : "FFV1 " + (raw.ffv1_engine === "gpu" ? "GPU" : "CPU"),
+                        raw.ffv1_replace_raw ? "replaces the RAW" : "keeps the RAW"].join(" · ") : null,
+            raw.ffv1, (v) => set({ raw: { ffv1: v } }), !caps.ffv1 && !caps.gpu_ffv1 && !caps.magicyuv,
+            [row("Codec", magic ? "3-4x faster to make and to play back or edit; about 20% bigger"
+                                : "Smallest lossless files; slow to play back or edit",
+               seg([["magicyuv", "MagicYUV"], ["ffv1", "FFV1"]], magic ? "magicyuv" : "ffv1",
+                   (v) => set({ raw: { lossless_codec: v } }),
+                   { disabled: { magicyuv: !caps.magicyuv, ffv1: !caps.ffv1 && !caps.gpu_ffv1 } })),
+             magic ? null : row("Engine", "GPU is slower but leaves the CPU free",
                seg([["cpu", "CPU"], ["gpu", "GPU"]], raw.ffv1_engine, (v) => set({ raw: { ffv1_engine: v } }),
                    { disabled: { cpu: !caps.ffv1, gpu: !caps.gpu_ffv1 } })),
              row("Delete RAW after a verified copy",

@@ -5,8 +5,9 @@
 import { h, clear, icon, store, conn, run, sheet, confirmBox, toast, toggle, fmtBytes, fmtDur, busy, errText } from "../core.js";
 import { FilePlayer, streamMode } from "../fileplayer.js";
 
-const KINDS = [["all", "All"], ["RAW", "RAW"], ["H.265", "H.265"], ["H.264", "H.264"], ["FFV1", "FFV1"], ["VIDEO", "Other"]];
-const KIND_TAG = { RAW: "", "H.265": "accent", "H.264": "ok", FFV1: "warn", VIDEO: "" };
+const KINDS = [["all", "All"], ["RAW", "RAW"], ["H.265", "H.265"], ["H.264", "H.264"], ["MagicYUV", "MagicYUV"], ["FFV1", "FFV1"], ["VIDEO", "Other"]];
+const LOSSLESS = ["ffv1", "ffv1-gpu", "magicyuv"];      // conversions that can replace the RAW (GAL-08)
+const KIND_TAG = { RAW: "", "H.265": "accent", "H.264": "ok", FFV1: "warn", MagicYUV: "warn", VIDEO: "" };
 let targetsCache = null;
 
 /** The browser plays the file itself (HTTP Range: smooth seeking). H.265 never: recordings
@@ -400,7 +401,7 @@ export function jobRow(j) {
        j.live ? "following the recording" : null,
        j.attempt > 1 ? `attempt ${j.attempt} of ${j.max_attempts}` : null].filter(Boolean).join(" · ")
     : j.state === "retrying" ? `failed: ${j.error || "?"} · trying again shortly`
-    : v ? (v.ok ? v.detail + (v.raw_deleted ? " · the FFV1 is now the original" : "") : v.detail + " · the RAW is kept")
+    : v ? (v.ok ? v.detail + (v.raw_deleted ? " · the lossless copy is now the original" : "") : v.detail + " · the RAW is kept")
     : j.error || "";
   return h("div.job", null,
     h("div.top", null,
@@ -559,7 +560,7 @@ export function openTake(takeId, { onAnnotate } = {}) {
             h("a.btn.ghost.icon.sm", { href: mediaUrl(i, true), download: i.id, title: "Download", "aria-label": "Download" }, icon("download")),
             h("button.btn.ghost.icon.sm", { title: "Convert", "aria-label": "Convert", disabled: i.recording,
                                             onclick: () => openConvert(i) }, icon("convert")),
-            i.kind === "FFV1" && take.items.some((x) => x.kind === "RAW") ?
+            (i.kind === "FFV1" || i.kind === "MagicYUV") && take.items.some((x) => x.kind === "RAW") ?
               h("button.btn.ghost.icon.sm", { title: "Check against the RAW", "aria-label": "Check against the RAW",
                                               disabled: locked, onclick: () => verifyItem(i) }, icon("check")) : null,
             h("button.btn.ghost.icon.sm.danger", { title: locked ? "In use" : "Delete this file", "aria-label": "Delete",
@@ -575,7 +576,7 @@ export function openTake(takeId, { onAnnotate } = {}) {
       if (job) { toast("Checking " + i.id + " against the RAW", "ok"); s2.close(); }
     };
     const s2 = sheet({
-      title: "Check the FFV1 copy",
+      title: `Check the ${i.kind} copy`,
       body: h("div.stack", null,
         h("p.dim", { style: { margin: 0 } }, `Every frame and audio sample of ${i.id} is compared byte for byte with ${raw.id}.`),
         h("p.muted", { style: { margin: 0, fontSize: "13px" } }, `${fmtBytes(raw.size)} could be freed. If anything differs, nothing is deleted.`)),
@@ -620,7 +621,7 @@ export async function openConvert(item, preselect, preset = {}) {
   const s = sheet({ title: "Convert", body: box, foot: [h("button.btn.ghost", { onclick: () => s.close() }, "Cancel"), startBtn] });
 
   function sameKind(id, it) {
-    return ({ "h264-vpu": "H.264", "h265-vpu": "H.265", "h265-x265": "H.265", ffv1: "FFV1", "ffv1-gpu": "FFV1" })[id] === it.kind;
+    return ({ "h264-vpu": "H.264", "h265-vpu": "H.265", "h265-x265": "H.265", ffv1: "FFV1", "ffv1-gpu": "FFV1", magicyuv: "MagicYUV" })[id] === it.kind;
   }
 
   function render() {
@@ -643,7 +644,7 @@ export async function openConvert(item, preselect, preset = {}) {
           h("input.input", { type: "number", min: "0.1", max: String(o.bitrate_max || 1000), step: "any",
                              placeholder: o.bitrate_max ? `auto (quality) · max ${o.bitrate_max}` : "auto (quality)", value: opts.bitrate,
                              oninput: (e) => { opts.bitrate = e.target.value; } })) : null) : null,
-      t && sel.startsWith("ffv1") && item.kind === "RAW" ? h("label.row", { style: { marginTop: "14px", cursor: "pointer" } },
+      t && LOSSLESS.includes(sel) && item.kind === "RAW" ? h("label.row", { style: { marginTop: "14px", cursor: "pointer" } },
         toggle(opts.replaceRaw, (on) => { opts.replaceRaw = on; }),
         h("div", null, h("b", null, "Delete the RAW when the copy is verified"),
           h("div.hint", null, "Every frame and audio sample is compared byte for byte first"))) : null);
@@ -652,7 +653,7 @@ export async function openConvert(item, preselect, preset = {}) {
 
   async function start() {
     const args = { file: item.id, target: sel, quality: opts.quality, scale: opts.scale, preset: opts.preset };
-    if (sel.startsWith("ffv1") && item.kind === "RAW") args.replace_raw = opts.replaceRaw;
+    if (LOSSLESS.includes(sel) && item.kind === "RAW") args.replace_raw = opts.replaceRaw;
     if (opts.bitrate) args.bitrate = Number(opts.bitrate);
     const job = await busy(startBtn, () => conn.call("gallery.convert", args));
     if (job) { toast("Conversion started: " + job.output, "ok"); s.close(); }
