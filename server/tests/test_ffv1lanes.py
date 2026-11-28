@@ -116,6 +116,36 @@ def magicyuv_from_several_encoders_joins_losslessly(c):
         check(not x.dead and x.made > 0, "%s lane: %s frames, %s" % (x.kind, x.made, x.dead))
 
 
+@test("GAL-04")
+def a_magicyuv_clip_converts_to_other_targets(c):
+    """GStreamer has no MagicYUV decoder (gst-libav maps no caps to it): the convert used to wait
+    forever on a 0-byte .part. FFmpeg decodes it now - with and without audio; to FFV1 the frames
+    and the audio come back identical, still 4:2:2."""
+    if skip(c) or not shutil.which("ffprobe"):
+        return
+    import json, sys
+    for name, audio in (("withaudio", True), ("noaudio", False)):
+        src = os.path.join(c.dir, f"{name}_MAGICYUV.mkv")
+        subprocess.run([c.exe, "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "yuv422p", "-s", f"{W}x{H}",
+                        "-r", "30000/1001", "-i", c.raw,
+                        *(["-f", "lavfi", "-i", "sine=sample_rate=48000", "-shortest", "-c:a", "pcm_s16le", "-ac", "2"]
+                          if audio else []),
+                        "-c:v", "magicyuv", src], check=True, env=c.env)
+        out = os.path.join(c.dir, f"{name}_FFV1.mkv")
+        r = subprocess.run([sys.executable, "-m", "arstro_remote.recorder.transcode", src, "--codec", "ffv1",
+                            "-o", out], capture_output=True, text=True, timeout=120,
+                           cwd=os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+        last = json.loads(r.stdout.strip().splitlines()[-1])
+        check(r.returncode == 0 and last["state"] == "done" and last["frames"] == N, f"{name}: {last} {r.stderr[-300:]}")
+
+        def md5(path, sel):
+            return subprocess.run([c.exe, "-v", "error", "-i", path, "-map", sel, "-f", "md5", "-"],
+                                  capture_output=True, text=True, env=c.env).stdout
+        check(md5(src, "0:v") == md5(out, "0:v"), f"{name}: the frames changed")
+        if audio:
+            check(md5(src, "0:a") == md5(out, "0:a"), "the audio changed")
+
+
 @test("GAL-04", "GAL-10")
 def a_lane_that_dies_gives_its_frames_back(c):
     if skip(c):

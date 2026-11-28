@@ -873,49 +873,162 @@ def transcode_ffv1_gpu(args):
     return 2
 
 
+# FFmpeg pixel format -> GStreamer raw format, for clips FFmpeg decodes (MagicYUV, GAL-04)
+FF_TO_GST = {"yuv420p": "I420", "yuvj420p": "I420", "yuv422p": "Y42B", "yuvj422p": "Y42B", "yuv444p": "Y444",
+             "yuvj444p": "Y444", "gray": "GRAY8", "gbrp": "GBR", "gbrap": "GBRA", "yuv420p10le": "I420_10LE",
+             "yuv422p10le": "I422_10LE", "yuv444p10le": "Y444_10LE", "gbrp10le": "GBR_10LE",
+             "yuv420p12le": "I420_12LE", "yuv422p12le": "I422_12LE", "yuv444p12le": "Y444_12LE"}
+
+
+def _probe_ffmpeg(path):
+    """What FFmpeg sees in a clip: {width, height, pix_fmt, fps (str), audio: (rate, channels) or None}."""
+    p = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
+                        "stream=codec_type,width,height,pix_fmt,r_frame_rate,sample_rate,channels:format=duration",
+                        "-of", "json", path], capture_output=True, text=True, timeout=60)
+    d = json.loads(p.stdout or "{}")
+    streams = d.get("streams", [])
+    v = next((x for x in streams if x.get("codec_type") == "video"), None)
+    a = next((x for x in streams if x.get("codec_type") == "audio"), None)
+    if not v:
+        return None
+    return {"width": int(v["width"]), "height": int(v["height"]), "pix_fmt": v.get("pix_fmt") or "",
+            "fps": v.get("r_frame_rate") or "30/1", "duration": float(d.get("format", {}).get("duration") or 0),
+            "audio": (int(a["sample_rate"]), int(a["channels"])) if a and a.get("sample_rate") else None}
+
+
+def _ffmpeg_decoder(args, audio):
+    """For a clip GStreamer has no decoder for (MagicYUV: gst-libav maps no caps to it): FFmpeg decodes
+    it into two pipes - raw frames and PCM - and the pipeline reads those. Returns (head of the video
+    branch, head of the audio branch or None, start(), stop(), fds to close) or raises ValueError."""
+    import shutil
+    from . import gpu
+    g = gpu.ffmpeg()
+    exe, env = g if g else (shutil.which("ffmpeg"), dict(os.environ))
+    if not exe or not shutil.which("ffprobe"):
+        raise ValueError("GStreamer cannot decode this clip and there is no FFmpeg on this machine")
+    try:
+        info = _probe_ffmpeg(args.input)
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as e:
+        raise ValueError(f"FFmpeg cannot read the clip: {e}")
+    if not info:
+        raise ValueError("FFmpeg finds no video in the clip")
+    pix = info["pix_fmt"] if info["pix_fmt"] in FF_TO_GST else "yuv444p"
+    vr, vw = os.pipe()
+    fds = [vr, vw]
+    cmd = [exe, "-hide_banner", "-nostdin", "-v", "error", "-threads", "0", "-i", args.input,
+           "-map", "0:v:0", "-f", "rawvideo", "-pix_fmt", pix, f"pipe:{vw}"]
+    num, _, den = info["fps"].partition("/")
+    head_v = (f"fdsrc fd={vr} blocksize=1048576 ! rawvideoparse use-sink-caps=false width={info['width']} "
+              f"height={info['height']} format={FF_TO_GST[pix].lower().replace('_', '-')} framerate={num}/{den or 1}")
+    head_a = None
+    if audio and info["audio"]:
+        rate, ch = info["audio"]
+        ar, aw = os.pipe()
+        fds += [ar, aw]
+        cmd += ["-map", "0:a:0", "-f", "s16le", "-ac", str(ch), "-ar", str(rate), f"pipe:{aw}"]
+        head_a = f"fdsrc fd={ar} blocksize=65536 ! rawaudioparse use-sink-caps=false pcm-format=s16le sample-rate={rate} num-channels={ch}"
+    proc = {}
+
+    def start():
+        proc["p"] = subprocess.Popen(cmd, env=env, pass_fds=tuple(fds[1::2]), stdin=subprocess.DEVNULL,
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        for w in fds[1::2]:                  # FFmpeg holds the write ends now: EOF when it is done
+            os.close(w)
+
+    def stop(kill):
+        p = proc.get("p")
+        if not p:
+            return 0, ""
+        if kill and p.poll() is None:
+            p.kill()
+        try:
+            p.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.wait()
+        return p.returncode, (p.stderr.read() or b"").decode(errors="replace").strip()[-300:]
+    return head_v, head_a, start, stop, fds[0::2]
+
+
 def transcode_media(args):
-    """Convert an already encoded clip (H.265 .mp4/.mov/.mkv, FFV1 .mkv, ...) to another
-    target: decode (hardware for H.265) -> encoder -> mux. Same progress protocol."""
+    """Convert an already encoded clip (H.265 .mp4/.mov/.mkv, FFV1 .mkv, MagicYUV .mkv, ...) to another
+    target: decode (hardware for H.265; FFmpeg for what GStreamer cannot decode) -> encoder -> mux.
+    Same progress protocol."""
     gi.require_version("GstPbutils", "1.0")
     from gi.repository import GstPbutils
 
     def emit(**kw):
         print(json.dumps(kw), flush=True)
 
+    gst_error = None
     try:
         info = GstPbutils.Discoverer.new(5 * Gst.SECOND).discover_uri(
             Gst.filename_to_uri(os.path.abspath(args.input)))
-    except GLib.Error as e:
-        emit(state="failed", error=f"can't read {args.input}: {e.message}")
-        return 2
-    vs = info.get_video_streams()
-    if not vs:
-        emit(state="failed", error="no video stream")
-        return 2
-    v = vs[0]
-    fps = v.get_framerate_num() / v.get_framerate_denom() if v.get_framerate_denom() else 30.0
-    total = int(info.get_duration() / Gst.SECOND * fps) if info.get_duration() else 0
-    audio = bool(info.get_audio_streams()) and not args.no_audio
+    except GLib.Error as e:       # also when GStreamer can decode none of the streams (a MagicYUV-only clip)
+        info, gst_error = None, e.message
+    vs = info.get_video_streams() if info else []
+    if vs:
+        v = vs[0]
+        caps = v.get_caps()
+        # no GStreamer decoder for the video (MagicYUV) - a decodebin would wait forever: FFmpeg decodes
+        ffdec = bool(info.get_missing_elements_installer_details()) or \
+            not (caps and caps.get_size() and caps.get_structure(0).get_name().startswith(("video/x-", "image/")) and
+                 caps.get_structure(0).get_name() != "video/x-unknown")
+        audio = bool(info.get_audio_streams()) and not args.no_audio
+    else:
+        ffdec, audio = True, not args.no_audio     # FFmpeg may still read it; else the error below
+    dec, src_fmt = None, "decoded"
+    if ffdec:
+        try:
+            dec = _ffmpeg_decoder(args, audio)
+        except ValueError as e:
+            emit(state="failed", error=f"can't read {args.input}: {gst_error}" if gst_error else
+                 "no video stream" if not vs else str(e))
+            return 2
+        probe = _probe_ffmpeg(args.input)
+        num, _, den = probe["fps"].partition("/")
+        fps = int(num) / int(den or 1) if int(den or 1) else 30.0
+        audio = dec[1] is not None
+        # the decoded format is known: lossless / "source" chroma targets keep it (4:2:2 MagicYUV -> 4:2:2 FFV1)
+        src_fmt = {"Y42B": "NV16", "I420": "NV12", "Y444": "NV24", "GBR": "RGB"}.get(
+            FF_TO_GST.get(probe["pix_fmt"], "Y444"), "decoded")
+    else:
+        probe = {}
+        fps = v.get_framerate_num() / v.get_framerate_denom() if v.get_framerate_denom() else 30.0
+    duration = info.get_duration() / Gst.SECOND if info and info.get_duration() else probe.get("duration", 0)
+    total = int(duration * fps)
     out = args.output or output_path(args.input, args.codec, args.scale)
     part = out + ".part"
     mux = _mux(args.codec)
     # the source format is only known after decoding: always convert (this also keeps
     # the mpph265enc fallback away from plain system memory, see gstutil)
-    need, enc = _encoder_desc(args.codec, "decoded", fps, args.quality, args.preset, args.chroma,
+    need, enc = _encoder_desc(args.codec, src_fmt, fps, args.quality, args.preset, args.chroma,
                                args.bitrate, args.rc)
-    desc = (f"filesrc name=fsrc ! decodebin name=dec "
-            f"dec. ! queue max-size-buffers=4 max-size-bytes=0 max-size-time=0 ! "
+    vhead, ahead = (dec[0], dec[1]) if dec else ("filesrc name=fsrc ! decodebin name=dec dec.", "dec.")
+    desc = (f"{vhead} ! queue max-size-buffers=4 max-size-bytes=0 max-size-time=0 ! "
             f"{_scale_desc(args.scale)}videoconvert n-threads=4 ! video/x-raw,format={need} ! {enc} ! "
             f"identity name=counter ! {mux} name=mux ! filesink name=fsink")
     if audio:
-        desc += (" dec. ! queue max-size-time=0 max-size-bytes=0 max-size-buffers=0 ! " +
+        desc += (f" {ahead} ! queue max-size-time=0 max-size-bytes=0 max-size-buffers=0 ! " +
                  (_audio_tail(args.codec) or "audioconvert ! audioresample ! audio/x-raw,format=S16LE ! mux."))
+
+    def close_reads():
+        for fd in (dec[4] if dec else ()):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
     try:
         pipe = Gst.parse_launch(desc)
     except GLib.Error as e:
+        if dec:
+            dec[2]()
+            dec[3](True)
+            close_reads()
         emit(state="failed", error=f"pipeline: {e.message}")
         return 2
-    pipe.get_by_name("fsrc").set_property("location", args.input)
+    if not dec:
+        pipe.get_by_name("fsrc").set_property("location", args.input)
     pipe.get_by_name("fsink").set_property("location", part)
     _scale_in_decoder(pipe, args.scale)
 
@@ -956,6 +1069,8 @@ def transcode_media(args):
     bus.connect("message", on_message)
     emit(state="running", frames=0, total=total, fps=0, output=out)
     vpu = _vpu_bridge(pipe, args, fps)
+    if dec:
+        dec[2]()                              # FFmpeg starts writing the pipes
     pipe.set_state(Gst.State.PLAYING)
     if vpu:
         vpu.start()
@@ -963,7 +1078,12 @@ def transcode_media(args):
     loop.run()
     if vpu:
         vpu.stop()
+    if dec:
+        rc, err = dec[3](result["code"] != 0)
+        if result["code"] == 0 and rc != 0:
+            result["code"], result["error"] = 2, "FFmpeg could not decode the clip: " + (err or f"exit code {rc}")
     pipe.set_state(Gst.State.NULL)
+    close_reads()
     if result["code"] == 0:
         _stamp_timecode(part, out, args.input)
         os.replace(part, out)
