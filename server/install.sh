@@ -1,8 +1,15 @@
 #!/bin/bash
-# Arstro Remote server installer - one script for any Linux machine (Debian/Ubuntu family,
-# Raspberry Pi OS, Orange Pi / Armbian images, x86 PCs). Run it as the user the server
-# should run as (normally the desktop auto-login user), NOT as root; it asks for sudo only
-# for packages and device permissions.
+# Arstro Remote server installer - THE one script that sets a machine up (SET-05, SET-08), for any
+# Linux machine (Debian/Ubuntu family, Raspberry Pi OS, Orange Pi / Armbian images, x86 PCs). Run it
+# ON the machine, from a checkout of this repository, as the user the server should run as (normally
+# the desktop auto-login user), NOT as root; it asks for sudo only for system changes. Every step
+# checks first and only does what is missing, so running it again is always safe:
+#   packages for the chosen modules · device permissions (GPIO, I2C, SPI, serial, PWM, LEDs) ·
+#   Bluetooth service + groups · the hotspot next to a dnsmasq service · camera: the HDMI RX
+#   overlay and CMA (Orange Pi images, then reboot) and the GPU encoder / FFmpeg 9 (RK3588) ·
+#   desktop auto-login (--autologin) · the slot's code, config, password, start at boot ·
+#   the Android app from release/ for http://<machine>:<port>/app.apk · start + check.
+# The scripts in server/scripts/ are its parts and refuse to run on their own.
 #
 #   ./install.sh                         install / update slot A on port 8080
 #   ./install.sh --slot b                install / update slot B on port 8081 (A keeps running)
@@ -32,8 +39,12 @@
 #                         Default: desktop when a graphical session is installed, else systemd
 #   --activate            make this slot the default for the `arstro-remote` command and
 #                         give it the Bluetooth link (the other slots lose it)
-#   --no-deps             do not install packages
-#   --no-perms            do not set up device permissions (udev rules, groups) or the hotspot's DNS
+#   --autologin           log the user in to the desktop at boot (LightDM), so the server starts
+#                         with the session without anybody at the machine
+#   --no-deps             do not install packages (nor the camera's GPU encoder)
+#   --no-gpu              do not download the camera's GPU encoder / FFmpeg 9 (~185 MB)
+#   --no-perms            no system changes: device permissions, groups, Bluetooth service,
+#                         the hotspot's DNS, the HDMI RX overlay
 #   --no-start            install only
 #   --uninstall           stop and remove this slot (config and logs stay; --purge removes them)
 #   --force-own-session   install into the slot that hosts THIS shell anyway (it gets killed)
@@ -47,14 +58,14 @@ SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 for a in "$@"; do
     if [ "$a" = --backup ]; then
         [ -x "$SRC/scripts/install_backup.sh" ] || { echo "error: run install.sh --backup from an Arstro Remote checkout" >&2; exit 1; }
-        exec "$SRC/scripts/install_backup.sh" "$@"
+        exec "$SRC/scripts/install_backup.sh" --from-install-sh "$@"
     fi
 done
 CODE="$SRC"                                   # the installed copy lives in <slot>/bin/
 [ -d "$CODE/arstro_remote" ] || [ ! -d "$SRC/../arstro_remote" ] || CODE="$(cd "$SRC/.." && pwd)"
 SLOT=a PORT="" PASSWORD="" MODULES="all" BT="" BOOT="" ACTIVATE=0
 RELAY_URL="" RELAY_TOKEN="" RELAY_NAME="" RELAY_KEY=""
-DEPS=1 PERMS=1 START=1 UNINSTALL=0 PURGE=0 YES=0 FORCE_OWN=0
+DEPS=1 PERMS=1 START=1 UNINSTALL=0 PURGE=0 YES=0 FORCE_OWN=0 GPU=1 AUTOLOGIN=0 REBOOT_NEEDED=0
 
 usage() { sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p}' "$0"; exit "${1:-0}"; }
 while [ $# -gt 0 ]; do
@@ -70,6 +81,8 @@ while [ $# -gt 0 ]; do
         --boot) BOOT="$2"; shift 2 ;;
         --activate) ACTIVATE=1; shift ;;
         --no-deps) DEPS=0; shift ;;
+        --no-gpu) GPU=0; shift ;;
+        --autologin) AUTOLOGIN=1; shift ;;
         --no-perms) PERMS=0; shift ;;
         --no-start) START=0; shift ;;
         --uninstall) UNINSTALL=1; shift ;;
@@ -199,11 +212,11 @@ need_sudo() {   # ask once
 # ------------------------------------------------------------------ 1. packages
 if [ "$DEPS" = 1 ]; then
     say "Checking packages for: $MOD_LIST"
-    missing=$(bash "$SRC/scripts/install_deps.sh" --check $MOD_LIST)
+    missing=$(bash "$SRC/scripts/install_deps.sh" --from-install-sh --check $MOD_LIST)
     if [ -n "$missing" ]; then
         echo "   missing: $missing"
         if need_sudo "installing packages"; then
-            sudo bash "$SRC/scripts/install_deps.sh" $MOD_LIST || die "required packages could not be installed"
+            sudo bash "$SRC/scripts/install_deps.sh" --from-install-sh $MOD_LIST || die "required packages could not be installed"
         else
             warn "cannot use sudo - install them yourself: sudo apt install $missing"
         fi
@@ -218,27 +231,82 @@ if [ "$PERMS" = 1 ] && has_mod io; then
     want=$(grep -o 'arstro-io-rules v[0-9]*' "$SRC/scripts/setup_io_perms.sh" | head -1)
     if ! grep -qs "$want" /etc/udev/rules.d/70-arstro-io.rules || ! getent group gpio | grep -qw "$(id -un)"; then
         if need_sudo "udev rules and groups for the IO devices"; then
-            sudo bash "$SRC/scripts/setup_io_perms.sh" "$(id -un)" $([ "$BOOT" = systemd ] && echo --headless) ||
+            sudo bash "$SRC/scripts/setup_io_perms.sh" --from-install-sh "$(id -un)" $([ "$BOOT" = systemd ] && echo --headless) ||
                 warn "device permissions could not be set up"
         else
-            warn "no sudo - IO Control stays read-only (run: sudo $SRC/scripts/setup_io_perms.sh $(id -un))"
+            warn "no sudo - IO Control stays read-only (run install.sh again where sudo works)"
         fi
     else
         echo "   already set up"
     fi
 elif [ "$PERMS" = 1 ] && [ "$BOOT" = systemd ]; then
-    need_sudo "polkit rule for NetworkManager" && sudo bash "$SRC/scripts/setup_io_perms.sh" "$(id -un)" --headless || true
+    need_sudo "polkit rule for NetworkManager" && sudo bash "$SRC/scripts/setup_io_perms.sh" --from-install-sh "$(id -un)" --headless || true
 fi
-for g in bluetooth netdev; do
-    getent group "$g" >/dev/null && ! id -nG | tr ' ' '\n' | grep -qx "$g" && warn "$(id -un) is not in group '$g' (sudo usermod -aG $g $(id -un))"
-done
+# Bluetooth (the app's link) and NetworkManager: the groups and a running bluetoothd
+if [ "$PERMS" = 1 ]; then
+    add=""
+    for g in bluetooth netdev; do
+        getent group "$g" >/dev/null && ! id -nG "$(id -un)" | tr ' ' '\n' | grep -qx "$g" && add="$add${add:+,}$g"
+    done
+    if [ -n "$add" ]; then
+        say "Adding $(id -un) to the groups: $add"
+        if need_sudo "the groups $add"; then
+            sudo usermod -aG "$add" "$(id -un)" && REBOOT_NEEDED=1 || warn "could not add the groups $add"
+        else
+            warn "no sudo - $(id -un) is not in the groups $add"
+        fi
+    fi
+    if has_mod connection || [ "$BT" = on ]; then
+        if command -v systemctl >/dev/null && systemctl list-unit-files bluetooth.service >/dev/null 2>&1 &&
+           [ "$(systemctl is-active bluetooth 2>/dev/null)" != active ]; then
+            say "Starting the Bluetooth service"
+            need_sudo "the Bluetooth service" && sudo systemctl enable --now bluetooth || warn "bluetooth.service could not be started"
+        fi
+    fi
+fi
 # the hotspot (WIFI-08) cannot hand out addresses while a dnsmasq service holds port 53 on every address
-if [ "$PERMS" = 1 ] && has_mod connection && ! bash "$SRC/scripts/setup_hotspot_dns.sh" --check; then
+if [ "$PERMS" = 1 ] && has_mod connection && ! bash "$SRC/scripts/setup_hotspot_dns.sh" --from-install-sh --check; then
     say "Hotspot: the dnsmasq service leaves the Wi-Fi to NetworkManager"
     if need_sudo "the hotspot next to the dnsmasq service"; then
-        sudo bash "$SRC/scripts/setup_hotspot_dns.sh" | sed 's/^/   /' || warn "the hotspot will not start (run: sudo $SRC/scripts/setup_hotspot_dns.sh)"
+        sudo bash "$SRC/scripts/setup_hotspot_dns.sh" --from-install-sh | sed 's/^/   /' || warn "the hotspot will not start (run install.sh again)"
     else
-        warn "no sudo - the hotspot will not start until: sudo $SRC/scripts/setup_hotspot_dns.sh"
+        warn "no sudo - the hotspot will not start until install.sh runs with sudo"
+    fi
+fi
+
+# camera: the HDMI RX port (Orange Pi images: device-tree overlay + CMA, then a reboot)
+if [ "$PERMS" = 1 ] && has_mod camera && ! bash "$SRC/scripts/setup_hdmirx.sh" --from-install-sh --check; then
+    say "Camera: the HDMI RX port (device-tree overlay, CMA)"
+    if need_sudo "the HDMI RX overlay in /boot"; then
+        sudo bash "$SRC/scripts/setup_hdmirx.sh" --from-install-sh | sed 's/^/   /' && REBOOT_NEEDED=1 ||
+            warn "the HDMI RX port could not be enabled"
+    else
+        warn "no sudo - the HDMI RX port stays off"
+    fi
+fi
+# camera: GPU FFV1 + FFmpeg 9 (MagicYUV lanes) on RK3588 boards - user files only, no sudo
+if [ "$DEPS" = 1 ] && [ "$GPU" = 1 ] && has_mod camera && [ "$(uname -m)" = aarch64 ] &&
+   tr '\0' '\n' </proc/device-tree/compatible 2>/dev/null | grep -q '^rockchip,rk3588' &&
+   ! bash "$SRC/scripts/setup_gpu.sh" --from-install-sh --check; then
+    say "Camera: GPU encoder and FFmpeg 9 (download ~185 MB; skip with --no-gpu)"
+    bash "$SRC/scripts/setup_gpu.sh" --from-install-sh 2>&1 | sed 's/^/   /' ||
+        warn "GPU encoding is not available - the recorder uses the CPU"
+fi
+# desktop auto-login (LightDM): the server starts with the session, nobody needs to log in
+if [ "$AUTOLOGIN" = 1 ]; then
+    me=$(id -un)
+    if grep -rhs '^autologin-user=' /etc/lightdm/lightdm.conf /etc/lightdm/lightdm.conf.d /usr/share/lightdm/lightdm.conf.d |
+       cut -d= -f2 | grep -qx "$me"; then
+        echo "   auto-login for $me is on already"
+    elif [ ! -d /etc/lightdm ]; then
+        warn "--autologin works with LightDM only - turn on auto-login for $me in your display manager"
+    elif need_sudo "desktop auto-login"; then
+        say "Desktop auto-login for $me (from the next boot)"
+        printf '[Seat:*]\nautologin-user=%s\nautologin-user-timeout=0\n' "$me" |
+            sudo sh -c 'mkdir -p /etc/lightdm/lightdm.conf.d && cat > /etc/lightdm/lightdm.conf.d/60-arstro-autologin.conf' &&
+            REBOOT_NEEDED=1 || warn "auto-login could not be set"
+    else
+        warn "no sudo - auto-login stays off"
     fi
 fi
 
@@ -253,6 +321,7 @@ install -m 755 "$SRC/scripts/arstro-remote-launcher" "$APP_DIR.new/bin/arstro-re
 install -m 755 "$SRC/install.sh" "$APP_DIR.new/bin/install.sh"
 mkdir -p "$APP_DIR.new/bin/scripts"
 install -m 755 "$SRC/scripts/install_deps.sh" "$SRC/scripts/setup_io_perms.sh" "$SRC/scripts/setup_hotspot_dns.sh" \
+    "$SRC/scripts/setup_hdmirx.sh" "$SRC/scripts/setup_gpu.sh" "$SRC/scripts/install_backup.sh" \
     "$SRC/scripts/arstro-remote-launcher" "$APP_DIR.new/bin/scripts/"
 python3 - "$APP_DIR.new" <<'EOF'
 import compileall, sys
@@ -270,6 +339,15 @@ export PYTHONPATH="$APP_DIR\${PYTHONPATH:+:\$PYTHONPATH}"
 exec python3 -m arstro_remote "\$@"
 EOF
 chmod 755 "$BIN_DIR/$NAME"
+# the newest Android app in the checkout's release/ is offered at http://<machine>:<port>/app.apk (SET-04)
+apk=$(ls -t "$SRC"/../release/arstro-remote-v*.apk 2>/dev/null | head -1 || true)
+if [ -n "$apk" ]; then
+    d="$DATA_HOME/arstro-remote/app"
+    mkdir -p "$d"
+    cp -f "$apk" "$d/arstro-remote.apk.part" && mv -f "$d/arstro-remote.apk.part" "$d/arstro-remote.apk"
+    basename "$apk" .apk | sed 's/^arstro-remote-v//' >"$d/version"
+    echo "   app $(cat "$d/version") offered at /app.apk"
+fi
 # `arstro-remote` = the active slot; a first install makes itself active
 if [ ! -e "$BIN_DIR/arstro-remote" ] && [ ! -e "$ACTIVE_FILE" ]; then
     ACTIVATE=1
@@ -477,4 +555,5 @@ if [ -n "$RELAY_KEY" ]; then
     echo "   (show it again: $NAME relay key · replace it: $NAME relay rotate --yes)"
     echo
 fi
+[ "$REBOOT_NEEDED" = 0 ] || warn "reboot the machine to finish (new groups, auto-login or the HDMI RX port count from the next boot)"
 echo "Done. CLI: $NAME status · logs: $NAME log -f · remove: $APP_DIR/bin/install.sh --slot $SLOT --uninstall"

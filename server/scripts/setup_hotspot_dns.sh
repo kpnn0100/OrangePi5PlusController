@@ -9,6 +9,8 @@
 #
 #   setup_hotspot_dns.sh [--check]     --check: exit 0 when nothing needs doing
 set -u
+# Part of install.sh (SET-08): it refuses to run on its own - set the machine up with ./install.sh.
+[ "${1:-}" = --from-install-sh ] && shift || { echo "$(basename "$0") is part of the installer - run ./install.sh instead (./install.sh --help)" >&2; exit 2; }
 CONF=/etc/dnsmasq.d/arstro-hotspot.conf
 WANT="arstro-hotspot-dns v1"
 

@@ -306,10 +306,9 @@ def dns_conflict():
 
 
 def dns_problem():
-    script = os.path.join(paths.install_dir(), "bin", "scripts", "setup_hotspot_dns.sh")
     return ("another DNS server on this machine listens on every address (port 53) - usually the dnsmasq "
-            "service - so the hotspot cannot hand out addresses. Fix it once: sudo %s (install.sh does it "
-            "too)" % script)
+            "service - so the hotspot cannot hand out addresses. Fix it once: run ./install.sh again "
+            "(it changes the dnsmasq service with sudo)")
 
 
 def hotspot_file():

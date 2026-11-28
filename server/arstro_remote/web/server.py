@@ -2,7 +2,7 @@
 
   GET  /                      web UI (static files, no token needed to load)
   GET  /api/ping              {"name", "version", "authorized", "auth", "app"} - reachability check
-  GET  /app.apk               the Android app, when setup_pi.sh uploaded one (no password)
+  GET  /app.apk               the Android app, when install.sh found one in release/ (no password)
   POST /api/login             {"token"} -> HttpOnly cookie for the web UI
   POST /api/logout
   GET  /ws                    WebSocket: the full protocol (same ops/events as Bluetooth)
@@ -288,7 +288,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/app.apk":                       # public: the app is not a secret (SET-04)
                 apk, apk_version = app_apk()
                 if not apk:
-                    return self.send_error(HTTPStatus.NOT_FOUND, "no app uploaded (run scripts/setup_pi.sh)")
+                    return self.send_error(HTTPStatus.NOT_FOUND, "no app here (put the APK in release/ and run install.sh)")
                 name = "arstro-remote%s.apk" % ("-v" + apk_version if apk_version else "")
                 return self._send_file(apk, name, True, head, ctype="application/vnd.android.package-archive")
             if not self._origin_ok():

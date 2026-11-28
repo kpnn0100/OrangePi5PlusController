@@ -67,7 +67,8 @@ may be working in one: check which port their browser uses before restarting it.
    ```bash
    ./install.sh --slot "$(cd server && python3 -m arstro_remote slots --idle)" --yes
    ```
-   From a dev PC: `scripts/setup_pi.sh --slot b user@<host>`. The installer swaps the code
+   `install.sh` is the ONLY setup script (SET-08) - always run it on the machine itself (over SSH:
+   update the board's checkout, then run it there). The installer swaps the code
    atomically, restarts that slot's daemon through its launcher and waits until it answers.
    New groups (first install of IO permissions) apply from the next login; to give a freshly
    started slot the `gpio` group now: `sg gpio -c "./install.sh --slot b --yes"`.

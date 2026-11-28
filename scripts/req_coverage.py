@@ -25,7 +25,7 @@ OUT = os.path.join(ROOT, "docs", "traceability.md")
 ID = r"[A-Z]{2,5}-\d{2}"
 
 MANUAL = {
-    "ARC-07": "Reboot the Pi: `scripts/setup_pi.sh --reboot user@pi` waits for the service after boot.",
+    "ARC-07": "Reboot the Pi (after `./install.sh --autologin`): the service is up without anybody logging in.",
     "SEC-01": "Pair a new phone outside and inside the pairing window (`server/tests/bt_pairing_security_test.sh`).",
     "SEC-02": "`server/tests/bt_pairing_security_test.sh`: an untrusted device is refused.",
     "CON-01": "Walk out of Bluetooth range and back: the app reconnects and the shell resumes (also `reconnect_live_test.dart`).",

@@ -1,15 +1,23 @@
 #!/usr/bin/env bash
-# One-time setup: enable the RK3588 HDMI RX port on Orange Pi 5 Plus.
+# The RK3588 HDMI RX port on Orange Pi images (camera module) - run as root; install.sh calls it
+# through sudo when the overlay or the CMA size is missing. Takes effect after a reboot.
 #   - enables the rk3588-hdmirx device-tree overlay
-#   - raises CMA so 4K frame buffers (~25 MB each) can be allocated
-#   - installs gstreamer1.0-libav (FFV1 lossless encoder for the recorder)
-# Run with: sudo ./setup_hdmirx.sh   then reboot.
+#   - sets CMA (when the image sets none) so 4K frame buffers (~25 MB each) can be allocated
+#
+#   setup_hdmirx.sh [--check]     --check: exit 0 when nothing needs doing (no root needed)
 set -euo pipefail
+# Part of install.sh (SET-08): it refuses to run on its own - set the machine up with ./install.sh.
+[ "${1:-}" = --from-install-sh ] && shift || { echo "$(basename "$0") is part of the installer - run ./install.sh instead (./install.sh --help)" >&2; exit 2; }
 
 ENV=/boot/orangepiEnv.txt
 CMA=${CMA:-512M}
 
-[ "$(id -u)" -eq 0 ] || { echo "Run as root: sudo $0"; exit 1; }
+if [ "${1:-}" = --check ]; then     # nothing to do: not an Orange Pi image, no overlay, or both set already
+    [ -f "$ENV" ] && [ -f /boot/dtb/rockchip/overlay/rk3588-hdmirx.dtbo ] || exit 0
+    grep -qE '^overlays=.*\bhdmirx\b' "$ENV" && grep -qE "^extraargs=.*\bcma=" "$ENV"
+    exit $?
+fi
+[ "$(id -u)" -eq 0 ] || { echo "setup_hdmirx.sh must run as root" >&2; exit 1; }
 [ -f "$ENV" ] || { echo "$ENV not found"; exit 1; }
 [ -f /boot/dtb/rockchip/overlay/rk3588-hdmirx.dtbo ] || { echo "rk3588-hdmirx.dtbo not found"; exit 1; }
 
@@ -22,13 +30,9 @@ else
     echo 'overlays=hdmirx' >> "$ENV"
 fi
 
-# extraargs=... cma=<CMA>
+# extraargs=... cma=<CMA> (a cma= that is set already stays as it is)
 if grep -q '^extraargs=' "$ENV"; then
-    if grep -qE '^extraargs=.*\bcma=' "$ENV"; then
-        sed -i -E "s/^(extraargs=.*)\bcma=[^ ]*/\1cma=$CMA/" "$ENV"
-    else
-        sed -i "s/^extraargs=\(.*\)$/extraargs=\1 cma=$CMA/" "$ENV"
-    fi
+    grep -qE '^extraargs=.*\bcma=' "$ENV" || sed -i "s/^extraargs=\(.*\)$/extraargs=\1 cma=$CMA/" "$ENV"
 else
     echo "extraargs=cma=$CMA" >> "$ENV"
 fi
@@ -36,10 +40,4 @@ fi
 echo "Updated $ENV (backup: $ENV.bak-hdmirx):"
 grep -E '^(overlays|extraargs)=' "$ENV"
 
-# FFV1 encoder (avenc_ffv1) used by the recorder's lossless copies
-if ! dpkg -s gstreamer1.0-libav >/dev/null 2>&1; then
-    apt-get install -y gstreamer1.0-libav || echo "warning: could not install gstreamer1.0-libav (FFV1 copies disabled)"
-fi
-
-echo
-echo "Reboot now, then run: python3 hdmi_recorder.py   (or hdmi_rx_viewer.py for a plain viewer)"
+echo "HDMI RX: takes effect after a reboot."

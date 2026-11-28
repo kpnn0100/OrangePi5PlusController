@@ -381,7 +381,7 @@ class Worker:
                 self.link = self.v4l2.link_state(self.dev)
             d["link"], d["why"] = self.link
         elif not sig and not self.dev and not self.sim:
-            d["link"], d["why"] = "none", "No HDMI RX device (enable it with setup_hdmirx.sh and reboot)."
+            d["link"], d["why"] = "none", "No HDMI RX device (install.sh enables it on Orange Pi images - run it, then reboot)."
         return d
 
     def status(self):

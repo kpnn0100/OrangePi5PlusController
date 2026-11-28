@@ -100,7 +100,7 @@ def app_download_is_offered_when_uploaded(c):
     st, h, data = http(c, "GET", "/app.apk")
     if not apk:
         check(app is None and st == 404, "no APK uploaded, but /app.apk -> %s" % st)
-        print("      (no APK uploaded on this Pi: run scripts/setup_pi.sh with an APK in release/)")
+        print("      (no APK uploaded on this Pi: put the APK in the checkout's release/ and run ./install.sh)")
         return
     check(app and app["url"] == "/app.apk" and app["version"] == version, app)
     check(st == 200 and data[:2] == b"PK", "not an APK (status %s)" % st)

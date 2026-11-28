@@ -6,7 +6,7 @@
 #   uninstall.sh --legacy [--purge]    an old, unslotted install (arstro-remote.desktop)
 set -u
 if [ "${1:-}" = "--backup" ]; then
-    exec "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts/install_backup.sh" --uninstall "$@"
+    exec "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/install.sh" --uninstall "$@"     # install.sh hands --backup on
 fi
 if [ "${1:-}" != "--legacy" ]; then
     exec "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/install.sh" --uninstall "$@"

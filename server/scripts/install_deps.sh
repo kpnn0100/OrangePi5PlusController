@@ -5,6 +5,8 @@
 #
 #   install_deps.sh [--check] MODULE...      (modules: see server/arstro_remote/modules.py)
 set -u
+# Part of install.sh (SET-08): it refuses to run on its own - set the machine up with ./install.sh.
+[ "${1:-}" = --from-install-sh ] && shift || { echo "$(basename "$0") is part of the installer - run ./install.sh instead (./install.sh --help)" >&2; exit 2; }
 CHECK=0
 [ "${1:-}" = "--check" ] && { CHECK=1; shift; }
 mods=" $* "
@@ -20,7 +22,7 @@ case "$mods" in *" screen "*)
 esac
 case "$mods" in *" camera "*)
     optional+=(gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good
-               gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly ffmpeg v4l-utils
+               gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav ffmpeg v4l-utils
                python3-numpy) ;;              # numpy: exposure data, LUTs (REC-13)
 esac
 

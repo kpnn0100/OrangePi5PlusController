@@ -54,24 +54,27 @@ the slots never touches it, so a broken or updating main server still leaves a s
 and from the internet. It changes only on purpose: `./install.sh --backup --force`;
 `arstro-backup status` shows it, `server/uninstall.sh --backup` removes it.
 
-## Quick start from a dev PC (server + app)
+## Setting up the Pi: one script
 
-On a Linux/macOS/WSL machine with this repository:
+`install.sh` is the only script that sets up a machine (SET-08). Run it **on the Pi**, from a
+checkout of this repository, as the desktop user:
 
 ```bash
-cp local.env.example local.env        # optional: your Pi address, phone serial
-./setup_all.sh orangepi@<pi-address> --web-password --install
+git clone <this repository> arstro && cd arstro
+./install.sh --autologin          # first time; later updates: git pull && ./install.sh --slot <idle slot>
 ```
 
-This checks your tools, logs in to the Pi once with its password (then installs an SSH key),
-installs packages and the server, sets the web password, builds the signed APK into `release/`
-and installs it on the phone attached with USB debugging. Steps can be skipped
-(`--no-pi`, `--no-apk`); `./setup_all.sh --help` lists everything.
+It does everything, and only what is missing, so running it again is safe: packages, device
+permissions, the Bluetooth service and groups, the hotspot's DNS, for the camera the HDMI RX port
+(overlay + CMA) and the GPU encoder / FFmpeg 9 (`--no-gpu` skips the ~185 MB download), desktop
+auto-login, the server slot with its password and start at boot, and the Android app for
+`http://<pi>:8080/app.apk` when `release/` holds one. It asks for sudo once, and tells you when a
+reboot is needed. The scripts in `server/scripts/` are its parts and refuse to run on their own.
+`./install.sh --help` lists every option.
 
-Only parts of it:
+The Android apps are built on a PC (or on the Pi, below):
 
 ```bash
-scripts/setup_pi.sh orangepi@<pi-address>     # install / update the Pi side (also --slot b, --autologin, --reboot, --test)
 ./build_apk.sh [--install SERIAL]             # build release/arstro-remote-vX.Y.Z.apk
 ./build_apk.sh --client                       # build release/arstro-remote-client-vX.Y.Z.apk (share this phone)
 ```
@@ -83,8 +86,6 @@ packages). Copy `app/android/key.properties` and its keystore from the PC that h
 APK updates the installed app (a new key would need an uninstall).
 
 The server starts with the Pi's desktop session (auto-login) and restarts itself if it stops.
-On first use of the recorder, run `server/scripts/setup_hdmirx.sh` on the Pi if it has no HDMI RX
-device yet (needs sudo and a reboot).
 
 ## Using it
 

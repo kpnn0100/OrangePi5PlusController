@@ -432,7 +432,7 @@ def _raw_audio_to(reader, fd, follow, stop):
 def transcode_ffv1_lanes(args, reader, emit):
     """FFV1 of a RAW take on the CPU and the GPU at once (ffv1lanes.py): two CPU lanes and the
     GPU. MagicYUV (args.codec) the same way on two CPU lanes - there is no GPU encoder for it.
-    Returns None when that can't run here (no FFmpeg 9 from setup_gpu.sh - the system's
+    Returns None when that can't run here (no FFmpeg 9 from install.sh - the system's
     cannot convert NV16 - or frames it can't take): the GStreamer encoder makes the copy then.
     With --cpus (a retry after a failure: less peak current) one CPU lane only."""
     from . import ffv1lanes, gpu
@@ -574,7 +574,7 @@ def transcode_ffv1_lanes(args, reader, emit):
 
 def _ffmpeg_for_raw(v):
     """(ffmpeg, env, input pixel format, convert here?) for raw frames of this RAW: the FFmpeg 9
-    build (setup_gpu.sh) takes the capture formats as they are; any other FFmpeg gets the frames
+    build (install.sh, setup_gpu.sh) takes the capture formats as they are; any other FFmpeg gets the frames
     re-laid into planes here (the system FFmpeg 5.1 cannot convert NV16) - both lossless."""
     import shutil
     from . import gpu
@@ -757,7 +757,7 @@ def transcode_ffv1_gpu(args):
 
     g = gpu.ffmpeg()
     if not g:
-        emit(state="failed", error="GPU encoding isn't installed: run ./setup_gpu.sh")
+        emit(state="failed", error="GPU encoding isn't installed: run ./install.sh on this machine")
         return 2
     exe, env = g
     out = args.output or output_path(args.input, "ffv1")

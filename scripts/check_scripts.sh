@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Smoke test of the setup and build scripts (runs anywhere, touches nothing).
-# covers: SET-01, SET-02, SET-03, SET-06, SET-07
+# covers: SET-03, SET-05, SET-07, SET-08
 #
 #   scripts/check_scripts.sh
 set -uo pipefail
@@ -9,29 +9,42 @@ fail=0
 ok()  { printf 'PASS  %s\n' "$*"; }
 bad() { printf 'FAIL  %s\n' "$*"; fail=1; }
 
-for s in setup_all.sh build_apk.sh install.sh scripts/setup_all.sh scripts/setup_pi.sh scripts/build_apk.sh \
+for s in build_apk.sh install.sh scripts/build_apk.sh \
          scripts/setup_android_dev.sh \
          scripts/dev_tunnel.sh server/install.sh server/uninstall.sh server/scripts/arstro-remote-launcher \
-         server/scripts/install_deps.sh server/scripts/setup_io_perms.sh \
-         server/scripts/setup_hdmirx.sh server/scripts/setup_gpu.sh relay/package.sh relay/kit/run.sh \
+         server/scripts/install_deps.sh server/scripts/setup_io_perms.sh server/scripts/setup_hotspot_dns.sh \
+         server/scripts/setup_hdmirx.sh server/scripts/setup_gpu.sh server/scripts/install_backup.sh \
+         relay/package.sh relay/kit/run.sh \
          scripts/preview.sh scripts/bundle.sh; do
     [ -f "$ROOT/$s" ] || { bad "$s missing"; continue; }
     [ -x "$ROOT/$s" ] || bad "$s is not executable"
     bash -n "$ROOT/$s" && ok "$s syntax" || bad "$s syntax"
 done
-for s in setup_all.sh scripts/setup_pi.sh scripts/build_apk.sh scripts/setup_android_dev.sh; do
+for s in install.sh scripts/build_apk.sh scripts/setup_android_dev.sh; do
     out=$("$ROOT/$s" --help 2>&1) && [ -n "$out" ] && ok "$s --help" || bad "$s --help"
 done
-# setup_all without any work to do only checks the tools and prints the summary
 "$ROOT/relay/package.sh" --help | grep -q arm64-host && ok "relay/package.sh --help" || bad "relay/package.sh --help"
 "$ROOT/relay/kit/run.sh" --help | grep -q token && ok "relay/kit/run.sh --help" || bad "relay/kit/run.sh --help"
 "$ROOT/scripts/bundle.sh" --help | grep -q device-manager && ok "scripts/bundle.sh --help" || bad "scripts/bundle.sh --help"
 "$ROOT/scripts/preview.sh" --help | grep -q 'stop' && ok "scripts/preview.sh --help" || bad "scripts/preview.sh --help"
 # covers: RLY-20
-"$ROOT/scripts/setup_all.sh" --no-pi --no-apk >/dev/null 2>&1 && ok "setup_all.sh --no-pi --no-apk" || bad "setup_all.sh --no-pi --no-apk"
 # the scripts find their files from any working directory
 (cd /tmp && "$ROOT/scripts/build_apk.sh" --help >/dev/null 2>&1) && ok "build_apk.sh from another directory" || bad "build_apk.sh from another directory"
-grep -q 'ROOT/server' "$ROOT/scripts/setup_pi.sh" && ok "setup_pi.sh installs server/" || bad "setup_pi.sh does not copy server/"
+# SET-08: install.sh is the only script that sets a machine up - its parts refuse to run alone,
+# and no other setup script exists
+for s in install_deps.sh setup_io_perms.sh setup_hotspot_dns.sh setup_hdmirx.sh setup_gpu.sh install_backup.sh; do
+    out=$(bash "$ROOT/server/scripts/$s" --check root 2>&1); rc=$?
+    [ "$rc" = 2 ] && [[ "$out" == *"run ./install.sh"* ]] && ok "$s refuses to run without install.sh" || bad "$s ran on its own ($rc: $out)"
+    grep -qF -- "$s\" --from-install-sh" "$ROOT/server/install.sh" && ok "install.sh runs $s" || bad "install.sh does not run $s"
+done
+others=$(cd "$ROOT" && git ls-files '*.sh' | grep -iE '(^|/)(setup_(pi|all|gpu|hdmirx)|install[^/]*)\.sh$' |
+         grep -vxE 'install\.sh|server/install\.sh|server/scripts/(install_deps|install_backup|setup_gpu|setup_hdmirx)\.sh')
+[ -z "$others" ] && ok "no other machine setup script in the repo" || bad "other setup scripts: $others"
+help=$("$ROOT/install.sh" --help)
+for o in --autologin --no-gpu --slot --backup --modules; do
+    [[ "$help" == *"$o"* ]] || bad "install.sh --help lacks $o"
+done
+ok "install.sh --help lists --autologin, --no-gpu, --slot, --backup, --modules"
 
 # covers: ADM-06, SET-05 - install.sh into a throwaway home: a slot with its own dirs, port,
 # password, modules and autostart entry; uninstall removes it again
@@ -78,9 +91,6 @@ out=$(HOME="$t" XDG_CONFIG_HOME="$t/cfg" XDG_DATA_HOME="$t/data" XDG_STATE_HOME=
 [ ! -e "$t/data/arstro-remote-x" ] || bad "install.sh --relay without a token installed anyway"
 rm -rf "$t"
 out=$("$ROOT/server/install.sh" --slot 1 2>&1) && bad "install.sh accepted a bad slot" || ok "install.sh rejects a bad slot"
-# SET-06: setup_pi.sh deploys into a slot (a bad one is refused before any SSH)
-"$ROOT/scripts/setup_pi.sh" --slot 1 nobody@invalid.invalid >/dev/null 2>&1; [ $? = 2 ] &&
-    grep -q -- '--slot $SLOT' "$ROOT/scripts/setup_pi.sh" && ok "setup_pi.sh --slot" || bad "setup_pi.sh --slot"
 grep -q 'keytool -genkeypair' "$ROOT/scripts/build_apk.sh" && ok "build_apk.sh creates a signing key" || bad "build_apk.sh signing key"
 # SET-07: on ARM64 the x86-64-only build tools get qemu wrappers, refreshed before every build
 grep -q 'linux-arm64/gen_snapshot' "$ROOT/scripts/setup_android_dev.sh" &&

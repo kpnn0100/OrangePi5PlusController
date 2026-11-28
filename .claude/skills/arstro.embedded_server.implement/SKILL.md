@@ -67,7 +67,7 @@ updated · deployed into the idle slot and verified · committed and pushed.
 
 | Path | What |
 |---|---|
-| `install.sh` → `server/install.sh` | the one installer: slot, port, password, modules, packages (`scripts/install_deps.sh`), device permissions (`scripts/setup_io_perms.sh`), boot entry, start + check |
+| `install.sh` → `server/install.sh` | the one installer and the ONLY setup script (SET-08 - never add another; new setup steps go into it, helpers in `server/scripts/` take `--from-install-sh`): slot, port, password, modules, packages (`scripts/install_deps.sh`), device permissions (`scripts/setup_io_perms.sh`), boot entry, start + check |
 | `server/scripts/arstro-remote-launcher` | per-slot supervisor (`ARSTRO_SLOT`), restarts the daemon |
 | `server/arstro_remote/paths.py` | slot → instance name, config/state/install dirs, socket, lock, `DEFAULT_CONFIG` |
 | `server/arstro_remote/modules.py` | module table (name → title, op prefixes), `enabled(config)`, `describe()` |

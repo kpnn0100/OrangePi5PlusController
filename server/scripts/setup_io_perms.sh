@@ -7,6 +7,8 @@
 #   setup_io_perms.sh USER [--headless]     --headless: also let USER manage NetworkManager
 #                                            from a systemd user service (polkit) + linger
 set -eu
+# Part of install.sh (SET-08): it refuses to run on its own - set the machine up with ./install.sh.
+[ "${1:-}" = --from-install-sh ] && shift || { echo "$(basename "$0") is part of the installer - run ./install.sh instead (./install.sh --help)" >&2; exit 2; }
 USER_NAME="${1:?usage: setup_io_perms.sh USER [--headless]}"
 HEADLESS=0
 [ "${2:-}" = "--headless" ] && HEADLESS=1

@@ -173,7 +173,7 @@ def a_dns_server_on_every_address_is_named_before_the_network_is_left(t):
     proc_udp(DNS_EVERYWHERE)
     try:
         h = t.c.call("wifi.hotspot")
-        check(h["problem"] and "port 53" in h["problem"] and "setup_hotspot_dns.sh" in h["problem"], h)
+        check(h["problem"] and "port 53" in h["problem"] and "install.sh" in h["problem"], h)
         calls = len(nm()["calls"])
         resp = t.c.request("wifi.hotspot.start", timeout=60)
         check(resp["ok"] is False and "cannot start" in resp["error"] and "dnsmasq" in resp["error"], resp)

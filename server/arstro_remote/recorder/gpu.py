@@ -1,4 +1,4 @@
-"""GPU (Vulkan) FFV1 encoding, installed by setup_gpu.sh.
+"""GPU (Vulkan) FFV1 encoding, installed by install.sh (server/scripts/setup_gpu.sh).
 
 The Mali-G610 driver shipped with the OS (g13p0) has no Vulkan; setup_gpu.sh puts
 Rockchip's g24p0 driver (Vulkan 1.3) and an FFmpeg 9 build with the ffv1_vulkan encoder
@@ -16,7 +16,7 @@ GPU_DIR = os.environ.get("HDMIREC_GPU_DIR",
 
 
 def ffmpeg():
-    """(ffmpeg path, environment) for GPU encoding, or None if setup_gpu.sh wasn't run."""
+    """(ffmpeg path, environment) for GPU encoding, or None if install.sh didn't set it up."""
     exe = os.path.join(GPU_DIR, "ffmpeg", "bin", "ffmpeg")
     icd = os.path.join(GPU_DIR, "mali_icd.json")
     if not (os.access(exe, os.X_OK) and os.path.exists(icd)):

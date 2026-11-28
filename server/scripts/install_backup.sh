@@ -19,6 +19,8 @@
 #   --force-own-session   with --force: restart it although THIS shell runs inside it (it ends)
 #   -y, --yes             never ask
 set -euo pipefail
+# Part of install.sh (SET-08): it refuses to run on its own - set the machine up with ./install.sh.
+[ "${1:-}" = --from-install-sh ] && shift || { echo "$(basename "$0") is part of the installer - run ./install.sh instead (./install.sh --help)" >&2; exit 2; }
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"        # server/
 PORT="" PASSWORD="" RELAY_URL="" RELAY_TOKEN="" RELAY_NAME=""

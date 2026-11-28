@@ -3,7 +3,7 @@
 
     python3 tests/test_ffv1lanes.py [-k NAME]
 
-Needs an FFmpeg: the GPU-encoding one when setup_gpu.sh was run (a GPU lane then works next to
+Needs an FFmpeg: the GPU-encoding one when install.sh set it up (setup_gpu.sh) (a GPU lane then works next to
 the CPU lanes), else the system's; without any, every test passes as "skipped". A small test
 picture is cut into frames, handed out to lanes by ffv1lanes.Join, the joined stream muxed and
 decoded again: every frame must come back identical and in order - also when a lane dies at

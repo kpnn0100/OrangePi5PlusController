@@ -4,10 +4,19 @@
 #     has none). It is used ONLY by the recorder's encoder, through a private Vulkan ICD
 #     manifest; the desktop keeps its current graphics driver.
 #   - FFmpeg 9 (static arm64 build) with the ffv1_vulkan encoder.
-# Everything goes to ~/.local/share/hdmi-recorder/gpu. Remove that folder to undo.
+# Everything goes to ~/.local/share/hdmi-recorder/gpu. Remove that folder to undo. install.sh runs it
+# (camera module, RK3588 boards) unless --no-gpu; the recorder also makes MagicYUV copies with this FFmpeg.
+#
+#   setup_gpu.sh [--check]     --check: exit 0 when it is installed already
 set -euo pipefail
+# Part of install.sh (SET-08): it refuses to run on its own - set the machine up with ./install.sh.
+[ "${1:-}" = --from-install-sh ] && shift || { echo "$(basename "$0") is part of the installer - run ./install.sh instead (./install.sh --help)" >&2; exit 2; }
 
 DEST=${HDMIREC_GPU_DIR:-$HOME/.local/share/hdmi-recorder/gpu}
+if [ "${1:-}" = --check ]; then
+    [ -x "$DEST/ffmpeg/bin/ffmpeg" ] && [ -f "$DEST/mali_icd.json" ]
+    exit $?
+fi
 LIBMALI_URL=https://raw.githubusercontent.com/JeffyCN/mirrors/libmali/lib/aarch64-linux-gnu/libmali-valhall-g610-g24p0-x11-gbm.so
 FFMPEG_URL=https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n9.0-latest-linuxarm64-gpl-9.0.tar.xz
 OLD=$HOME/gpu      # earlier manual download, reused if present

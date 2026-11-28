@@ -224,7 +224,7 @@ HDMI RX (`rk_hdmirx`, V4L2) → GStreamer tee in the worker:
   their packets, puts them back in frame order and streams them into a fourth FFmpeg that only
   muxes (`-c:v copy`, the RAW's audio, the timecode). A dead or hung lane's frames go to the
   others or to a fresh CPU lane. 4K 4:2:2 from the SSD: ~16 fps (one GStreamer encoder: 9.5).
-  Without FFmpeg 9 (`setup_gpu.sh`) the GStreamer encoder makes the copy.
+  Without FFmpeg 9 (installed by `install.sh`) the GStreamer encoder makes the copy.
 
 The app gets the web addresses and the password over Bluetooth (`web.info`), probes
 `/api/ping` on each address and uses the first that answers; if none does it says why.
@@ -243,7 +243,7 @@ The app gets the web addresses and the password over Bluetooth (`web.info`), pro
 
 | Path | |
 |---|---|
-| `install.sh`, `server/install.sh` | the one installer (slots, modules, password, packages, permissions, boot); `--backup` → `server/scripts/install_backup.sh` |
+| `install.sh`, `server/install.sh` | the one installer and the only setup script (SET-08): slots, modules, password, packages, permissions, Bluetooth, hotspot DNS, HDMI RX, GPU encoder, auto-login, boot, app download; its parts in `server/scripts/` refuse to run alone; `--backup` → `server/scripts/install_backup.sh` |
 | `server/arstro_backup/` | the backup terminal (ADM-09/10): its own small server, installed frozen next to the slots |
 | `server/arstro_remote/` | the daemon + CLI (`python3 -m arstro_remote`) |
 | `server/arstro_remote/modules.py`, `system.py`, `files.py`, `netconf.py` | module table, System/Logs, Files, Connection services |
@@ -258,6 +258,6 @@ The app gets the web addresses and the password over Bluetooth (`web.info`), pro
 | `app/` | Flutter Android app (`lib/src/ui/recorder/` = Recorder tab, native code in `android/.../kotlin`) |
 | `client_app/` | Arstro Remote Client: share this phone as a device (PHN, `docs/phone/PHONE.md`) |
 | `devices_app/` | Arstro Devices: every device of a device manager on a phone (MGR); `tool/fake_device.py` = a test device |
-| `scripts/` | `setup_all.sh`, `setup_pi.sh`, `build_apk.sh`, `setup_android_dev.sh` (Flutter + Android SDK, also on the ARM64 board), `dev_tunnel.sh`, `req_coverage.py` |
+| `scripts/` | `build_apk.sh`, `setup_android_dev.sh` (Flutter + Android SDK, also on the ARM64 board), `dev_tunnel.sh`, `req_coverage.py` |
 | `docs/` | requirements, parity, protocol, architecture, traceability |
-| `legacy/hdmi-recorder/` | the original standalone recorder, kept for reference |
+| `legacy/hdmi-recorder/` | the original standalone recorder, kept for reference (its setup scripts are gone: `install.sh` is the one setup script) |

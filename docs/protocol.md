@@ -197,7 +197,7 @@ Take ids are `REC_YYYYMMDD_HHMMSS`; its files are `<take>.arh` (RAW), `<take>_H2
 |---|---|
 | `GET /` , `/assets/*` | the web UI (no password needed to load) |
 | `GET /api/ping` | `{name, version, hostname, authorized, auth, slot, app}` (`app`: `{url, version}` or null) |
-| `GET /app.apk` | the Android app uploaded by `setup_pi.sh` (no password; 404 if none) |
+| `GET /app.apk` | the Android app `install.sh` copied from `release/` (no password; 404 if none) |
 | `POST /api/login` `{password}` / `POST /api/logout` | sets / clears the HttpOnly `arstro_token_<port>` cookie (derived from the password; per port so A/B slots keep separate logins) |
 | `GET /ws` | WebSocket session (the protocol above) |
 | `GET /ws/preview` | live H.264 preview (below) |
